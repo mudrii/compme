@@ -526,10 +526,13 @@ functions that take the `loop_state` structs directly — `setup_pane_actions`
 `personalization_edits` (live `set_profile` + persist + flag mirrors),
 `model_download` (Download Model click, progress log, auto-wire),
 `drain_deep_links`, `tray_collection_toggle`, and `tray_app_disable`. The
-settings-watcher run and the host-event arm deliberately stay inline: each
-touches 15–20 bindings, so a function would take a wide context struct
-instead of hiding state. Deepening those needs typed settings/tray commands
-and a host-event context type — a design change, not a move.
+settings-watcher run is a two-phase seam: `drain_settings_edges` performs
+pure edge detection over the shared flag bus into typed `SettingsCommand`s,
+and `apply_settings_commands` carries the persists, engine setters, and the
+OS-backed launch-at-login / screen-context edges with their revert paths.
+The host-event arm deliberately stays inline: it touches 15–20 bindings, so
+a function would take a wide context struct instead of hiding state.
+Deepening it needs a host-event context type — a design change, not a move.
 
 Major responsibilities:
 

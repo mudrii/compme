@@ -9,6 +9,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use platform::{shell::ShellHost, PlatformError};
 use prefs::Prefs;
 
+use crate::loop_state::SettingsState;
+use crate::run_loop::{emoji_gender_edge, emoji_skin_tone_edge, emoji_switch_edge, Config};
+use crate::shell::SettingsFlags;
+
 /// Every runtime-persisted config key that can be shadowed by the process
 /// environment. OS-backed launch-at-login state is intentionally absent.
 ///
@@ -89,6 +93,10 @@ pub(crate) fn switch_edge(flag: &AtomicBool, current: &mut bool) -> Option<bool>
     })
 }
 
+/// Pre-4a watcher API; the production path is now
+/// [`drain_settings_edges`] + `apply_settings_commands`. Kept as a direct
+/// unit fixture for the per-edge contracts its tests pin.
+#[cfg(test)]
 pub(crate) fn apply_autocorrect_settings_edge(
     flag: &AtomicBool,
     current: &mut bool,
@@ -103,6 +111,9 @@ pub(crate) fn apply_autocorrect_settings_edge(
     Some(on)
 }
 
+/// Pre-4a watcher API; production path is [`drain_settings_edges`] +
+/// `apply_settings_commands`. Kept as a direct unit fixture.
+#[cfg(test)]
 pub(crate) fn apply_trailing_space_settings_edge(
     flag: &AtomicBool,
     current: &mut bool,
@@ -115,6 +126,9 @@ pub(crate) fn apply_trailing_space_settings_edge(
     Some(on)
 }
 
+/// Pre-4a watcher API; production path is [`drain_settings_edges`] +
+/// `apply_settings_commands`. Kept as a direct unit fixture.
+#[cfg(test)]
 pub(crate) fn apply_midline_settings_edge(
     flag: &AtomicBool,
     global_mid_word: &mut bool,
@@ -127,6 +141,158 @@ pub(crate) fn apply_midline_settings_edge(
     set_allow_mid_word(prefs.mid_line_enabled(focused_app, on));
     persist(on);
     Some(on)
+}
+
+/// One drained Settings-watcher edge (plan item 4a). The drain half
+/// ([`drain_settings_edges`]) owns every pure mirror and emits commands in
+/// the watcher order the loop historically applied them, so the apply half
+/// replays exactly that sequence.
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) enum SettingsCommand {
+    /// Pure switch: the `Config` mirror already flipped; apply persists and,
+    /// on an off edge, dismisses the visible suggestion.
+    Autocorrect {
+        on: bool,
+    },
+    FullAutocorrect {
+        on: bool,
+    },
+    ThesaurusSelection {
+        on: bool,
+    },
+    /// Engine setter + persist.
+    TrailingSpace {
+        on: bool,
+    },
+    /// `allow` is the per-app-resolved gate (prefs override + focused app),
+    /// not the raw global default.
+    Midline {
+        on: bool,
+        allow: bool,
+    },
+    CrossAppPreviousInputs {
+        on: bool,
+    },
+    ClipboardContext {
+        on: bool,
+    },
+    /// Emoji on/off; the parsed payload survives off/on cycles in
+    /// [`SettingsState::emoji_prefs`].
+    EmojiSwitch {
+        on: bool,
+    },
+    /// Persisted `COMPME_EMOJI_SKIN_TONE` value for a popup change.
+    EmojiSkinTone {
+        value: &'static str,
+    },
+    /// Persisted `COMPME_EMOJI_GENDER` value for a popup change.
+    EmojiGender {
+        value: &'static str,
+    },
+    /// OS-backed edge whose mirror may only move on a SUCCESSFUL apply: the
+    /// drain emits without consuming, and apply must either update
+    /// `SettingsState::current_launch_at_login` and persist, or restore the
+    /// UI atomic and redraw (see [`apply_launch_at_login_settings_edge`]).
+    LaunchAtLogin {
+        desired: bool,
+    },
+    /// OS-backed edge with the same contract: apply probes the Screen
+    /// Recording grant and spawns the OCR worker, reverting the UI atomic
+    /// AND the `Config` mirror on denial or spawn failure.
+    ScreenContext {
+        desired: bool,
+    },
+}
+
+/// Pure edge detection over the Settings flag bus (plan item 4a): updates
+/// every pure mirror in `config`/`settings` and returns the commands the
+/// effect half must apply, in watcher order. No engine, shell, persist, or
+/// IO happens here. The two OS-backed edges ([`SettingsCommand::LaunchAtLogin`],
+/// [`SettingsCommand::ScreenContext`]) are emitted WITHOUT consuming their
+/// edge — their mirrors move only on a successful apply — so callers must
+/// always run the apply half in the same heartbeat.
+pub(crate) fn drain_settings_edges(
+    flags: &SettingsFlags,
+    config: &mut Config,
+    settings: &mut SettingsState,
+    prefs: &Prefs,
+    focused_app: Option<&str>,
+) -> Vec<SettingsCommand> {
+    let mut commands = Vec::new();
+    if let Some(on) = switch_edge(&flags.general_autocorrect, &mut config.autocorrect) {
+        commands.push(SettingsCommand::Autocorrect { on });
+    }
+    if let Some(on) = switch_edge(
+        &flags.general_full_autocorrect,
+        &mut config.full_autocorrect,
+    ) {
+        commands.push(SettingsCommand::FullAutocorrect { on });
+    }
+    if let Some(on) = switch_edge(
+        &flags.general_thesaurus_selection,
+        &mut config.thesaurus_selection,
+    ) {
+        commands.push(SettingsCommand::ThesaurusSelection { on });
+    }
+    if let Some(on) = switch_edge(&flags.general_trailing_space, &mut config.trailing_space) {
+        commands.push(SettingsCommand::TrailingSpace { on });
+    }
+    if let Some(on) = switch_edge(&flags.labs_midline, &mut settings.global_mid_word) {
+        commands.push(SettingsCommand::Midline {
+            on,
+            allow: prefs.mid_line_enabled(focused_app, on),
+        });
+    }
+    if let Some(on) = switch_edge(
+        &flags.context_cross_app_previous_inputs,
+        &mut config.cross_app_previous_inputs,
+    ) {
+        commands.push(SettingsCommand::CrossAppPreviousInputs { on });
+    }
+    if let Some(on) = switch_edge(&flags.context_clipboard, &mut config.clipboard_context) {
+        commands.push(SettingsCommand::ClipboardContext { on });
+    }
+    if let Some(on) = emoji_switch_edge(
+        &flags.emoji_enabled,
+        &mut settings.emoji_enabled,
+        &mut config.emoji,
+        &mut settings.emoji_prefs,
+    ) {
+        commands.push(SettingsCommand::EmojiSwitch { on });
+    }
+    if let Some(tone) = emoji_skin_tone_edge(
+        &flags.emoji_skin_tone_index,
+        &mut settings.emoji_skin_tone_index,
+        &mut config.emoji,
+        &mut settings.emoji_prefs,
+    ) {
+        commands.push(SettingsCommand::EmojiSkinTone {
+            value: crate::builders::emoji_skin_tone_value(tone),
+        });
+    }
+    if let Some(gender) = emoji_gender_edge(
+        &flags.emoji_gender_index,
+        &mut settings.emoji_gender_index,
+        &mut config.emoji,
+        &mut settings.emoji_prefs,
+    ) {
+        commands.push(SettingsCommand::EmojiGender {
+            value: crate::builders::emoji_gender_value(gender),
+        });
+    }
+    let desired_launch = flags.general_launch_at_login.load(Ordering::Relaxed);
+    if desired_launch != settings.current_launch_at_login {
+        commands.push(SettingsCommand::LaunchAtLogin {
+            desired: desired_launch,
+        });
+    }
+    let desired_screen = flags.context_screen.load(Ordering::Relaxed);
+    if desired_screen != config.screen_context {
+        commands.push(SettingsCommand::ScreenContext {
+            desired: desired_screen,
+        });
+    }
+    commands
 }
 
 /// Apply a user launch-at-login change through the OS boundary before

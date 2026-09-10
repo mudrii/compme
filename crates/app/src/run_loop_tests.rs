@@ -1224,6 +1224,482 @@ fn midline_settings_edge_applies_effective_app_policy_and_persists_global_defaul
 }
 
 #[test]
+fn drain_settings_edges_is_quiet_when_no_flag_moved() {
+    // The watcher contract carries over to the drain: no flag movement, no
+    // commands, no mirror writes — the heartbeat stays a no-op.
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = SettingsState::new(
+        config.allow_mid_word,
+        config.emoji.is_some(),
+        config.emoji_prefs,
+        emoji_skin_tone_index(config.emoji_prefs.skin_tone),
+        emoji_gender_index(config.emoji_prefs.gender),
+        false,
+    );
+    let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    let prefs = Prefs::default();
+
+    assert!(drain_settings_edges(&flags, &mut { config }, &mut settings, &prefs, None).is_empty());
+}
+
+#[test]
+fn drain_settings_edges_flips_pure_switch_mirrors_and_emits_commands_in_order() {
+    // Every pure switch: the drain owns the Config/SettingsState mirror AND
+    // emits one command carrying the new value, in the watcher order the
+    // loop applied them (so apply replays the same sequence).
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = SettingsState::new(
+        config.allow_mid_word,
+        config.emoji.is_some(),
+        config.emoji_prefs,
+        emoji_skin_tone_index(config.emoji_prefs.skin_tone),
+        emoji_gender_index(config.emoji_prefs.gender),
+        false,
+    );
+    let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    flags.general_autocorrect.store(true, Ordering::Relaxed);
+    flags
+        .general_full_autocorrect
+        .store(true, Ordering::Relaxed);
+    flags
+        .general_thesaurus_selection
+        .store(true, Ordering::Relaxed);
+    flags.general_trailing_space.store(true, Ordering::Relaxed);
+    flags.labs_midline.store(true, Ordering::Relaxed);
+    flags
+        .context_cross_app_previous_inputs
+        .store(true, Ordering::Relaxed);
+    flags.context_clipboard.store(true, Ordering::Relaxed);
+    let prefs = Prefs::default();
+    let mut config = config;
+
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+
+    assert_eq!(
+        commands,
+        vec![
+            SettingsCommand::Autocorrect { on: true },
+            SettingsCommand::FullAutocorrect { on: true },
+            SettingsCommand::ThesaurusSelection { on: true },
+            SettingsCommand::TrailingSpace { on: true },
+            SettingsCommand::Midline {
+                on: true,
+                allow: true,
+            },
+            SettingsCommand::CrossAppPreviousInputs { on: true },
+            SettingsCommand::ClipboardContext { on: true },
+        ]
+    );
+    // Mirrors moved with the flags.
+    assert!(config.autocorrect);
+    assert!(config.full_autocorrect);
+    assert!(config.thesaurus_selection);
+    assert!(config.trailing_space);
+    assert!(settings.global_mid_word);
+    assert!(config.cross_app_previous_inputs);
+    assert!(config.clipboard_context);
+    // And a second drain over the same state is quiet.
+    assert!(drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None).is_empty());
+}
+
+#[test]
+fn drain_settings_edges_midline_command_carries_the_resolved_app_gate() {
+    // The engine effect for mid-line is NOT the raw global: it is the
+    // per-app-resolved gate (prefs override + focused app), so the command
+    // carries `allow` computed at drain time.
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = SettingsState::new(
+        false,
+        config.emoji.is_some(),
+        config.emoji_prefs,
+        emoji_skin_tone_index(config.emoji_prefs.skin_tone),
+        emoji_gender_index(config.emoji_prefs.gender),
+        false,
+    );
+    let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    flags.labs_midline.store(true, Ordering::Relaxed);
+    let mut prefs = Prefs::default();
+    prefs.set_app_policy_field("com.override", prefs::AppPolicyField::MidLine, false);
+    let mut config = config;
+
+    let commands = drain_settings_edges(
+        &flags,
+        &mut config,
+        &mut settings,
+        &prefs,
+        Some("com.override"),
+    );
+
+    assert_eq!(
+        commands,
+        vec![SettingsCommand::Midline {
+            on: true,
+            allow: false,
+        }]
+    );
+    assert!(settings.global_mid_word, "the global default still flips");
+}
+
+#[test]
+fn drain_settings_edges_defers_the_os_backed_mirrors_to_apply() {
+    // Launch-at-login and screen context are the two edges the spec analysis
+    // flagged as non-pure: their mirrors may only move on a SUCCESSFUL
+    // OS apply, and a rejection must restore the UI atomic. The drain
+    // therefore emits the command WITHOUT consuming the edge; apply updates
+    // the mirror (or reverts the flag) in the same heartbeat.
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = SettingsState::new(
+        config.allow_mid_word,
+        config.emoji.is_some(),
+        config.emoji_prefs,
+        emoji_skin_tone_index(config.emoji_prefs.skin_tone),
+        emoji_gender_index(config.emoji_prefs.gender),
+        false,
+    );
+    let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    flags.general_launch_at_login.store(true, Ordering::Relaxed);
+    flags.context_screen.store(true, Ordering::Relaxed);
+    let prefs = Prefs::default();
+    let mut config = config;
+
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+
+    assert_eq!(
+        commands,
+        vec![
+            SettingsCommand::LaunchAtLogin { desired: true },
+            SettingsCommand::ScreenContext { desired: true },
+        ]
+    );
+    assert!(!settings.current_launch_at_login, "apply owns this mirror");
+    assert!(!config.screen_context, "apply owns this mirror too");
+    // Because the edge was not consumed, a drain without an intervening
+    // apply re-emits — the loop must always run the two halves together.
+    assert_eq!(
+        drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None),
+        vec![
+            SettingsCommand::LaunchAtLogin { desired: true },
+            SettingsCommand::ScreenContext { desired: true },
+        ]
+    );
+}
+
+#[test]
+fn drain_settings_edges_emoji_switch_preserves_prefs_and_reports_popup_values() {
+    // Emoji off/on cycles keep the parsed payload (SettingsState.emoji_prefs)
+    // so re-enabling restores the user's tone/gender; the popup watchers
+    // clamp out-of-range atomics and report the persisted value string.
+    let mut config = Config::from_lookup(lookup(&[]));
+    config.emoji_prefs = EmojiPrefs {
+        skin_tone: SkinTone::Medium,
+        gender: Gender::Female,
+    };
+    config.emoji = Some(config.emoji_prefs);
+    let mut settings = SettingsState::new(
+        false,
+        true,
+        config.emoji_prefs,
+        emoji_skin_tone_index(SkinTone::Medium),
+        emoji_gender_index(Gender::Female),
+        false,
+    );
+    let flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    let prefs = Prefs::default();
+
+    // Off: payload moves out of config.emoji but survives in the state.
+    flags.emoji_enabled.store(false, Ordering::Relaxed);
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+    assert_eq!(commands, vec![SettingsCommand::EmojiSwitch { on: false }]);
+    assert_eq!(config.emoji, None);
+    assert_eq!(settings.emoji_prefs.skin_tone, SkinTone::Medium);
+    assert_eq!(settings.emoji_prefs.gender, Gender::Female);
+
+    // Back on: the saved payload is restored into config.emoji.
+    flags.emoji_enabled.store(true, Ordering::Relaxed);
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+    assert_eq!(commands, vec![SettingsCommand::EmojiSwitch { on: true }]);
+    assert_eq!(config.emoji, Some(settings.emoji_prefs));
+
+    // Skin tone popup: an out-of-range atomic clamps to the last index and
+    // the command carries the persisted value string.
+    flags.emoji_skin_tone_index.store(99, Ordering::Relaxed);
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+    assert_eq!(commands.len(), 1);
+    let SettingsCommand::EmojiSkinTone { value } = &commands[0] else {
+        panic!("expected a skin-tone command");
+    };
+    assert_eq!(*value, emoji_skin_tone_value(SkinTone::Dark));
+    assert_eq!(
+        settings.emoji_skin_tone_index,
+        EMOJI_SKIN_TONE_VALUES.len() - 1,
+        "clamped to the last valid index"
+    );
+
+    // Gender popup mirrors the same contract (index 2 = Male; the initial
+    // Female payload sits at index 1, so 1 would be a no-op edge).
+    flags.emoji_gender_index.store(2, Ordering::Relaxed);
+    let commands = drain_settings_edges(&flags, &mut config, &mut settings, &prefs, None);
+    assert_eq!(commands.len(), 1);
+    let SettingsCommand::EmojiGender { value } = &commands[0] else {
+        panic!("expected a gender command");
+    };
+    assert_eq!(*value, emoji_gender_value(Gender::Male));
+    assert_eq!(config.emoji.as_ref().map(|p| p.gender), Some(Gender::Male));
+}
+
+#[test]
+fn apply_settings_commands_persists_switches_and_dismisses_on_off_edges() {
+    // The apply half (plan item 4a): persists fire in command order with
+    // their exact keys, and ONLY off-edges retract the visible suggestion.
+    let mut engine = phase_engine();
+    let mut suggestion = phase_pending_suggestion();
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = phase_settings_state(Vec::new());
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let settings_flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
+    let cross_app = AtomicBool::new(false);
+    let previous_inputs = PreviousInputs::default();
+    let clipboard_cell = Mutex::new(Some("clip".to_string()));
+    let screen_cell = Mutex::new(None);
+    let mut screen_ocr = None;
+    let waits = RefCell::new(Vec::new());
+    let recomposed = RefCell::new(Vec::new());
+    let persisted = RefCell::new(Vec::new());
+    let persisted_values = RefCell::new(Vec::new());
+
+    apply_settings_commands(
+        &[
+            SettingsCommand::Autocorrect { on: false },
+            SettingsCommand::TrailingSpace { on: true },
+            SettingsCommand::Midline {
+                on: true,
+                allow: false,
+            },
+            SettingsCommand::CrossAppPreviousInputs { on: false },
+            SettingsCommand::ClipboardContext { on: false },
+            SettingsCommand::EmojiSwitch { on: false },
+            SettingsCommand::EmojiSkinTone { value: "dark" },
+        ],
+        SettingsApplyCtx {
+            engine: &mut engine,
+            suggestion: &mut suggestion,
+            shell: &shell,
+            settings_window: &mut settings_window,
+            config: &mut { config },
+            settings: &mut settings,
+            launch_login_flag: settings_flags.general_launch_at_login.as_ref(),
+            screen_flag: settings_flags.context_screen.as_ref(),
+            cross_app_previous_inputs: &cross_app,
+            previous_inputs: &previous_inputs,
+            clipboard_cell: &clipboard_cell,
+            screen_cell: &screen_cell,
+            screen_ocr: &mut screen_ocr,
+            set_screen_wait_ms: &|ms| waits.borrow_mut().push(ms),
+            spawn_screen_ocr: &|| Err("not spawned in this test".to_string()),
+            recompose_setup_lines: &|_config| recomposed.borrow_mut().push(()),
+            persist_switch: &|key, _label, on| persisted.borrow_mut().push((key.to_string(), on)),
+            persist_value: &|key, _label, value| {
+                persisted_values
+                    .borrow_mut()
+                    .push((key.to_string(), value.to_string()))
+            },
+        },
+    );
+
+    assert_eq!(
+        persisted.borrow().as_slice(),
+        [
+            ("COMPME_AUTOCORRECT".to_string(), false),
+            ("COMPME_TRAILING_SPACE".to_string(), true),
+            ("COMPME_MIDLINE".to_string(), true),
+            ("COMPME_CROSS_APP_PREVIOUS_INPUTS".to_string(), false),
+            ("COMPME_CLIPBOARD_CONTEXT".to_string(), false),
+            ("COMPME_EMOJI".to_string(), false),
+        ]
+    );
+    assert_eq!(
+        persisted_values.borrow().as_slice(),
+        [("COMPME_EMOJI_SKIN_TONE".to_string(), "dark".to_string())]
+    );
+    // The off-edges (autocorrect first) cleared the pending suggestion.
+    assert!(
+        suggestion.latest.take().is_none(),
+        "an off-edge must retract the visible suggestion"
+    );
+    // Cross-app mirror dropped and the clipboard cell was cleared.
+    assert!(!cross_app.load(Ordering::Relaxed));
+    assert!(clipboard_cell.lock().unwrap().is_none());
+    // No screen edge ran: no waits, no recompose.
+    assert!(waits.borrow().is_empty());
+    assert!(recomposed.borrow().is_empty());
+}
+
+#[test]
+fn apply_settings_commands_launch_at_login_rejection_restores_the_ui_atomic() {
+    // The OS-backed edge (spec analysis: launch-at-login is NOT pure): a
+    // rejected shell mutation restores the UI atomic, leaves the
+    // SettingsState mirror untouched, and persists nothing.
+    struct RejectingShell;
+    impl ShellHost for RejectingShell {
+        fn pump_events(&self, _heartbeat: Duration) {}
+        fn accessibility_trusted(&self) -> bool {
+            true
+        }
+        fn prompt_accessibility_trust(&self) -> bool {
+            true
+        }
+        fn physical_memory_bytes(&self) -> u64 {
+            0
+        }
+        fn open_url(&self, _url: &str) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn open_permission_settings(&self) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn reveal_file(&self, _path: &Path) -> Result<(), PlatformError> {
+            Ok(())
+        }
+        fn set_launch_at_login(&self, _enabled: bool) -> Result<(), PlatformError> {
+            Err(PlatformError::CannotComplete {
+                reason: "rejected by test shell".into(),
+            })
+        }
+        fn confirm(&self, _prompt: &shell_flags::ConfirmPrompt<'_>) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+        fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
+            Ok([0; 32])
+        }
+    }
+
+    let mut engine = phase_engine();
+    let mut suggestion = SuggestionState::new();
+    let config = Config::from_lookup(lookup(&[]));
+    let mut settings = phase_settings_state(Vec::new());
+    let shell: Arc<dyn ShellHost> = Arc::new(RejectingShell);
+    let settings_flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    settings_flags
+        .general_launch_at_login
+        .store(true, Ordering::Relaxed);
+    let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
+    let cross_app = AtomicBool::new(false);
+    let previous_inputs = PreviousInputs::default();
+    let clipboard_cell = Mutex::new(None);
+    let screen_cell = Mutex::new(None);
+    let mut screen_ocr = None;
+    let persisted = RefCell::new(Vec::new());
+
+    apply_settings_commands(
+        &[SettingsCommand::LaunchAtLogin { desired: true }],
+        SettingsApplyCtx {
+            engine: &mut engine,
+            suggestion: &mut suggestion,
+            shell: &shell,
+            settings_window: &mut settings_window,
+            config: &mut { config },
+            settings: &mut settings,
+            launch_login_flag: settings_flags.general_launch_at_login.as_ref(),
+            screen_flag: settings_flags.context_screen.as_ref(),
+            cross_app_previous_inputs: &cross_app,
+            previous_inputs: &previous_inputs,
+            clipboard_cell: &clipboard_cell,
+            screen_cell: &screen_cell,
+            screen_ocr: &mut screen_ocr,
+            set_screen_wait_ms: &|_| {},
+            spawn_screen_ocr: &|| Err("not spawned in this test".to_string()),
+            recompose_setup_lines: &|_| {},
+            persist_switch: &|key, _label, on| persisted.borrow_mut().push((key.to_string(), on)),
+            persist_value: &|_key, _label, _value| {},
+        },
+    );
+
+    assert!(
+        persisted.borrow().is_empty(),
+        "a rejected OS mutation persists nothing"
+    );
+    assert!(
+        !settings_flags
+            .general_launch_at_login
+            .load(Ordering::Relaxed),
+        "the UI atomic is restored to the applied truth"
+    );
+    assert!(!settings.current_launch_at_login, "the mirror never moved");
+}
+
+#[test]
+fn apply_settings_commands_screen_context_denial_reverts_flag_and_mirror() {
+    // The second OS-backed edge: Screen Recording denied -> the UI atomic
+    // AND the config mirror revert, the wait drops to zero, the Setup pane
+    // recomposes, and the persisted value is the RESOLVED (false) state.
+    let mut engine = phase_engine();
+    let mut suggestion = SuggestionState::new();
+    let mut config = Config::from_lookup(lookup(&[]));
+    let mut settings = phase_settings_state(Vec::new());
+    // RecordingShell's screen_capture_permission default is false (denied).
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let settings_flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    settings_flags.context_screen.store(true, Ordering::Relaxed);
+    let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
+    let cross_app = AtomicBool::new(false);
+    let previous_inputs = PreviousInputs::default();
+    let clipboard_cell = Mutex::new(None);
+    let screen_cell = Mutex::new(None);
+    let mut screen_ocr = None;
+    let waits = RefCell::new(Vec::new());
+    let recomposed = RefCell::new(Vec::new());
+    let persisted = RefCell::new(Vec::new());
+
+    apply_settings_commands(
+        &[SettingsCommand::ScreenContext { desired: true }],
+        SettingsApplyCtx {
+            engine: &mut engine,
+            suggestion: &mut suggestion,
+            shell: &shell,
+            settings_window: &mut settings_window,
+            config: &mut config,
+            settings: &mut settings,
+            launch_login_flag: settings_flags.general_launch_at_login.as_ref(),
+            screen_flag: settings_flags.context_screen.as_ref(),
+            cross_app_previous_inputs: &cross_app,
+            previous_inputs: &previous_inputs,
+            clipboard_cell: &clipboard_cell,
+            screen_cell: &screen_cell,
+            screen_ocr: &mut screen_ocr,
+            set_screen_wait_ms: &|ms| waits.borrow_mut().push(ms),
+            spawn_screen_ocr: &|| Err("not spawned in this test".to_string()),
+            recompose_setup_lines: &|_config| recomposed.borrow_mut().push(()),
+            persist_switch: &|key, _label, on| persisted.borrow_mut().push((key.to_string(), on)),
+            persist_value: &|_key, _label, _value| {},
+        },
+    );
+
+    assert!(
+        !settings_flags.context_screen.load(Ordering::Relaxed),
+        "denied grant restores the UI atomic"
+    );
+    assert!(!config.screen_context, "and the config mirror");
+    assert_eq!(waits.borrow().as_slice(), &[0u64]);
+    assert_eq!(
+        recomposed.borrow().len(),
+        1,
+        "the Setup pane recomposed once"
+    );
+    assert_eq!(
+        persisted.borrow().as_slice(),
+        [("COMPME_SCREEN_CONTEXT".to_string(), false)],
+        "the persisted value is the resolved state, not the request"
+    );
+}
+
+#[test]
 fn delete_app_row_resolves_against_ids_and_recomposes_together() {
     // The irreversible path (audit c121, top missing test): row index →
     // app id resolution uses the SAME cap/order as the rendered lines,

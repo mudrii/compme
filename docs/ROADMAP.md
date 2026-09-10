@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2123 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2131 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -1027,23 +1027,29 @@ not new product scope:
    groups), `loop_state.rs` (eight heartbeat state structs, teardown order
    preserved), `ax_worker.rs` in `platform_macos`, the inline test modules
    split into `run_loop_tests.rs`/`lib_tests.rs`, and eight heartbeat phases
-   lifted out of `run()` (2,039 → 1,546 lines; 1,557 at `b8d3626` and `ecf5f7c`).
+   lifted out of `run()` (2,039 → 1,546 lines; 1,557 at `b8d3626` and
+   `ecf5f7c`; 1,432 after the plan-item-4a settings-command seam, 2026-09-10).
 
 ### ☐ Remaining architecture seam work (design task, not debt)
 
-The settings-watcher run (autocorrect, full-autocorrect, thesaurus, launch at
-login, trailing space, midline, context, emoji) and the host-event arm are the
-two blocks still inline in `run()`, because each touches 15–20 bindings: a
-plain extraction would hand a wide context struct to a function rather than
-hide state — the same "relocated state, not a deeper interface" trap the
-27-field startup result showed. Closing them properly means a real seam:
+The settings-watcher block was closed 2026-09-10 by the plan-item-4a smaller
+cut: `drain_settings_edges` (pure edge detection over the shared flags,
+emitting typed `SettingsCommand`s) + `apply_settings_commands` (the
+engine/shell/persist effects, including the OS-backed launch-at-login and
+screen-context edges with their revert paths) — no wide context struct, no
+snapshot bus. The host-event arm is the one block still inline in `run()`,
+because it touches 15–20 bindings: a plain extraction would hand a wide
+context struct to a function rather than hide state — the same "relocated
+state, not a deeper interface" trap the 27-field startup result showed.
+Closing it properly means a real seam:
 
-- typed settings/tray **commands** and immutable **snapshots** replacing the
-  39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses (the
-  `shell_flags` crate split moved this vocabulary out of the portable contract
-  crate; the redesign itself is still open);
-- a host-event context type so the caret/focus arm can be tested without the
-  whole loop.
+- a host-event context type so the caret/focus/shortcut arm can be tested
+  without the whole loop;
+- the immutable-snapshot half of the settings/tray redesign stays deferred:
+  the 39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses
+  remain (the `shell_flags` crate split moved this vocabulary out of the
+  portable contract crate), to be revisited when a second native shell
+  actually produces flags.
 - **Observer rebind ownership (A66):** accept up to 250 ms of same-pid caret
   focus latency for now. The safety poll dispatches the observed focus but does
   not command an observer rebind; a callback-to-rebind ownership path is

@@ -36,13 +36,12 @@ use crate::adapter::SharedAdapter;
 use crate::builders::{
     app_support_models_dir, build_emoji_prefs, build_personalization, build_prefs, comma_list,
     downloaded_model_to_adopt, emoji_config_enabled, emoji_gender_from_index, emoji_gender_index,
-    emoji_gender_value, emoji_skin_tone_from_index, emoji_skin_tone_index, emoji_skin_tone_value,
-    layered, model_download_dest_present, model_download_ram_block_message, parse_enabled_default,
-    prepare_model_download_dest, show_models_folder_with, validate_gguf_model, EMOJI_GENDER_VALUES,
-    EMOJI_SKIN_TONE_VALUES,
+    emoji_skin_tone_from_index, emoji_skin_tone_index, layered, model_download_dest_present,
+    model_download_ram_block_message, parse_enabled_default, prepare_model_download_dest,
+    show_models_folder_with, validate_gguf_model, EMOJI_GENDER_VALUES, EMOJI_SKIN_TONE_VALUES,
 };
 #[cfg(test)]
-use crate::builders::{parse_gender, parse_skin_tone};
+use crate::builders::{emoji_gender_value, emoji_skin_tone_value, parse_gender, parse_skin_tone};
 use crate::config::{self, parse_clamped};
 #[cfg(test)]
 use crate::context_policy::context_bound_chars;
@@ -65,11 +64,13 @@ use crate::loop_state::{
 use crate::model_select::{load_model, resolve_prompt_mode, resolve_source, PromptMode};
 use crate::screen_ocr::ScreenOcr;
 #[cfg(test)]
-use crate::settings_runtime::env_shadow_warnings;
 use crate::settings_runtime::{
-    apply_autocorrect_settings_edge, apply_launch_at_login_settings_edge,
-    apply_midline_settings_edge, apply_trailing_space_settings_edge,
-    startup_env_shadow_notice_lines, switch_edge,
+    apply_autocorrect_settings_edge, apply_midline_settings_edge,
+    apply_trailing_space_settings_edge, env_shadow_warnings,
+};
+use crate::settings_runtime::{
+    apply_launch_at_login_settings_edge, drain_settings_edges, startup_env_shadow_notice_lines,
+    switch_edge, SettingsCommand,
 };
 use crate::status::{derive_status, AccessibilitySubscriptions, AppStatus, BlockReason};
 use crate::url_actions::{take_url_actions, UrlActionFlags};
@@ -368,7 +369,7 @@ fn host_event_route(event: &HostEvent) -> HostEventRoute {
 }
 
 /// Runtime configuration, all from the environment (full config surface is P1).
-struct Config {
+pub(crate) struct Config {
     /// Global on/off at launch (`COMPME_ENABLED`, default on). The tray
     /// toggle flips the runtime flag and persists back to this key.
     enabled: bool,
@@ -383,13 +384,13 @@ struct Config {
     heartbeat_ms: u64,
     min_context_chars: usize,
     allow_mid_word: bool,
-    trailing_space: bool,
+    pub(crate) trailing_space: bool,
     diag_coords: bool,
     candidates: usize,
     context_max_chars: usize,
-    cross_app_previous_inputs: bool,
-    clipboard_context: bool,
-    screen_context: bool,
+    pub(crate) cross_app_previous_inputs: bool,
+    pub(crate) clipboard_context: bool,
+    pub(crate) screen_context: bool,
     diag_context: bool,
     diag_clipboard_marker: Option<String>,
     acceptance_prompt_marker: Option<String>,
@@ -399,17 +400,17 @@ struct Config {
     /// Emoji completion (A2 §8/§16). `Some` = enabled with the user's skin-tone/
     /// gender prefs; `None` = off (default). Drives the local `:shortcode`
     /// replacement offer in the observe path.
-    emoji: Option<EmojiPrefs>,
+    pub(crate) emoji: Option<EmojiPrefs>,
     /// The persisted emoji preference payload, retained even while Emoji
     /// completions are disabled so settings choices survive off/on cycles and
     /// relaunches.
     emoji_prefs: EmojiPrefs,
     /// Inline typo autocorrect (A2 §8/§16, `COMPME_AUTOCORRECT`, default off):
     /// offer the correction when the trailing word is a known typo.
-    autocorrect: bool,
+    pub(crate) autocorrect: bool,
     /// OS-backed statistical autocorrect (`COMPME_FULL_AUTOCORRECT`, default
     /// off), distinct from the curated typo table and gated out of code fields.
-    full_autocorrect: bool,
+    pub(crate) full_autocorrect: bool,
     /// Standalone grammar/spell-fix trigger (`COMPME_GRAMMAR_FIX`, default off).
     grammar_fix: bool,
     /// British-English normalization (A2 §16, `COMPME_BRITISH_ENGLISH`, default
@@ -420,7 +421,7 @@ struct Config {
     thesaurus: bool,
     /// Explicit selection-triggered thesaurus mode
     /// (`COMPME_THESAURUS_SELECTION`, default off).
-    thesaurus_selection: bool,
+    pub(crate) thesaurus_selection: bool,
     /// Launch-at-login (A3 D13, `COMPME_LAUNCH_AT_LOGIN`): `Some(true/false)`
     /// registers/unregisters the SMAppService login item at startup; `None`
     /// (absent or unrecognized) leaves the user's Login Items setting alone.
@@ -3139,6 +3140,10 @@ fn apply_emoji_skin_tone(
     }
 }
 
+/// Pre-4a watcher wrapper over the pure switch core; the production
+/// path is `drain_settings_edges` + `apply_settings_commands`. Kept as a
+/// direct unit fixture.
+#[cfg(test)]
 fn handle_emoji_switch_edge(
     flag: &AtomicBool,
     current: &mut bool,
@@ -3146,18 +3151,48 @@ fn handle_emoji_switch_edge(
     saved_prefs: &mut EmojiPrefs,
     mut persist: impl FnMut(bool),
 ) -> Option<bool> {
-    let on = switch_edge(flag, current)?;
-    apply_emoji_enabled(config_emoji, saved_prefs, on);
+    let on = emoji_switch_edge(flag, current, config_emoji, saved_prefs)?;
     persist(on);
     Some(on)
 }
 
+/// Pure half of the emoji-switch watcher (plan item 4a): flip the
+/// enabled mirror and move the payload, no persist.
+pub(crate) fn emoji_switch_edge(
+    flag: &AtomicBool,
+    current: &mut bool,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
+) -> Option<bool> {
+    let on = switch_edge(flag, current)?;
+    apply_emoji_enabled(config_emoji, saved_prefs, on);
+    Some(on)
+}
+
+/// Pre-4a watcher wrapper over the pure skin-tone change core; the production
+/// path is `drain_settings_edges` + `apply_settings_commands`. Kept as a
+/// direct unit fixture.
+#[cfg(test)]
 fn handle_emoji_skin_tone_change(
     flag: &AtomicUsize,
     current: &mut usize,
     config_emoji: &mut Option<EmojiPrefs>,
     saved_prefs: &mut EmojiPrefs,
     mut persist: impl FnMut(&'static str),
+) -> Option<SkinTone> {
+    let tone = emoji_skin_tone_edge(flag, current, config_emoji, saved_prefs)?;
+    persist(emoji_skin_tone_value(tone));
+    Some(tone)
+}
+
+/// Pure half of the skin-tone watcher (plan item 4a): flip the
+/// popup-index mirror (clamping out-of-range atomics) and apply the tone to
+/// the payload, no persist.
+pub(crate) fn emoji_skin_tone_edge(
+    flag: &AtomicUsize,
+    current: &mut usize,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
 ) -> Option<SkinTone> {
     let now = flag
         .load(Ordering::Relaxed)
@@ -3168,10 +3203,13 @@ fn handle_emoji_skin_tone_change(
     *current = now;
     let tone = emoji_skin_tone_from_index(now);
     apply_emoji_skin_tone(config_emoji, saved_prefs, tone);
-    persist(emoji_skin_tone_value(tone));
     Some(tone)
 }
 
+/// Pre-4a watcher wrapper over the pure skin-tone invalidation core; the production
+/// path is `drain_settings_edges` + `apply_settings_commands`. Kept as a
+/// direct unit fixture.
+#[cfg(test)]
 fn handle_emoji_skin_tone_change_with_invalidation(
     flag: &AtomicUsize,
     current: &mut usize,
@@ -3196,12 +3234,30 @@ fn apply_emoji_gender(
     }
 }
 
+/// Pre-4a watcher wrapper over the pure gender change core; the production
+/// path is `drain_settings_edges` + `apply_settings_commands`. Kept as a
+/// direct unit fixture.
+#[cfg(test)]
 fn handle_emoji_gender_change(
     flag: &AtomicUsize,
     current: &mut usize,
     config_emoji: &mut Option<EmojiPrefs>,
     saved_prefs: &mut EmojiPrefs,
     mut persist: impl FnMut(&'static str),
+) -> Option<Gender> {
+    let gender = emoji_gender_edge(flag, current, config_emoji, saved_prefs)?;
+    persist(emoji_gender_value(gender));
+    Some(gender)
+}
+
+/// Pure half of the gender watcher (plan item 4a): flip the
+/// popup-index mirror (clamping out-of-range atomics) and apply the gender
+/// to the payload, no persist.
+pub(crate) fn emoji_gender_edge(
+    flag: &AtomicUsize,
+    current: &mut usize,
+    config_emoji: &mut Option<EmojiPrefs>,
+    saved_prefs: &mut EmojiPrefs,
 ) -> Option<Gender> {
     let now = flag
         .load(Ordering::Relaxed)
@@ -3212,10 +3268,13 @@ fn handle_emoji_gender_change(
     *current = now;
     let gender = emoji_gender_from_index(now);
     apply_emoji_gender(config_emoji, saved_prefs, gender);
-    persist(emoji_gender_value(gender));
     Some(gender)
 }
 
+/// Pre-4a watcher wrapper over the pure gender invalidation core; the production
+/// path is `drain_settings_edges` + `apply_settings_commands`. Kept as a
+/// direct unit fixture.
+#[cfg(test)]
 fn handle_emoji_gender_change_with_invalidation(
     flag: &AtomicUsize,
     current: &mut usize,
@@ -3227,6 +3286,164 @@ fn handle_emoji_gender_change_with_invalidation(
     let gender = handle_emoji_gender_change(flag, current, config_emoji, saved_prefs, persist)?;
     invalidate_visible_suggestion();
     Some(gender)
+}
+
+/// Effect context for [`apply_settings_commands`] (plan item 4a): the
+/// loop-owned state the drained commands act on. The drain already moved
+/// every pure mirror; this carries the persists, engine setters, dismissal,
+/// and the two OS-backed edges with their revert paths.
+struct SettingsApplyCtx<'a, S, O>
+where
+    S: PlatformAdapter,
+    O: OverlayPresenter,
+{
+    engine: &'a mut Engine<S, O>,
+    suggestion: &'a mut SuggestionState,
+    shell: &'a Arc<dyn ShellHost>,
+    settings_window: &'a mut crate::shell::SettingsWindow,
+    config: &'a mut Config,
+    settings: &'a mut SettingsState,
+    /// The Launch-at-Login UI atomic (`SettingsFlags::general_launch_at_login`);
+    /// a rejected OS mutation restores it.
+    launch_login_flag: &'a AtomicBool,
+    /// The Screen-context UI atomic (`SettingsFlags::context_screen`);
+    /// denial/spawn failure restores it.
+    screen_flag: &'a AtomicBool,
+    cross_app_previous_inputs: &'a AtomicBool,
+    previous_inputs: &'a PreviousInputs,
+    clipboard_cell: &'a Mutex<Option<String>>,
+    screen_cell: &'a Mutex<Option<ScreenContext>>,
+    screen_ocr: &'a mut Option<ScreenOcr>,
+    set_screen_wait_ms: &'a dyn Fn(u64),
+    spawn_screen_ocr: &'a dyn Fn() -> Result<ScreenOcr, String>,
+    /// Recompose the Setup pane lines from the given config (the screen
+    /// edge flips its row); the window refresh follows in apply.
+    recompose_setup_lines: &'a dyn Fn(&Config),
+    persist_switch: &'a dyn Fn(&str, &str, bool),
+    persist_value: &'a dyn Fn(&str, &str, &'static str),
+}
+
+/// Apply the drained [`SettingsCommand`]s' effects, in command order.
+/// Pure mirrors are already updated; nothing here re-detects edges.
+fn apply_settings_commands<S, O>(commands: &[SettingsCommand], ctx: SettingsApplyCtx<'_, S, O>)
+where
+    S: PlatformAdapter,
+    O: OverlayPresenter,
+{
+    /// Off-edges retract any visible suggestion (the gates are re-checked
+    /// only at submission, so the ghost would otherwise still insert).
+    fn dismiss_visible_suggestion<S, O>(engine: &mut Engine<S, O>, suggestion: &mut SuggestionState)
+    where
+        S: PlatformAdapter,
+        O: OverlayPresenter,
+    {
+        suggestion.latest.clear();
+        let _ = log_err("on_dismiss", engine.on_dismiss());
+    }
+
+    for command in commands {
+        match command {
+            SettingsCommand::Autocorrect { on } => {
+                (ctx.persist_switch)("COMPME_AUTOCORRECT", "autocorrect", *on);
+                if !on {
+                    dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+                }
+            }
+            SettingsCommand::FullAutocorrect { on } => {
+                (ctx.persist_switch)("COMPME_FULL_AUTOCORRECT", "full autocorrect", *on);
+                if !on {
+                    dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+                }
+            }
+            SettingsCommand::ThesaurusSelection { on } => {
+                (ctx.persist_switch)(
+                    "COMPME_THESAURUS_SELECTION",
+                    "selection-triggered thesaurus",
+                    *on,
+                );
+                if !on {
+                    dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+                }
+            }
+            SettingsCommand::TrailingSpace { on } => {
+                ctx.engine.set_trailing_space(*on);
+                (ctx.persist_switch)("COMPME_TRAILING_SPACE", "trailing space", *on);
+            }
+            SettingsCommand::Midline { on, allow } => {
+                ctx.engine.set_allow_mid_word(*allow);
+                (ctx.persist_switch)("COMPME_MIDLINE", "mid-line completions", *on);
+            }
+            SettingsCommand::CrossAppPreviousInputs { on } => {
+                ctx.cross_app_previous_inputs.store(*on, Ordering::Relaxed);
+                if !on {
+                    ctx.previous_inputs.clear_cross_app();
+                }
+                (ctx.persist_switch)(
+                    "COMPME_CROSS_APP_PREVIOUS_INPUTS",
+                    "cross-app previous-input context",
+                    *on,
+                );
+            }
+            SettingsCommand::ClipboardContext { on } => {
+                apply_clipboard_context_edge(*on, ctx.clipboard_cell);
+                (ctx.persist_switch)("COMPME_CLIPBOARD_CONTEXT", "clipboard context", *on);
+            }
+            SettingsCommand::EmojiSwitch { on } => {
+                (ctx.persist_switch)("COMPME_EMOJI", "emoji completions", *on);
+                if !on {
+                    dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+                }
+            }
+            SettingsCommand::EmojiSkinTone { value } => {
+                (ctx.persist_value)("COMPME_EMOJI_SKIN_TONE", "emoji skin tone", value);
+                dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+            }
+            SettingsCommand::EmojiGender { value } => {
+                (ctx.persist_value)("COMPME_EMOJI_GENDER", "emoji gender", value);
+                dismiss_visible_suggestion(ctx.engine, ctx.suggestion);
+            }
+            SettingsCommand::LaunchAtLogin { desired: _ } => {
+                // OS mutation first; only a successful registration persists.
+                // A rejection restores the UI atomic and redraws the switch.
+                if let Err(err) = apply_launch_at_login_settings_edge(
+                    ctx.launch_login_flag,
+                    &mut ctx.settings.current_launch_at_login,
+                    ctx.shell.as_ref(),
+                    |on| (ctx.persist_switch)("COMPME_LAUNCH_AT_LOGIN", "launch at login", on),
+                ) {
+                    eprintln!("compme: launch-at-login change rejected: {err}");
+                    ctx.settings_window.refresh_switches();
+                }
+            }
+            SettingsCommand::ScreenContext { desired } => {
+                let context_edge = apply_screen_context_edge(
+                    *desired,
+                    ScreenContextToggleState {
+                        config_screen_context: &mut ctx.config.screen_context,
+                        ui_flag: ctx.screen_flag,
+                        screen_cell: ctx.screen_cell,
+                        screen_ocr: ctx.screen_ocr,
+                    },
+                    ctx.set_screen_wait_ms,
+                    || ctx.shell.screen_capture_permission(),
+                    ctx.spawn_screen_ocr,
+                );
+                if context_edge == ScreenContextEdge::RevertedSpawnFailed {
+                    eprintln!("compme: screen OCR worker unavailable; screen context disabled");
+                }
+                (ctx.persist_switch)(
+                    "COMPME_SCREEN_CONTEXT",
+                    "screen context",
+                    ctx.config.screen_context,
+                );
+                ctx.settings_window.refresh_switches();
+                // The screen-context row of the Setup pane can flip here;
+                // skipping would leave it stale until the next poll.
+                (ctx.recompose_setup_lines)(ctx.config);
+                ctx.settings_window.refresh_setup_labels();
+            }
+        }
+    }
 }
 
 /// Persist one switch edge and log it. A persist failure is logged, not
@@ -5680,193 +5897,68 @@ pub fn run() -> Result<(), String> {
             );
             settings_window.refresh_setup_labels();
         }
-        // General-tab Autocorrect watcher: persist + apply on the edge. The
-        // decision path reads config.autocorrect per offer, so a field write
-        // IS the live apply (per-app overrides still win).
-        let _ = apply_autocorrect_settings_edge(
-            &settings_flags.general_autocorrect,
-            &mut config.autocorrect,
-            |on| persist_and_log_switch("COMPME_AUTOCORRECT", "autocorrect", on),
-            |on| {
-                if !on {
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-            },
-        );
-        // Full autocorrect is a separate OS-backed spelling feature. It shares
-        // the per-app Autocorrect override but has its own global switch.
-        let _ = apply_autocorrect_settings_edge(
-            &settings_flags.general_full_autocorrect,
-            &mut config.full_autocorrect,
-            |on| persist_and_log_switch("COMPME_FULL_AUTOCORRECT", "full autocorrect", on),
-            |on| {
-                if !on {
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-            },
-        );
-        let _ = apply_autocorrect_settings_edge(
-            &settings_flags.general_thesaurus_selection,
-            &mut config.thesaurus_selection,
-            |on| {
-                persist_and_log_switch(
-                    "COMPME_THESAURUS_SELECTION",
-                    "selection-triggered thesaurus",
-                    on,
-                )
-            },
-            |on| {
-                if !on {
-                    suggestion.latest.clear();
-                    let _ = log_err("on_dismiss", engine.on_dismiss());
-                }
-            },
-        );
-        // General-tab Launch at Login watcher: mutate the OS first. Only a
-        // successful registration/unregistration is persisted; rejection
-        // restores the shared atomic and immediately redraws the visible switch.
-        if let Err(err) = apply_launch_at_login_settings_edge(
-            &settings_flags.general_launch_at_login,
-            &mut settings.current_launch_at_login,
-            shell.as_ref(),
-            |on| persist_and_log_switch("COMPME_LAUNCH_AT_LOGIN", "launch at login", on),
-        ) {
-            eprintln!("compme: launch-at-login change rejected: {err}");
-            settings_window.refresh_switches();
-        }
-        // General-tab Trailing-space watcher: persist + live engine apply
-        // (the flag is baked at build via with_trailing_space, so the c94
-        // runtime-setter pattern applies — set_trailing_space).
-        apply_trailing_space_settings_edge(
-            &settings_flags.general_trailing_space,
-            &mut config.trailing_space,
-            |on| engine.set_trailing_space(on),
-            |on| persist_and_log_switch("COMPME_TRAILING_SPACE", "trailing space", on),
-        );
-        // Labs-pane watcher: on a switch edge, persist COMPME_MIDLINE and
-        // re-apply the engine gate for the current app immediately (per-app
-        // overrides still win; the switch changes only the global default).
-        // A persist failure is logged but not retried — the runtime global
-        // wins until relaunch (deliberate graceful degradation, same stance
-        // as the instance lock: an IO hiccup must not stall the app, at the
-        // cost of config.env staying stale until the next successful write).
-        apply_midline_settings_edge(
-            &settings_flags.labs_midline,
-            &mut settings.global_mid_word,
+        // Settings-pane watchers (plan item 4a): a pure drain over the shared
+        // flag bus (mirror updates + commands), then one apply pass carrying
+        // the persists, engine setters, dismissals, and the two OS-backed
+        // edges with their revert paths. The two halves always run together
+        // in the same heartbeat — the OS-backed commands do not consume
+        // their edge until the apply resolves it.
+        let settings_commands = drain_settings_edges(
+            &settings_flags,
+            &mut config,
+            &mut settings,
             &prefs,
             focus.last_app_key.as_deref(),
-            |on| engine.set_allow_mid_word(on),
-            |on| persist_and_log_switch("COMPME_MIDLINE", "mid-line completions", on),
         );
-        // Context-pane watchers. Clipboard context applies live because submit
-        // reads `config.clipboard_context` for each request. Screen OCR also
-        // applies live: enabling starts the worker when Screen Recording is
-        // granted, and disabling drops it plus clears the worker-side wait.
-        if let Some(on) = switch_edge(
-            &settings_flags.context_cross_app_previous_inputs,
-            &mut config.cross_app_previous_inputs,
-        ) {
-            cross_app_previous_inputs.store(on, Ordering::Relaxed);
-            if !on {
-                previous_inputs.clear_cross_app();
-            }
-            persist_and_log_switch(
-                "COMPME_CROSS_APP_PREVIOUS_INPUTS",
-                "cross-app previous-input context",
-                on,
-            );
-        }
-        if let Some(on) = switch_edge(
-            &settings_flags.context_clipboard,
-            &mut config.clipboard_context,
-        ) {
-            apply_clipboard_context_edge(on, &clipboard_cell);
-            persist_and_log_switch("COMPME_CLIPBOARD_CONTEXT", "clipboard context", on);
-        }
-        if let Some(on) = switch_edge(&settings_flags.context_screen, &mut config.screen_context) {
-            let context_edge = apply_screen_context_edge(
-                on,
-                ScreenContextToggleState {
-                    config_screen_context: &mut config.screen_context,
-                    ui_flag: &settings_flags.context_screen,
+        if !settings_commands.is_empty() {
+            let diag_context = config.diag_context;
+            let spawn_screen_ocr = || {
+                ScreenOcr::spawn(
+                    Arc::clone(&shell),
+                    Arc::clone(&screen_cell),
+                    context_bound,
+                    diag_context,
+                )
+                .map_err(|err| err.to_string())
+            };
+            let set_screen_wait_ms = |ms: u64| screen_wait_ms.store(ms, Ordering::Relaxed);
+            let recompose_setup_lines = |config: &Config| {
+                *settings_flags
+                    .setup_lines
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
+                    config,
+                    model_available,
+                    accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
+                    shell.accessibility_trusted(),
+                    shell.screen_capture_permission(),
+                    download.model_download_status.as_deref(),
+                );
+            };
+            apply_settings_commands(
+                &settings_commands,
+                SettingsApplyCtx {
+                    engine: &mut engine,
+                    suggestion: &mut suggestion,
+                    shell: &shell,
+                    settings_window: &mut settings_window,
+                    config: &mut config,
+                    settings: &mut settings,
+                    launch_login_flag: settings_flags.general_launch_at_login.as_ref(),
+                    screen_flag: settings_flags.context_screen.as_ref(),
+                    cross_app_previous_inputs: &cross_app_previous_inputs,
+                    previous_inputs: &previous_inputs,
+                    clipboard_cell: &clipboard_cell,
                     screen_cell: &screen_cell,
                     screen_ocr: &mut screen_ocr,
-                },
-                |ms| screen_wait_ms.store(ms, Ordering::Relaxed),
-                || shell.screen_capture_permission(),
-                || {
-                    ScreenOcr::spawn(
-                        Arc::clone(&shell),
-                        Arc::clone(&screen_cell),
-                        context_bound,
-                        config.diag_context,
-                    )
-                    .map_err(|err| err.to_string())
+                    set_screen_wait_ms: &set_screen_wait_ms,
+                    spawn_screen_ocr: &spawn_screen_ocr,
+                    recompose_setup_lines: &recompose_setup_lines,
+                    persist_switch: &persist_and_log_switch,
+                    persist_value: &persist_and_log_value,
                 },
             );
-            if context_edge == ScreenContextEdge::RevertedSpawnFailed {
-                eprintln!("compme: screen OCR worker unavailable; screen context disabled");
-            }
-            persist_and_log_switch(
-                "COMPME_SCREEN_CONTEXT",
-                "screen context",
-                config.screen_context,
-            );
-            settings_window.refresh_switches();
-            // Poison-recovery: skipping would leave the Setup pane stale after
-            // the screen-context toggle (refresh runs below).
-            *settings_flags
-                .setup_lines
-                .lock()
-                .unwrap_or_else(|e| e.into_inner()) = compose_setup_lines(
-                &config,
-                model_available,
-                accessibility_subscriptions == AccessibilitySubscriptions::RelaunchRequired,
-                shell.accessibility_trusted(),
-                shell.screen_capture_permission(),
-                download.model_download_status.as_deref(),
-            );
-            settings_window.refresh_setup_labels();
         }
-        // Emoji-pane watcher: the replacement path reads config.emoji on each
-        // observation, so changing the Option is the live apply. Keep the parsed
-        // prefs payload across live off/on cycles; the skin-tone popup updates
-        // it below, and gender remains config-backed until its control ships.
-        let emoji_edge = handle_emoji_switch_edge(
-            &settings_flags.emoji_enabled,
-            &mut settings.emoji_enabled,
-            &mut config.emoji,
-            &mut settings.emoji_prefs,
-            |on| persist_and_log_switch("COMPME_EMOJI", "emoji completions", on),
-        );
-        if emoji_edge == Some(false) {
-            suggestion.latest.clear();
-            let _ = log_err("on_dismiss", engine.on_dismiss());
-        }
-        handle_emoji_skin_tone_change_with_invalidation(
-            &settings_flags.emoji_skin_tone_index,
-            &mut settings.emoji_skin_tone_index,
-            &mut config.emoji,
-            &mut settings.emoji_prefs,
-            |value| persist_and_log_value("COMPME_EMOJI_SKIN_TONE", "emoji skin tone", value),
-            || {
-                suggestion.latest.clear();
-                let _ = log_err("on_dismiss", engine.on_dismiss());
-            },
-        );
-        handle_emoji_gender_change_with_invalidation(
-            &settings_flags.emoji_gender_index,
-            &mut settings.emoji_gender_index,
-            &mut config.emoji,
-            &mut settings.emoji_prefs,
-            |value| persist_and_log_value("COMPME_EMOJI_GENDER", "emoji gender", value),
-            || {
-                suggestion.latest.clear();
-                let _ = log_err("on_dismiss", engine.on_dismiss());
-            },
-        );
         drain_deep_links_phase(
             &deep_links,
             &shell,
