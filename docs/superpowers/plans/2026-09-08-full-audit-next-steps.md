@@ -12,8 +12,9 @@ and item 2d (G2) the same day (`b26caca` + `c93b508`); items 4a
 lane (runs 34432782232, 34439157981, 34455569795, and 34488750297, macOS
 included; platform_macos 357 tests, app 606) — item 2 is closed except for
 the Chromium-family live recording attached to the caret-marker gates.
-Still open: item 1's live `ln1` record (owner's niri host), 6, 7, 8,
-the rest of 9, and 10 · item 5 closed 2026-09-10/11 (`3e061ba`/`6ed8289`
+Still open: item 1's live `ln1` record (owner's niri host), 6 (G6
+verification of the red `9b91b35` run first, then G7/G20), 7, 8, the rest
+of 9, and 10 · item 5 closed 2026-09-10/11 (`3e061ba`/`6ed8289`
 Wayland capability, `bf5893b` D-Bus timeouts, `02eaaaf` overlay collapse;
 the 37-test Xvfb lane runs on the dev host) ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
@@ -212,11 +213,17 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
 
 ## Item 6 — AX worker throughput (M, mac lane)
 
-- G6: `try_recv`-drain queued `ObserverEvent`s per `(pid, notification)` in
-  `run_ax_worker_loop`, resolve the newest, release the rest; remember the
-  last dispatched `(identity, rect)` in `dispatch_focused_element_poll` and
-  skip unchanged polls. This removes most of A66's cost without changing the
-  accepted 250 ms posture.
+- G6: ⚠️ **shipped `9b91b35`, UNVERIFIED — the macOS lane is red** (run
+  34578291953, `Test (serial, macOS state)`; format/clippy/parallel steps
+  green). The dev host's gh token expired before the logs could be
+  fetched, so the failing test is unidentified — static review of every
+  fake-loop queue simulates clean. The implementation drains contiguous
+  same-`(pid, notification)` events to the newest (explicit CFRetain
+  balance; first non-observer message deferred one iteration, never
+  dropped or reordered) and skips unchanged-`(identity, rect)` polls, the
+  A66/250 ms posture unchanged. **Fix-forward: re-auth gh, pull the failing
+  step's log, fix the test/impl or revert `9b91b35`, verify the lane
+  green before continuing item 6.**
 - G7: marshal Carbon register/unregister to the main thread via
   `DispatchQueue::main().exec_sync`, resource ownership stays on the worker.
 - G20: annotate the 80 bare `unsafe` blocks in the same pass (mechanical;
