@@ -78,26 +78,20 @@ fn cannot_complete(what: &str, err: impl std::fmt::Display) -> PlatformError {
     }
 }
 
-/// Send a void request and **wait for the server's verdict**.
-///
-/// X11 reports errors for requests with no reply asynchronously, so the naive
-/// version of this module returned `Ok(())` from `show_ghost` while the server had
-/// rejected `CreateWindow` and nothing was on screen — a fail-*open* show, which
-/// the [`platform::OverlayPresenter`] contract explicitly forbids ("the engine
-/// assumes an emitted ghost is on screen"). It was caught by a live test that
-/// could not find the window the presenter said it had created.
-///
-/// The cost is one round trip per request on a local socket, tens of microseconds
-/// against a 300 ms suggestion budget — a price worth paying to never claim a
-/// ghost that is not there.
-fn checked<C: RequestConnection>(
+/// Send a void request WITHOUT waiting for the server's verdict (G8
+/// collapse). Dropping the cookie routes the request's error — if the
+/// server sends one — into the event queue, where the ONE sync-and-drain at
+/// the end of the operation ([`X11Overlay::flush_and_collect_errors`])
+/// surfaces it. This keeps the fail-*closed* contract the per-request
+/// `checked` round trip used to enforce ("the engine assumes an emitted
+/// ghost is on screen"; a rejected `CreateWindow` must fail the show) while
+/// collapsing 10-12 round trips per show into one.
+fn send_void<C: RequestConnection>(
     what: &str,
     request: Result<x11rb::cookie::VoidCookie<'_, C>, x11rb::errors::ConnectionError>,
 ) -> Result<(), PlatformError> {
-    request
-        .map_err(|err| cannot_complete(what, err))?
-        .check()
-        .map_err(|err| cannot_complete(what, err))
+    drop(request.map_err(|err| cannot_complete(what, err))?);
+    Ok(())
 }
 
 /// One override-redirect window plus the resources that belong to it. Two of
@@ -226,7 +220,7 @@ impl X11Overlay {
             let cm = conn
                 .generate_id()
                 .map_err(|err| cannot_complete("colormap id", err))?;
-            checked(
+            send_void(
                 "create_colormap",
                 conn.create_colormap(ColormapAlloc::NONE, cm, root, visual),
             )?;
@@ -274,6 +268,14 @@ impl X11Overlay {
         &self.font_path
     }
 
+    /// Test-only: the raw connection, so a live test can inject a bad
+    /// request into the same stream the overlay batches — the fail-closed
+    /// drain is what must surface it (G8 overlay collapse).
+    #[cfg(test)]
+    pub(crate) fn connection(&self) -> &RustConnection {
+        &self.conn
+    }
+
     pub fn show_ghost(&mut self, anchor: ScreenRect, text: &str) -> Result<(), PlatformError> {
         let px = font_px(round_u16(ghost_box_height(anchor)));
         let width = self.measure(text, px);
@@ -284,7 +286,7 @@ impl X11Overlay {
         self.present(WindowSlot::Text, box_, &canvas)?;
         self.last_anchor = Some(anchor);
         self.withdraw(WindowSlot::Underline)?;
-        self.flush()
+        self.flush_and_collect_errors("show_ghost")
     }
 
     pub fn show_correction(
@@ -301,7 +303,7 @@ impl X11Overlay {
         self.present(WindowSlot::Text, banner, &banner_canvas)?;
         self.last_anchor = Some(word);
         self.present(WindowSlot::Underline, underline, &underline_canvas)?;
-        self.flush()
+        self.flush_and_collect_errors("show_correction")
     }
 
     pub fn update_ghost(&mut self, text: &str) -> Result<(), PlatformError> {
@@ -322,7 +324,7 @@ impl X11Overlay {
         self.withdraw(WindowSlot::Text)?;
         self.withdraw(WindowSlot::Underline)?;
         self.last_anchor = None;
-        self.flush()
+        self.flush_and_collect_errors("hide")
     }
 
     fn measure(&self, text: &str, px: f32) -> f64 {
@@ -388,7 +390,7 @@ impl X11Overlay {
             None => self.create_window(box_)?,
         };
         if window.box_ != box_ {
-            checked(
+            send_void(
                 "configure_window",
                 self.conn.configure_window(
                     window.id,
@@ -404,7 +406,7 @@ impl X11Overlay {
         self.upload(&mut window, canvas)?;
         // Restack on every show: override-redirect windows are unmanaged, so
         // nothing else keeps this above a window that was raised meanwhile.
-        checked(
+        send_void(
             "restack",
             self.conn.configure_window(
                 window.id,
@@ -412,7 +414,7 @@ impl X11Overlay {
             ),
         )?;
         if !window.mapped {
-            checked("map_window", self.conn.map_window(window.id))?;
+            send_void("map_window", self.conn.map_window(window.id))?;
             window.mapped = true;
         }
         *self.slot(slot) = Some(window);
@@ -426,7 +428,7 @@ impl X11Overlay {
         if window.mapped {
             let id = window.id;
             window.mapped = false;
-            checked("unmap_window", self.conn.unmap_window(id))?;
+            send_void("unmap_window", self.conn.unmap_window(id))?;
         }
         Ok(())
     }
@@ -458,7 +460,7 @@ impl X11Overlay {
         if let Some(colormap) = self.colormap {
             aux = aux.colormap(colormap);
         }
-        checked(
+        send_void(
             "create_window",
             self.conn.create_window(
                 self.depth,
@@ -478,7 +480,7 @@ impl X11Overlay {
         // Empty input region: every click, scroll and drag over the overlay goes
         // to the application underneath. This is not cosmetic — without it the
         // ghost would eat the user's clicks on their own text field.
-        checked(
+        send_void(
             "empty input shape",
             self.conn.shape_rectangles(
                 shape::SO::SET,
@@ -495,7 +497,7 @@ impl X11Overlay {
         // Override-redirect means no WM reads it, so a failure to intern the
         // atoms is not worth failing the overlay for.
         if let Some((property, value)) = self.window_type {
-            checked(
+            send_void(
                 "window type",
                 self.conn.change_property32(
                     PropMode::REPLACE,
@@ -511,7 +513,7 @@ impl X11Overlay {
             .conn
             .generate_id()
             .map_err(|err| cannot_complete("gc id", err))?;
-        checked(
+        send_void(
             "create_gc",
             self.conn.create_gc(gc, id, &CreateGCAux::new()),
         )?;
@@ -536,7 +538,7 @@ impl X11Overlay {
             .conn
             .generate_id()
             .map_err(|err| cannot_complete("pixmap id", err))?;
-        checked(
+        send_void(
             "create_pixmap",
             self.conn
                 .create_pixmap(self.depth, pixmap, window.id, canvas.w, canvas.h),
@@ -556,7 +558,7 @@ impl X11Overlay {
             let first = band * rows_per_request;
             let rows = rows_per_request.min(usize::from(canvas.h) - first);
             let slice = &bytes[first * row_bytes..(first + rows) * row_bytes];
-            checked(
+            send_void(
                 "put_image",
                 self.conn.put_image(
                     ImageFormat::Z_PIXMAP,
@@ -573,14 +575,14 @@ impl X11Overlay {
             )?;
         }
 
-        checked(
+        send_void(
             "background_pixmap",
             self.conn.change_window_attributes(
                 window.id,
                 &ChangeWindowAttributesAux::new().background_pixmap(pixmap),
             ),
         )?;
-        checked(
+        send_void(
             "clear_area",
             self.conn
                 .clear_area(false, window.id, 0, 0, canvas.w, canvas.h),
@@ -598,7 +600,7 @@ impl X11Overlay {
                 height,
             })
             .collect();
-        checked(
+        send_void(
             "bounding shape",
             self.conn.shape_rectangles(
                 shape::SO::SET,
@@ -612,15 +614,36 @@ impl X11Overlay {
         )?;
 
         if let Some(previous) = window.pixmap.replace(pixmap) {
-            checked("free_pixmap", self.conn.free_pixmap(previous))?;
+            send_void("free_pixmap", self.conn.free_pixmap(previous))?;
         }
         Ok(())
     }
 
-    fn flush(&self) -> Result<(), PlatformError> {
+    /// Flush the operation's request batch and collect the server's
+    /// verdicts (G8): one `sync` round trip guarantees the server has
+    /// processed every batched request, then the event queue is drained —
+    /// any `Error` event fails the whole operation with the layer's
+    /// fail-closed error. Non-error events (e.g. Expose for this
+    /// presenter's own override-redirect windows) are ignored: the
+    /// presenter repaints eagerly and nothing here subscribes.
+    fn flush_and_collect_errors(&self, what: &str) -> Result<(), PlatformError> {
         self.conn
             .flush()
-            .map_err(|err| cannot_complete("flush", err))
+            .map_err(|err| cannot_complete(what, err))?;
+        self.conn.sync().map_err(|err| cannot_complete(what, err))?;
+        while let Some(event) = self
+            .conn
+            .poll_for_event()
+            .map_err(|err| cannot_complete(what, err))?
+        {
+            if let x11rb::protocol::Event::Error(err) = event {
+                return Err(cannot_complete(
+                    what,
+                    format_args!("batched request rejected: {err:?}"),
+                ));
+            }
+        }
+        Ok(())
     }
 }
 

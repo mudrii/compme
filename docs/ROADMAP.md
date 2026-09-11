@@ -469,7 +469,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **36 live tests** (33 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **37 live tests** (34 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`

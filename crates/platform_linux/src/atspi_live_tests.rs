@@ -769,6 +769,37 @@ fn live_ghost_overlay_update_reuses_the_window_and_hide_is_idempotent() {
 
 #[test]
 #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_overlay_batched_requests_fail_closed_on_injected_bad_request() {
+    // G8 overlay collapse: requests are sent UNCHECKED (errors become
+    // events) and one sync at the end of the operation must drain them —
+    // a batch containing a rejected request must fail the operation, not
+    // report Ok with a half-drawn ghost. The injected FreePixmap on an
+    // invalid id stands in for any server-side rejection.
+    use x11rb::protocol::xproto::ConnectionExt as _;
+
+    let caret = fixture_caret_rect();
+    let mut overlay = crate::x11_overlay::X11Overlay::open().expect("open under Xvfb");
+    overlay
+        .show_ghost(caret, "batched")
+        .expect("the clean batch must succeed");
+
+    // Unchecked FreePixmap on an id that cannot exist: dropped cookie, so
+    // the server's Value error lands in the event queue.
+    drop(overlay.connection().free_pixmap(0xE41));
+
+    let result = overlay.update_ghost("after injection");
+    let Err(PlatformError::CannotComplete { reason }) = result else {
+        panic!("an injected bad request must fail the batch, not return Ok");
+    };
+    assert!(
+        reason.contains("platform_linux x11 overlay"),
+        "the failure must name the overlay layer: {reason:?}"
+    );
+    overlay.hide().expect("hide stays idempotent-success");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
 fn live_ghost_overlay_actually_draws_pixels_where_the_text_goes() {
     // The only headless proof that anything *rendered*: compare the root
     // framebuffer over a fixed region before and after the show. A window that
