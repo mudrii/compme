@@ -13,10 +13,9 @@ lane (runs 34432782232, 34439157981, 34455569795, and 34488750297, macOS
 included; platform_macos 357 tests, app 606) — item 2 is closed except for
 the Chromium-family live recording attached to the caret-marker gates.
 Still open: item 1's live `ln1` record (owner's niri host), 6, 7, 8,
-the overlay `.check()` collapse of 5 (the Wayland capability report landed
-2026-09-10 as `3e061ba`/`6ed8289`, the D-Bus timeouts 2026-09-11 as
-`bf5893b`; the full 36-test Xvfb lane now runs on the dev host), the rest
-of 9, and 10 ·
+the rest of 9, and 10 · item 5 closed 2026-09-10/11 (`3e061ba`/`6ed8289`
+Wayland capability, `bf5893b` D-Bus timeouts, `02eaaaf` overlay collapse;
+the 37-test Xvfb lane runs on the dev host) ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
 commits since, all from this plan (`b865790`…`ecf5f7c`)
 **Evidence base:** `Qfd.md` §20 — five parallel finder passes, every ledger row

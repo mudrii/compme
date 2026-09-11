@@ -85,10 +85,11 @@
 > §15 F2 / integration-spec / ARCHITECTURE amendments in the same commit;
 > CI green on every lane, macOS included — item 2 is closed except for the
 > Chromium-family live recording attached to the caret-marker gates). The
-> next actionable steps are item 5's remainder (Linux D-Bus timeouts and
-> overlay `.check()` collapse — Xvfb lane) and item 6 (mac AX-worker
-> throughput) — items 4a + 4b (the `run()` seams, `bbf3724`/`4584b35`) are
-> closed.
+> next actionable step is item 6 (mac AX-worker throughput: G6 observer
+> coalescing and poll skip, G7 main-thread Carbon marshal, G20 unsafe
+> annotations) — items 4a + 4b (the `run()` seams, `bbf3724`/`4584b35`) and
+> item 5 (Linux hardening: `3e061ba`/`6ed8289` Wayland capability,
+> `bf5893b` D-Bus timeouts, `02eaaaf` overlay collapse) are closed.
 >
 > This document cross-references the plan specs in
 > [`docs/superpowers/specs/`](superpowers/specs/) against the implemented code and
