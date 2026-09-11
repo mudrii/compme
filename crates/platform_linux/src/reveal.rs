@@ -124,8 +124,15 @@ pub fn reveal(path: &std::path::Path) -> Result<(), PlatformError> {
 /// without a launch context passes.
 #[cfg(target_os = "linux")]
 fn show_items(uri: &str) -> Result<(), PlatformError> {
-    let connection =
-        zbus::blocking::Connection::session().map_err(|err| PlatformError::CannotComplete {
+    // G8: bound the FileManager1 round trip with the connection-level
+    // method timeout instead of an unbounded prebuilt session connection.
+    let connection = zbus::blocking::connection::Builder::session()
+        .map_err(|err| PlatformError::CannotComplete {
+            reason: format!("reveal: no session bus: {err}"),
+        })?
+        .method_timeout(crate::atspi_live::BUS_CALL_DEADLINE)
+        .build()
+        .map_err(|err| PlatformError::CannotComplete {
             reason: format!("reveal: no session bus: {err}"),
         })?;
     connection

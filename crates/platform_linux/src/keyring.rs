@@ -85,7 +85,13 @@ pub fn write_memory_key(key: &[u8]) -> Result<(), PlatformError> {
 /// The session bus. Absent on a headless host, which is a supported
 /// configuration and therefore reported rather than retried.
 fn session_bus() -> Result<Connection, PlatformError> {
-    Connection::session().map_err(|err| failed("session bus", err))
+    // G8: the connection-level method timeout bounds every raw call_method
+    // this module makes (the Secret Service protocol round trips).
+    zbus::blocking::connection::Builder::session()
+        .map_err(|err| failed("session bus", err))?
+        .method_timeout(crate::atspi_live::BUS_CALL_DEADLINE)
+        .build()
+        .map_err(|err| failed("session bus", err))
 }
 
 /// The read path, against an explicit connection so the live tests can point it
