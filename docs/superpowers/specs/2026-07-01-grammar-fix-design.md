@@ -2,7 +2,7 @@
 
 **Status:** 🟢 Code-complete · deterministic validation green 2026-07-02 · scripted assisted-session LOOK pass 2026-07-07 · physical `grammar-fix-textedit-look` pass still open (status 2026-09-09: unchanged, see `docs/ACCEPTANCE.md` evidence table)
 **Roadmap entry:** `docs/ROADMAP.md` → "Tier 5 — Standalone grammar/spell-fix mode".
-**Prereqs:** clean `main` (builds, clippy clean, ≈2134 tests green).
+**Prereqs:** clean `main` (builds, clippy clean, ≈2137 tests green).
 **Release boundary:** this status describes current `main`. (status 2026-09-09:
 the published v0.1.6 tag includes the runtime/grammar hardening in `216fa0a` and
 the A2 automation-policy change in `618013d` that v0.1.4 predated; the grammar

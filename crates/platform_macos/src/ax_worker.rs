@@ -105,6 +105,9 @@ pub(crate) enum Message {
 
 trait AxWorkerLoop: Send + 'static {
     fn recv(&mut self) -> Result<Message, mpsc::RecvTimeoutError>;
+    /// Non-blocking receive for burst coalescing (G6): the next
+    /// already-queued message, or `Empty` when the channel has none.
+    fn try_recv(&mut self) -> Result<Message, mpsc::TryRecvError>;
     fn pump_run_loop(&mut self);
 }
 
@@ -125,6 +128,10 @@ impl ChannelAxWorkerLoop {
 impl AxWorkerLoop for ChannelAxWorkerLoop {
     fn recv(&mut self) -> Result<Message, mpsc::RecvTimeoutError> {
         self.rx.recv_timeout(self.pump_interval)
+    }
+
+    fn try_recv(&mut self) -> Result<Message, mpsc::TryRecvError> {
+        self.rx.try_recv()
     }
 
     fn pump_run_loop(&mut self) {
@@ -730,12 +737,41 @@ fn dispatch_focused_element_poll(
     notification: ObserverNotification,
     dispatch: ObserverDispatch,
     callback_tx: mpsc::Sender<CallbackMessage>,
+    last_dispatched: &mut Option<(String, Option<ScreenRect>)>,
 ) {
     let Ok(event) = resolve_focused_or_app_event(pid, notification) else {
         return;
     };
 
+    // G6: the 4 Hz safety poll exists to catch focus the callbacks missed,
+    // not to re-announce an unchanged state — an identical (identity, rect)
+    // would only re-drive overlay geometry for the same answer.
+    if !focused_poll_changed(
+        last_dispatched,
+        event.identity.field_element_id(),
+        event.rect,
+    ) {
+        return;
+    }
+
     let _ = callback_tx.send(CallbackMessage::Dispatch { dispatch, event });
+}
+
+/// Whether the focused-element poll state moved (G6): updates `last` and
+/// reports `true` on any identity or rect change, `false` when the pair is
+/// identical to the previously dispatched one.
+fn focused_poll_changed(
+    last: &mut Option<(String, Option<ScreenRect>)>,
+    identity_key: String,
+    rect: Option<ScreenRect>,
+) -> bool {
+    let next = (identity_key, rect);
+    if *last == Some(next.clone()) {
+        false
+    } else {
+        *last = Some(next);
+        true
+    }
 }
 
 fn resolve_focused_or_app_event(
@@ -778,8 +814,20 @@ fn run_ax_worker_loop<L, F>(
     }
     crate::write_stderr(format_args!("compme: AX worker started"));
 
+    // G6: a message pulled ahead of an observer burst (see the ObserverEvent
+    // arm) waits here, preserving arrival order for everything else.
+    let mut deferred: Option<Message> = None;
+    // G6: the last dispatched safety-poll (identity, rect) — unchanged
+    // polls skip the callback dispatch instead of re-driving overlay
+    // geometry for an identical state.
+    let mut last_focused_poll: Option<(String, Option<ScreenRect>)> = None;
+
     loop {
-        match worker_loop.recv() {
+        let received = match deferred.take() {
+            Some(message) => Ok(message),
+            None => worker_loop.recv(),
+        };
+        match received {
             Ok(Message::Run { job, reply }) => {
                 let result =
                     std::panic::catch_unwind(std::panic::AssertUnwindSafe(job)).map_err(|_| {
@@ -825,11 +873,42 @@ fn run_ax_worker_loop<L, F>(
             Ok(Message::ObserverEvent {
                 pid,
                 notification,
-                retained_element,
-                fallback_element_id,
+                mut retained_element,
+                mut fallback_element_id,
                 dispatch,
                 callback_tx,
             }) => {
+                // G6 burst coalescing: fast typing against a slow AX server
+                // queues one ObserverEvent per AX callback, each costing up
+                // to 7 AX round trips to resolve. Contiguous duplicates for
+                // the same (pid, notification) collapse into their NEWEST
+                // member — the older snapshots are superseded before any
+                // consumer ever saw them, so their CFRetain is balanced here
+                // (the same create-rule handoff the resolve path performs).
+                loop {
+                    match worker_loop.try_recv() {
+                        Ok(Message::ObserverEvent {
+                            pid: queued_pid,
+                            notification: queued_notification,
+                            retained_element: queued_element,
+                            fallback_element_id: queued_fallback,
+                            dispatch: _,
+                            callback_tx: _,
+                        }) if queued_pid == pid && queued_notification == notification => {
+                            release_retained_observer_element(retained_element);
+                            retained_element = queued_element;
+                            fallback_element_id = queued_fallback;
+                        }
+                        // The burst ended: hand the pulled message back for
+                        // the next iteration — nothing is dropped or
+                        // reordered.
+                        Ok(other) => {
+                            deferred = Some(other);
+                            break;
+                        }
+                        Err(_) => break,
+                    }
+                }
                 let event = resolve_retained_observer_event(
                     pid,
                     notification,
@@ -845,7 +924,13 @@ fn run_ax_worker_loop<L, F>(
                 dispatch,
                 callback_tx,
             }) => {
-                dispatch_focused_element_poll(pid, notification, dispatch, callback_tx);
+                dispatch_focused_element_poll(
+                    pid,
+                    notification,
+                    dispatch,
+                    callback_tx,
+                    &mut last_focused_poll,
+                );
                 worker_loop.pump_run_loop();
             }
             #[cfg(test)]
@@ -1457,6 +1542,15 @@ mod tests {
                 .unwrap_or(Err(mpsc::RecvTimeoutError::Disconnected))
         }
 
+        fn try_recv(&mut self) -> Result<Message, mpsc::TryRecvError> {
+            match self.messages.pop_front() {
+                Some(Ok(message)) => Ok(message),
+                // A queued timeout entry carries no message; coalescing
+                // treats it as "nothing queued".
+                Some(Err(_)) | None => Err(mpsc::TryRecvError::Empty),
+            }
+        }
+
         fn pump_run_loop(&mut self) {
             self.events.lock().unwrap().push("pump".into());
         }
@@ -1615,6 +1709,147 @@ mod tests {
             thread::current().id()
         );
         assert_eq!(events.lock().unwrap().as_slice(), ["recv", "pump", "recv"]);
+    }
+
+    fn observer_burst_message(
+        dispatch: ObserverDispatch,
+        callback_tx: mpsc::Sender<CallbackMessage>,
+        fallback_element_id: &str,
+    ) -> Result<Message, mpsc::RecvTimeoutError> {
+        Ok(Message::ObserverEvent {
+            pid: 42,
+            notification: ObserverNotification::FocusChanged,
+            retained_element: None,
+            fallback_element_id: fallback_element_id.into(),
+            dispatch,
+            callback_tx,
+        })
+    }
+
+    #[test]
+    fn observer_burst_coalesces_contiguous_duplicates_to_the_newest() {
+        // G6: fast typing against a slow AX server queues one ObserverEvent
+        // per AX callback, each costing up to 7 AX round trips to resolve.
+        // Contiguous duplicates for the same (pid, notification) must
+        // resolve ONCE, from the NEWEST retained element — the older
+        // snapshots are superseded before any consumer ever saw them.
+        let callback_dispatcher = CallbackDispatcher::new().expect("CallbackDispatcher");
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&delivered);
+        let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
+            sink.lock().unwrap().push(event.identity.field_element_id());
+        });
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            observer_burst_message(
+                Arc::clone(&dispatch),
+                callback_dispatcher.sender(),
+                "ax:old",
+            ),
+            observer_burst_message(
+                Arc::clone(&dispatch),
+                callback_dispatcher.sender(),
+                "ax:older",
+            ),
+            observer_burst_message(
+                Arc::clone(&dispatch),
+                callback_dispatcher.sender(),
+                "ax:newest",
+            ),
+            stop_message(),
+        ]));
+        let (started_tx, _started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        assert_eq!(
+            delivered.lock().unwrap().as_slice(),
+            ["ax:newest".to_string()].as_slice(),
+            "one resolve, from the newest element — the burst never reached a consumer"
+        );
+    }
+
+    #[test]
+    fn observer_burst_defers_a_queued_job_without_loss() {
+        // G6: the drain stops at the first non-observer message and defers
+        // it — arrival order is preserved for jobs, and non-contiguous
+        // observer events still dispatch (only a contiguous burst merges).
+        let callback_dispatcher = CallbackDispatcher::new().expect("CallbackDispatcher");
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let sink = Arc::clone(&delivered);
+        let dispatch: ObserverDispatch = Arc::new(move |event: ObserverEvent| {
+            sink.lock().unwrap().push(event.identity.field_element_id());
+        });
+        let (job_ran_tx, job_ran_rx) = mpsc::channel();
+        let (reply, _reply_rx) = mpsc::channel();
+        let job_tx = job_ran_tx.clone();
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            observer_burst_message(
+                Arc::clone(&dispatch),
+                callback_dispatcher.sender(),
+                "ax:first",
+            ),
+            Ok(Message::Run {
+                job: Box::new(move || {
+                    let _ = job_tx.send(());
+                    Box::new("job") as Box<dyn Any + Send>
+                }),
+                reply,
+            }),
+            observer_burst_message(
+                Arc::clone(&dispatch),
+                callback_dispatcher.sender(),
+                "ax:second",
+            ),
+            stop_message(),
+        ]));
+        let (started_tx, _started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        assert_eq!(
+            delivered.lock().unwrap().as_slice(),
+            ["ax:first".to_string(), "ax:second".to_string()].as_slice(),
+            "the deferred job splits the burst; both sides still deliver"
+        );
+        assert!(
+            job_ran_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
+            "the queued job runs after the burst, never dropped"
+        );
+    }
+
+    #[test]
+    fn focused_poll_unchanged_identity_and_rect_is_skipped() {
+        // G6: the 4 Hz safety poll re-driving overlay geometry for an
+        // unchanged (identity, rect) is pure waste — the first poll
+        // dispatches, an identical one skips, and any change dispatches
+        // again.
+        let mut last: Option<(String, Option<ScreenRect>)> = None;
+        let rect = || {
+            Some(ScreenRect {
+                x: 1.0,
+                y: 2.0,
+                w: 3.0,
+                h: 4.0,
+            })
+        };
+
+        assert!(focused_poll_changed(&mut last, "ax:field".into(), rect()));
+        assert!(
+            !focused_poll_changed(&mut last, "ax:field".into(), rect()),
+            "identical (identity, rect) skips"
+        );
+        assert!(
+            focused_poll_changed(&mut last, "ax:field".into(), None),
+            "a lost rect is a change"
+        );
+        assert!(
+            focused_poll_changed(&mut last, "ax:other".into(), None),
+            "a new identity is a change"
+        );
+        assert!(
+            focused_poll_changed(&mut last, "ax:other".into(), rect()),
+            "a regained rect is a change"
+        );
     }
 
     #[test]
