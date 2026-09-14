@@ -26,6 +26,8 @@ windows = { version = "=0.62.2", features = [
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_System_Console",
+  # GlobalMemoryStatusEx / MEMORYSTATUSEX for the RAM-fit probe.
+  "Win32_System_SystemInformation",
   "Win32_UI_Shell",
   "Win32_UI_WindowsAndMessaging",
 ] }

@@ -214,8 +214,20 @@ pub fn terminal_prompt_activates(bundle_id: &str, left_context: &str) -> bool {
     if looks_like_shell_command(command_tokens) {
         return false;
     }
-    // Require some lowercase-alphabetic prose so a bare path/flags line is skipped.
-    line.chars().any(|c| c.is_ascii_lowercase())
+    // Require some lowercase-alphabetic prose so a bare path/flags line is
+    // skipped. Non-ASCII letters count too. Not because non-ASCII can never
+    // appear in a command — a path or argument certainly can, and the tests
+    // below use one — but because the command-shape heuristics above already
+    // decide that case, and this last gate exists only to reject a line with
+    // no prose in it at all.
+    // An `is_ascii_lowercase`-only test refused every Cyrillic, Greek or other
+    // non-Latin sentence outright — the one gate standing between such a line
+    // and activation, since none of the shell-command heuristics above match it.
+    // (Scripts written without spaces, e.g. Chinese and Japanese, are still
+    // blocked earlier by the `tokens.len() < 3` floor; widening that is a
+    // separate segmentation problem, not this gate's.)
+    line.chars()
+        .any(|c| c.is_ascii_lowercase() || (!c.is_ascii() && c.is_alphabetic()))
 }
 
 fn command_candidate_tokens<'a>(
@@ -888,6 +900,25 @@ mod tests {
             term,
             "git status\nplease summarize the diff for"
         ));
+    }
+
+    #[test]
+    fn non_latin_prose_activates_in_a_terminal() {
+        let term = "com.googlecode.iterm2";
+        // An `is_ascii_lowercase`-only prose test refused every non-Latin
+        // sentence outright: none of the shell-command heuristics match these,
+        // so that gate was the sole blocker.
+        assert!(
+            terminal_prompt_activates(term, "перепиши этот парсер"),
+            "Cyrillic prose must activate"
+        );
+        assert!(
+            terminal_prompt_activates(term, "γράψε μια συνάρτηση που"),
+            "Greek prose must activate"
+        );
+        // Non-ASCII letters do not rescue an actual command line.
+        assert!(!terminal_prompt_activates(term, "git commit -m тест"));
+        assert!(!terminal_prompt_activates(term, "ls -la /tmp/файлы"));
     }
 
     #[test]

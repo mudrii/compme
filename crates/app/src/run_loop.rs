@@ -1273,6 +1273,17 @@ fn open_memory_store(
     keychain_key: impl Fn() -> Option<[u8; 32]>,
 ) -> Option<memory::MemoryStore> {
     use memory::{MemoryStore, StaticKey, StorageMode};
+    // `Off` refuses a handle entirely, which also means the Apps pane cannot
+    // list or erase what an EARLIER session recorded: switching collection off
+    // currently hides the deletion UI along with the collection. Opening the
+    // store read/delete-only under `Off` was tried and reverted — it needs a
+    // load-WITHOUT-create key API first, because `load_or_create_memory_key`
+    // mints a fresh OS key-store entry on first use, so merely having a
+    // leftover database path would make a launch with memory switched off
+    // create a keychain item and prompt for access. Closing that gap is a
+    // `ShellHost` trait change across all three adapters; until then the honest
+    // instruction is "erase before you disable". Tracked as the residual half
+    // of the §6/§16 "disable and erase" requirement.
     if config.mode == StorageMode::Off {
         return None;
     }
@@ -2069,6 +2080,102 @@ fn record_full_accept(
             eprintln!("compme: memory remember failed: {err}");
         }
     }
+}
+
+/// Seed the volatile previous-input ring for a newly focused app from the
+/// encrypted store, once per app per process (design spec §6/§16
+/// retrieval-augmented prompting). Until this landed the store was write-only:
+/// `record_full_accept` persisted every Full accept, but nothing ever read one
+/// back, so a relaunch dropped all previous-input context and the encrypted
+/// history could never steer a completion.
+///
+/// Gated exactly like the write path in `record_full_accept`, so text that may
+/// not be COLLECTED for an app is never REPLAYED into that app's prompt either:
+/// context augmentation must be on, the per-app collection policy must allow
+/// it, and volatile `pid:N` keys are skipped (they never match the canonical
+/// key the store recorded under).
+///
+/// `read_recent` is injected because a `MemoryStore` holds a rusqlite handle
+/// that is not `Send` and lives on the run-loop thread — the gating is the part
+/// worth testing, and this keeps it testable without a database. Returns
+/// whether a ring was seeded.
+fn hydrate_previous_inputs(
+    app: &str,
+    context_max_chars: usize,
+    collection_allowed: bool,
+    previous_inputs: &PreviousInputs,
+    read_recent: impl FnOnce(&str, usize) -> Vec<String>,
+) -> bool {
+    if context_max_chars == 0 || !collection_allowed || app.starts_with("pid:") {
+        return false;
+    }
+    // Check before reading: after the first focus of an app the ring is already
+    // populated, and a focus change must not cost a SQL query every time.
+    if previous_inputs.has_ring(app) {
+        return false;
+    }
+    let records = read_recent(app, PreviousInputs::CAPACITY);
+    if records.is_empty() {
+        return false;
+    }
+    previous_inputs.seed_if_empty(app, records)
+}
+
+/// The char bound for the PREVIOUS-INPUT ring specifically — 0 when the user
+/// has previous-input context switched off.
+///
+/// This is deliberately NOT `context_bound`: `settings_context_bound_chars`
+/// floors that to `DEFAULT_CONTEXT_MAX_CHARS` so a clipboard/screen source
+/// enabled after launch still has a positive budget, which leaves
+/// `context_bound` nonzero even when `COMPME_PREVIOUS_INPUT_CONTEXT` is unset.
+/// Reading `context_bound` as "previous inputs are on" silently turns the
+/// feature on for a user who left it off.
+///
+/// Both the record side (`record_full_accept`) and the retrieval side
+/// (`hydrate_focus_previous_inputs`) resolve their gate here, so the two cannot
+/// drift — which is exactly how retrieval first came to be enabled under a
+/// configuration that records nothing.
+fn previous_input_context_chars(config: &Config, context_bound: usize) -> usize {
+    if config.context_max_chars > 0 || config.cross_app_previous_inputs {
+        context_bound
+    } else {
+        0
+    }
+}
+
+/// The Focus-arm edge for [`hydrate_previous_inputs`]: owns the store plumbing
+/// so `run()` carries one call instead of the whole read-and-gate block.
+///
+/// Keyed by `field.app` — the key `record_full_accept` writes under — so a
+/// relaunch resumes the context it collected instead of starting blind.
+///
+/// `context_max_chars` MUST come from [`previous_input_context_chars`], not
+/// from the raw `context_bound`: the two differ exactly when the user has
+/// previous-input context off, and reading the wrong one enables retrieval for
+/// someone who records nothing.
+fn hydrate_focus_previous_inputs(
+    field: &FieldHandle,
+    memory: &Option<memory::MemoryStore>,
+    context_max_chars: usize,
+    prefs: &Prefs,
+    previous_inputs: &PreviousInputs,
+) -> bool {
+    let Some(store) = memory.as_ref() else {
+        return false;
+    };
+    hydrate_previous_inputs(
+        &field.app,
+        context_max_chars,
+        prefs.collection_allowed(Some(&field.app)),
+        previous_inputs,
+        |app, limit| match store.recent(app, limit) {
+            Ok(records) => records,
+            Err(err) => {
+                eprintln!("compme: memory recent failed: {err}");
+                Vec::new()
+            }
+        },
+    )
 }
 
 type AcceptPreview = (FieldHandle, String, usize);
@@ -2984,6 +3091,7 @@ fn build_settings_flags(
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_policy_bits: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
+        apps_erase_all: Arc::new(AtomicBool::new(false)),
         apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
             let (word, full, grammar_accept) =
@@ -4812,17 +4920,32 @@ fn setup_pane_actions_phase(
     }
 }
 
+/// The collaborators both Apps-pane deletion phases need. Grouped into one
+/// object because the two take the same seven references — the same seam shape
+/// as `AcceptSideEffects` and the host-event context — and a parameter list
+/// that long is exactly what clippy's argument ceiling is pointing at.
+struct AppsPaneCtx<'a> {
+    settings_flags: &'a crate::shell::SettingsFlags,
+    shell: &'a Arc<dyn ShellHost>,
+    memory: &'a Option<memory::MemoryStore>,
+    prefs: &'a Prefs,
+    config: &'a Config,
+    settings_window: &'a crate::shell::SettingsWindow,
+    previous_inputs: &'a PreviousInputs,
+}
+
 /// Heartbeat phase: the Apps pane's Delete-row edge (confirm, secure
 /// delete, recompose, re-render). Split out of `run()` verbatim (F16).
-fn apps_row_delete_phase(
-    settings_flags: &crate::shell::SettingsFlags,
-    shell: &Arc<dyn ShellHost>,
-    memory: &Option<memory::MemoryStore>,
-    settings: &mut SettingsState,
-    prefs: &Prefs,
-    config: &Config,
-    settings_window: &crate::shell::SettingsWindow,
-) {
+fn apps_row_delete_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
+    let AppsPaneCtx {
+        settings_flags,
+        shell,
+        memory,
+        prefs,
+        config,
+        settings_window,
+        previous_inputs,
+    } = ctx;
     // Apps-row Delete: resolve the clicked row index against the ids
     // rendered with the SAME cap/order, delete, recompose, re-render.
     let clicked_row = settings_flags
@@ -4846,6 +4969,12 @@ fn apps_row_delete_phase(
             } else if let Some((lines, ids)) =
                 delete_app_row_and_recompose(store, &settings.apps_ids, row)
             {
+                // Drop the live rings for this app as well as its rows —
+                // otherwise the deleted prose keeps steering completions for
+                // the rest of the process (and, once seeded, is never
+                // re-read). Borrow the id before `settings.apps_ids` is
+                // reassigned below.
+                previous_inputs.clear_app(app);
                 // Poison-recovery: skipping would leave the Apps pane
                 // showing the just-deleted row (refresh runs below).
                 *settings_flags
@@ -4869,6 +4998,78 @@ fn apps_row_delete_phase(
             }
         }
     }
+}
+
+/// Heartbeat phase: the Apps pane's "Erase all recorded inputs" edge (design
+/// spec §6/§16 "disable and erase"). The per-row Delete can only reach the
+/// `APPS_ROWS` apps currently rendered, so this is the only path that erases an
+/// app ranked below the visible window — and the only one that empties the
+/// store outright.
+///
+/// Same shape as `apps_row_delete_phase`: confirm first (irreversible —
+/// `secure_delete` zeroes the freed pages), then recompose and re-render so the
+/// pane cannot keep showing rows that no longer exist.
+fn apps_erase_all_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
+    let AppsPaneCtx {
+        settings_flags,
+        shell,
+        memory,
+        prefs,
+        config,
+        settings_window,
+        previous_inputs,
+    } = ctx;
+    if !settings_flags.apps_erase_all.swap(false, Ordering::Relaxed) {
+        return;
+    }
+    let Some(store) = memory else {
+        eprintln!("compme: erase all skipped — no memory store open");
+        return;
+    };
+    // Cancel-default, like the per-row delete: this one is strictly broader.
+    let confirmed = shell
+        .confirm(&shell_flags::ConfirmPrompt {
+            title: "Erase all recorded inputs?",
+            message: "Every recorded input for every app will be permanently erased.",
+            confirm_label: "Erase All",
+        })
+        .unwrap_or(false);
+    if !confirmed {
+        eprintln!("compme: erase all cancelled");
+        return;
+    }
+    match store.delete_all() {
+        Ok(()) => eprintln!("compme: erased all recorded inputs"),
+        Err(err) => {
+            eprintln!("compme: erase all failed: {err}");
+            return;
+        }
+    }
+    // Erasing the rows is only half of it: any ring already seeded from those
+    // rows (or filled by this session's accepts) would keep feeding the erased
+    // text into prompts until relaunch, and `has_ring` would stop a later read
+    // from ever refreshing it. Drop the live copies too, or "permanently
+    // erased" is false for the rest of the process.
+    previous_inputs.clear_all();
+    let (lines, ids) = compose_apps_rows(Some(store));
+    *settings_flags
+        .apps_lines
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = lines;
+    settings.apps_ids = ids;
+    // Every row is gone, so the policy bits must be republished against the
+    // now-empty id list before the labels are re-seeded from them.
+    *settings_flags
+        .apps_policy_bits
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+        prefs,
+        &settings.apps_ids,
+        settings.global_mid_word,
+        config.autocorrect,
+        config.grammar_fix,
+    );
+    settings_window.refresh_apps_labels();
 }
 
 /// Heartbeat phase: the Apps pane's per-app policy checkbox edge, including
@@ -5286,6 +5487,13 @@ pub fn run() -> Result<(), String> {
                             log_compat_guidance(&app);
                         }
                     }
+                    hydrate_focus_previous_inputs(
+                        &field,
+                        &memory,
+                        previous_input_context_chars(&config, context_bound),
+                        &prefs,
+                        &previous_inputs,
+                    );
                     focus.current_field = Some(field.clone());
                     focus.tracker.reset();
                     if monitored_memory_active {
@@ -5545,13 +5753,7 @@ pub fn run() -> Result<(), String> {
                             correction_preview: correction_preview.as_ref(),
                             range_preview: range_preview.as_ref(),
                             wall_ms,
-                            context_max_chars: if config.context_max_chars > 0
-                                || config.cross_app_previous_inputs
-                            {
-                                context_bound
-                            } else {
-                                0
-                            },
+                            context_max_chars: previous_input_context_chars(&config, context_bound),
                             cross_app_previous_inputs: config.cross_app_previous_inputs,
                             previous_inputs: &previous_inputs,
                             memory: memory.as_ref(),
@@ -5922,15 +6124,17 @@ pub fn run() -> Result<(), String> {
                 Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
             }
         }
-        apps_row_delete_phase(
-            &settings_flags,
-            &shell,
-            &memory,
-            &mut settings,
-            &prefs,
-            &config,
-            &settings_window,
-        );
+        let apps_pane_ctx = || AppsPaneCtx {
+            settings_flags: &settings_flags,
+            shell: &shell,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &settings_window,
+            previous_inputs: &previous_inputs,
+        };
+        apps_row_delete_phase(apps_pane_ctx(), &mut settings);
+        apps_erase_all_phase(apps_pane_ctx(), &mut settings);
         apps_row_policy_edit_phase(
             &settings_flags,
             &settings,

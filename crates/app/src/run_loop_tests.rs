@@ -11525,13 +11525,16 @@ fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
     *flags.apps_delete_row.lock().unwrap() = Some(row);
 
     apps_row_delete_phase(
-        &flags,
-        &host,
-        &memory,
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
         &mut settings,
-        &prefs,
-        &config,
-        &window,
     );
 
     assert!(
@@ -11572,13 +11575,16 @@ fn apps_row_delete_phase_cancel_keeps_every_row() {
     *flags.apps_delete_row.lock().unwrap() = Some(0);
 
     apps_row_delete_phase(
-        &flags,
-        &host,
-        &memory,
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
         &mut settings,
-        &prefs,
-        &config,
-        &window,
     );
 
     assert!(flags.apps_delete_row.lock().unwrap().is_none());
@@ -11607,13 +11613,16 @@ fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
     let mut settings = phase_settings_state(ids.clone());
     *flags.apps_delete_row.lock().unwrap() = Some(99);
     apps_row_delete_phase(
-        &flags,
-        &host,
-        &memory,
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
         &mut settings,
-        &prefs,
-        &config,
-        &window,
     );
     assert!(
         flags.apps_delete_row.lock().unwrap().is_none(),
@@ -11627,17 +11636,355 @@ fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
     let no_memory: Option<memory::MemoryStore> = None;
     *flags.apps_delete_row.lock().unwrap() = Some(0);
     apps_row_delete_phase(
-        &flags,
-        &host,
-        &no_memory,
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &no_memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
         &mut settings,
-        &prefs,
-        &config,
-        &window,
     );
     assert!(flags.apps_delete_row.lock().unwrap().is_none());
     assert!(shell.calls().is_empty());
     assert_eq!(settings.apps_ids, ids);
+}
+
+// apps_erase_all_phase
+
+#[test]
+fn apps_erase_all_phase_confirmed_empties_the_store_and_recomposes() {
+    let _home = PhaseConfigHome::new("apps-erase-ok");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    flags.apps_erase_all.store(true, Ordering::Relaxed);
+
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+    );
+
+    assert!(
+        !flags.apps_erase_all.load(Ordering::Relaxed),
+        "edge consumed"
+    );
+    assert_eq!(shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
+    assert_eq!(
+        memory.as_ref().unwrap().count().unwrap(),
+        0,
+        "every app erased, not just the rendered rows"
+    );
+    assert!(settings.apps_ids.is_empty(), "rows recomposed to empty");
+}
+
+#[test]
+fn apps_erase_all_phase_declined_keeps_every_record() {
+    let _home = PhaseConfigHome::new("apps-erase-cancel");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(false));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids.clone());
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    flags.apps_erase_all.store(true, Ordering::Relaxed);
+
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+    );
+
+    assert!(!flags.apps_erase_all.load(Ordering::Relaxed));
+    assert_eq!(shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
+    assert_eq!(
+        memory.as_ref().unwrap().count().unwrap(),
+        2,
+        "Cancel is safe"
+    );
+    assert_eq!(settings.apps_ids, ids);
+}
+
+#[test]
+fn apps_erase_all_phase_unarmed_or_storeless_never_prompts() {
+    let _home = PhaseConfigHome::new("apps-erase-inert");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+
+    // Flag never set: the phase must not raise a destructive prompt per tick.
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids.clone());
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+    );
+    assert!(shell.calls().is_empty(), "unarmed phase never prompts");
+    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2);
+
+    // Armed but no store open: consume the edge, prompt for nothing.
+    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let no_memory: Option<memory::MemoryStore> = None;
+    flags.apps_erase_all.store(true, Ordering::Relaxed);
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &no_memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+    );
+    assert!(
+        !flags.apps_erase_all.load(Ordering::Relaxed),
+        "edge consumed even with no store"
+    );
+    assert!(shell.calls().is_empty());
+    assert_eq!(settings.apps_ids, ids);
+}
+
+#[test]
+fn apps_erase_all_phase_also_drops_the_live_prompt_rings() {
+    // Erasing only the rows left the already-seeded rings feeding the erased
+    // text into every prompt for the rest of the process — and `has_ring`
+    // meant no later read would refresh them. "Permanently erased" has to
+    // include the copy currently steering completions.
+    let _home = PhaseConfigHome::new("apps-erase-rings");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let previous = PreviousInputs::default();
+    previous.record_with_cross_app("com.a", "recorded prose".into(), true);
+    assert_eq!(previous.recent("com.a"), vec!["recorded prose"]);
+
+    flags.apps_erase_all.store(true, Ordering::Relaxed);
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &previous,
+        },
+        &mut settings,
+    );
+
+    assert!(
+        previous.recent("com.a").is_empty(),
+        "erased text must not keep steering completions"
+    );
+    assert!(previous.recent_for_scope("com.a", true).is_empty());
+}
+
+#[test]
+fn apps_row_delete_phase_also_drops_that_apps_live_ring() {
+    let _home = PhaseConfigHome::new("apps-delete-rings");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let (store, ids) = phase_memory_with_two_apps();
+    let row = ids.iter().position(|a| a == "com.a").unwrap();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let previous = PreviousInputs::default();
+    previous.record("com.a", "deleted app prose".into());
+    previous.record("com.b", "other app prose".into());
+    *flags.apps_delete_row.lock().unwrap() = Some(row);
+
+    apps_row_delete_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &previous,
+        },
+        &mut settings,
+    );
+
+    assert!(
+        previous.recent("com.a").is_empty(),
+        "the deleted app's live ring must go with its rows"
+    );
+    assert_eq!(
+        previous.recent("com.b"),
+        vec!["other app prose"],
+        "other apps are untouched"
+    );
+}
+
+// previous_input_context_chars
+
+#[test]
+fn previous_input_context_chars_is_zero_when_the_feature_is_off() {
+    // `context_bound` is floored to a positive default so a clipboard source
+    // enabled after launch still has a budget, so it is NOT a usable "previous
+    // inputs are on" signal. Reading it as one turned retrieval on for users
+    // who record nothing — the record and retrieval sides must agree here.
+    let mut config = startup_test_config();
+    let context_bound = crate::context_policy::DEFAULT_CONTEXT_MAX_CHARS;
+
+    config.context_max_chars = 0;
+    config.cross_app_previous_inputs = false;
+    assert_eq!(previous_input_context_chars(&config, context_bound), 0);
+
+    config.context_max_chars = 240;
+    assert_eq!(
+        previous_input_context_chars(&config, context_bound),
+        context_bound
+    );
+
+    // Cross-app sharing alone is enough to turn the ring on.
+    config.context_max_chars = 0;
+    config.cross_app_previous_inputs = true;
+    assert_eq!(
+        previous_input_context_chars(&config, context_bound),
+        context_bound
+    );
+}
+
+// hydrate_previous_inputs
+
+#[test]
+fn hydrate_previous_inputs_seeds_the_ring_once_then_stops_reading() {
+    let previous = PreviousInputs::default();
+    let reads = std::cell::Cell::new(0usize);
+    let read = |_: &str, limit: usize| {
+        reads.set(reads.get() + 1);
+        assert_eq!(limit, PreviousInputs::CAPACITY);
+        vec!["newest".to_string(), "older".to_string()]
+    };
+
+    assert!(hydrate_previous_inputs("com.a", 400, true, &previous, read));
+    assert_eq!(
+        previous.recent("com.a"),
+        vec!["newest".to_string(), "older".to_string()],
+        "store order (newest first) survives the replay"
+    );
+
+    // Second focus of the same app must not re-read the store.
+    assert!(!hydrate_previous_inputs(
+        "com.a", 400, true, &previous, read
+    ));
+    assert_eq!(reads.get(), 1, "one store read per app per process");
+}
+
+#[test]
+fn hydrate_previous_inputs_respects_every_write_path_gate() {
+    let records = || vec!["stored".to_string()];
+    let unreachable = |_: &str, _: usize| -> Vec<String> {
+        panic!("gated path must never read the store");
+    };
+
+    // Context augmentation off.
+    let previous = PreviousInputs::default();
+    assert!(!hydrate_previous_inputs(
+        "com.a",
+        0,
+        true,
+        &previous,
+        unreachable
+    ));
+    assert!(previous.recent("com.a").is_empty());
+
+    // Per-app collection disallowed.
+    let previous = PreviousInputs::default();
+    assert!(!hydrate_previous_inputs(
+        "com.a",
+        400,
+        false,
+        &previous,
+        unreachable
+    ));
+    assert!(previous.recent("com.a").is_empty());
+
+    // Volatile pid: key — never matches what the store recorded under.
+    let previous = PreviousInputs::default();
+    assert!(!hydrate_previous_inputs(
+        "pid:42",
+        400,
+        true,
+        &previous,
+        unreachable
+    ));
+    assert!(previous.recent("pid:42").is_empty());
+
+    // Sanity: the same call with every gate open does seed.
+    let previous = PreviousInputs::default();
+    assert!(hydrate_previous_inputs(
+        "com.a",
+        400,
+        true,
+        &previous,
+        |_, _| { records() }
+    ));
+    assert_eq!(previous.recent("com.a"), records());
+}
+
+#[test]
+fn hydrate_previous_inputs_never_displaces_this_session_history() {
+    // A live accept recorded before the app is re-focused must win: replaying
+    // older stored prose behind it would resurrect stale context.
+    let previous = PreviousInputs::default();
+    previous.record("com.a", "typed this session".to_string());
+
+    assert!(!hydrate_previous_inputs(
+        "com.a",
+        400,
+        true,
+        &previous,
+        |_, _| panic!("populated ring must not be re-read")
+    ));
+    assert_eq!(previous.recent("com.a"), vec!["typed this session"]);
 }
 
 // apps_row_policy_edit_phase

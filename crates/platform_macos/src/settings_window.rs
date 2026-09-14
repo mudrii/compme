@@ -507,6 +507,17 @@ define_class!(
             }
         }
 
+        #[unsafe(method(eraseAllRecordedInputs:))]
+        fn erase_all_recorded_inputs(&self, _sender: Option<&NSButton>) {
+            // No tag to unpack — the action is pane-wide. The run loop consumes
+            // the flag with `swap(false)` and raises the confirm prompt there,
+            // so a double click cannot queue two erases.
+            self.ivars()
+                .flags
+                .apps_erase_all
+                .store(true, Ordering::Relaxed);
+        }
+
         #[unsafe(method(editAppPolicy:))]
         fn edit_app_policy(&self, sender: Option<&NSButton>) {
             if let Some(checkbox) = sender {
@@ -1455,6 +1466,16 @@ mod apps_layout {
             h: COL_HEADER_H,
         }
     }
+    /// "Erase All Recorded Inputs", below the last data row. The per-row Delete
+    /// only reaches the `APPS_ROWS` rendered apps, so this is the pane's only
+    /// control that can clear an app ranked below the window.
+    /// Row 7 (the last) sits at y = 250 - 7*26 = 68, so y = 36 clears it.
+    pub const ERASE_ALL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 36.0,
+        w: 220.0,
+        h: 22.0,
+    };
 }
 
 mod emoji_layout {
@@ -2039,6 +2060,25 @@ fn build_window(
             }
         }
         refresh_apps_policy_checkbox_states(&apps_policy_checkboxes, &initial_bits);
+
+        // Pane-wide "Erase all" (§6/§16 "disable and erase"). Always visible,
+        // unlike the per-row Delete buttons: the rows are capped at APPS_ROWS,
+        // so an app ranked below the window has no other deletion path, and the
+        // run loop's confirm prompt is what makes a stray click safe.
+        // SAFETY: target outlives the window (held by MacosSettingsWindow).
+        let erase_all = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Erase All Recorded Inputs"),
+                Some({
+                    let any: &AnyObject = target.as_ref();
+                    any
+                }),
+                Some(sel!(eraseAllRecordedInputs:)),
+                mtm,
+            )
+        };
+        erase_all.setFrame(apps_layout::ERASE_ALL.ns());
+        apps.addSubview(&erase_all);
     }
 
     // Context tab: prompt-context sources. Clipboard applies live; screen OCR
@@ -2538,6 +2578,9 @@ mod tests {
                 all.push(("checkbox", apps_layout::checkbox_rect(row, f)));
             }
         }
+        // The pane-wide erase button must clear the last data row as well as
+        // the pane bounds — it is the one control placed below the grid.
+        all.push(("erase_all", apps_layout::ERASE_ALL));
 
         assert_no_overlaps_within_budget(&all);
     }

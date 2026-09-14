@@ -313,6 +313,15 @@ fn parse_hex(raw: &str) -> Option<Vec<u8>> {
     if !raw.len().is_multiple_of(2) {
         return None;
     }
+    // Reject every non-hex byte OURSELVES before decoding. `from_str_radix`
+    // accepts an optional leading `+`, so a pair like "+a" would decode to 0x0a
+    // and let a signature or trusted key that is not hex at all through as
+    // well-formed — harmless today (the bytes are wrong, so verification fails)
+    // but it contradicts this module's fail-closed contract and would report
+    // `InvalidSignature` where `MalformedSignature` is the truth.
+    if !raw.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return None;
+    }
     (0..raw.len() / 2)
         .map(|i| u8::from_str_radix(raw.get(i * 2..i * 2 + 2)?, 16).ok())
         .collect()
@@ -1148,6 +1157,33 @@ mod tests {
                 "sig value {bad:?} must be rejected as malformed"
             );
         }
+    }
+
+    #[test]
+    fn sign_bearing_hex_is_malformed_not_merely_unverifiable() {
+        // `u8::from_str_radix` accepts a leading `+`, so "+1" decodes to 0x01
+        // and a 128-char run of it used to parse as a well-formed signature
+        // that then failed verification. It is not hex, so it must be rejected
+        // before any crypto runs.
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
+        let plus_sig = "+1".repeat(64);
+        assert_eq!(plus_sig.len(), 128, "same length as a real hex signature");
+        assert_eq!(
+            parse_deep_link_with_trust(
+                &format!("{payload}&sig={plus_sig}"),
+                Some(&test_trusted_key()),
+            ),
+            Err(ParseError::MalformedSignature),
+        );
+    }
+
+    #[test]
+    fn trusted_key_rejects_sign_bearing_hex() {
+        // Same leniency on the trust root: a key that is not hex must not be
+        // silently adopted in a different spelling.
+        assert!(TrustedKey::from_hex(&"+1".repeat(32)).is_none());
+        // ...while a real 64-char hex key still decodes.
+        assert!(TrustedKey::from_hex(&encode_hex(test_trusted_key().0.as_bytes())).is_some());
     }
 
     #[test]

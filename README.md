@@ -25,7 +25,7 @@ promoted into the workspace.
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.6` | The v0.1.6 audit-remediation patch: 69 verified findings closed and test-pinned; 22 runner-pinned manual/live acceptance gates retain their recorded evidence in the acceptance ledger. |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.6` | The v0.1.6 audit-remediation patch: 69 verified findings closed and test-pinned; 22 runner-pinned manual/live acceptance gates are tracked in the [acceptance ledger](docs/ACCEPTANCE.md), where 19 are still recorded as "never recorded" — v0.1.6 was tagged with none of the 22 closed, and whether patch releases may ship that way is an open owner decision (`Qfd.md` §20, G11). |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | Adapter/overlay operations and most ShellHost services remain fail-closed; owner-only DACL hardening, console shutdown handling, and URL opening are real, but there is no usable Windows product or package yet. |
 | Linux | **Foundation + AT-SPI2 read/write/event seam + overlay** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret geometry), as does writing them (caret insert, and exact-range replace guarded by expected text and verified by readback) and *noticing* them (focus and caret subscriptions over AT-SPI signals; stop closes the active gate before bounded teardown). The ghost/correction overlay is real: a click-through override-redirect X11 window (ARGB visual where the server offers one, SHAPE-based transparency where it does not), verified live in the same Xvfb session. The session shell services are real too and each fails closed when its desktop service is absent: Secret Service memory key, `zenity` confirm, FileManager1 reveal. The accept tap is real too: a passive X11 `XGrabKey` that consumes the accept key only while a suggestion shows. Still fail-closed: the tray, Wayland overlay placement, and the accessibility-permission pane (Linux has no TCC equivalent to open). The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). The binary is wired to this adapter; a 2026-08-25 private Xvfb/GTK session observed two end-to-end suggestions with deterministic completion, but Linux remains experimental and has no package. |
 
@@ -362,7 +362,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 2,137 tests.
+roughly 2,158 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute

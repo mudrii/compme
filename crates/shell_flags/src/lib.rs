@@ -206,6 +206,12 @@ pub struct SettingsFlags {
     pub apps_lines: Arc<Mutex<Vec<String>>>,
     pub apps_policy_bits: Arc<Mutex<Vec<[bool; APP_POLICY_FIELDS]>>>,
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
+    /// The Apps pane's "Erase all recorded inputs" button (design spec §6/§16
+    /// "disable and erase"). Separate from `apps_delete_row` because it is not
+    /// row-scoped: the per-row control can only reach the `APPS_ROWS` apps
+    /// currently rendered, so without this an app outside that window had no
+    /// deletion path at all.
+    pub apps_erase_all: Arc<AtomicBool>,
     pub apps_edit: AppsPolicyEditSlot,
     pub shortcuts_text: Arc<Mutex<String>>,
     pub shortcuts_rebind_request: Arc<Mutex<Option<RebindRequest>>>,

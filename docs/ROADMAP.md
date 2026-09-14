@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-10 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2137 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-15 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2158 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -1060,7 +1060,7 @@ remains of the seam work:
 - a focus/caret context type, only if a future change actually needs to
   test those arms outside the loop — today nothing does;
 - the immutable-snapshot half of the settings/tray redesign stays deferred:
-  the 39-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses
+  the 40-field `SettingsFlags` / 11-field `TrayFlags` shared-memory buses
   remain (the `shell_flags` crate split moved this vocabulary out of the
   portable contract crate), to be revisited when a second native shell
   actually produces flags.
@@ -1107,7 +1107,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: snoozed transition, volatile `pid:N` (secure-field fail-closed live-proven 2026-07-07, `f6fa98b`) |
-| Per-app memory inspect/delete UI | count/delete_app ✅ | completed live in Apps pane; global `delete_all` and memory-mode controls are deferred UI work, not part of the current Personalization pane |
+| Per-app memory inspect/delete UI | count/delete_app ✅; global `delete_all` ✅ (Apps-pane "Erase All Recorded Inputs", confirm-gated, reaches apps below the 8 rendered rows, clears the live rings too); `recent` retrieval ✅ (per-app ring hydrated on first focus, same enable gate as the write path) | completed live in Apps pane; the AppKit button still needs a macOS LOOK pass; **erase only works before disabling** — `StorageMode::Off` drops the handle and the deletion UI with it, pending a load-without-create key API; per-domain deletion needs a schema column; memory-mode controls remain deferred UI work |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅; `setup-needed-docs-arc-onboarding` manual gate pins setup-needed UX in Arc/Docs | run the manual gate in Arc with Google Docs focused |

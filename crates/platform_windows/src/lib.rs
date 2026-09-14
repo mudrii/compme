@@ -139,8 +139,27 @@ impl platform::shell::ShellHost for WindowsShellHost {
         std::thread::sleep(heartbeat);
     }
 
+    /// Installed physical memory, for `model_catalog::ram_verdict`.
+    ///
+    /// This was hardcoded `0`, and 0 is not a harmless placeholder here: every
+    /// catalog entry has `min_ram_gb >= 1`, so `ram_verdict` rated all of them
+    /// `Exceeds` and `offerable_by_ram` refused every model on Windows — the
+    /// same defect `platform_linux` fixed when it replaced its own hardcoded 0.
+    /// It is unreachable today only because Windows has no settings window to
+    /// offer a download from; it would have become a "no models available"
+    /// Setup pane the moment one existed.
     fn physical_memory_bytes(&self) -> u64 {
-        0
+        #[cfg(windows)]
+        {
+            win_host::physical_memory_bytes()
+        }
+        // Off-Windows this type is only ever constructed by the workspace's own
+        // portability tests; 0 keeps the historical value for them rather than
+        // inventing a number for a host this adapter does not serve.
+        #[cfg(not(windows))]
+        {
+            0
+        }
     }
 
     fn open_url(&self, url: &str) -> Result<(), PlatformError> {
@@ -577,8 +596,39 @@ pub mod win_host {
         PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED,
     };
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
+    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
     use windows::Win32::UI::Shell::ShellExecuteW;
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+
+    /// Installed physical memory in bytes, via `GlobalMemoryStatusEx`.
+    ///
+    /// `dwLength` MUST be set to the struct size before the call — the API uses
+    /// it for versioning and fails outright without it, which is the classic way
+    /// this call silently returns nothing. Returns 0 on failure, the same
+    /// fail-closed value the scaffold used, so a refused query degrades to "no
+    /// model offered" rather than to a fabricated RAM figure that could offer a
+    /// model the machine cannot load.
+    ///
+    /// `GlobalMemoryStatusEx` reports memory visible to the OS, which is
+    /// slightly below installed RAM (firmware reservations). That direction is
+    /// the safe one for a RAM-fit gate: it can only make the check stricter.
+    pub fn physical_memory_bytes() -> u64 {
+        let mut status = MEMORYSTATUSEX {
+            dwLength: u32::try_from(std::mem::size_of::<MEMORYSTATUSEX>()).unwrap_or(0),
+            ..Default::default()
+        };
+        if status.dwLength == 0 {
+            return 0;
+        }
+        // SAFETY: `status` is a live, correctly sized, properly aligned
+        // MEMORYSTATUSEX owned by this frame, and `dwLength` is set to its size
+        // as the API requires. The call only writes into that struct and
+        // borrows nothing past its return.
+        match unsafe { GlobalMemoryStatusEx(&mut status) } {
+            Ok(()) => status.ullTotalPhys,
+            Err(_) => 0,
+        }
+    }
 
     pub fn open_url(url: &[u16]) -> Result<(), platform::PlatformError> {
         let operation = "open\0".encode_utf16().collect::<Vec<_>>();

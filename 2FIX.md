@@ -8,10 +8,77 @@
 > the refuted/merged/deferred IDs, Appendix C the known-open items tracked
 > elsewhere, and Appendix D the validation evidence summary.
 >
-> **How to use this file:** work top-down by WP. One WP = one coherent
-> change-set (usually one commit, sometimes two where a tripwire forces a
-> split). Tick items off by editing their `[ ]` boxes; when a WP lands,
-> note the commit hash on its header line.
+> **How to use this file:** this document is the **historical v0.1.6
+> implementation plan** (WP1–WP15). Those 69 items are checked and shipped
+> in tag `v0.1.6` (`6c0bea5`). Do not re-plan them. Current pending work
+> lives in `docs/ROADMAP.md` and
+> `docs/superpowers/plans/2026-09-08-full-audit-next-steps.md`. Evidence
+> per A-ID is in `FIXED.md`. The 2026-09-11 reanalysis below is the
+> start-here for "what is still open".
+
+## 2026-09-11 reanalysis (tree `8613a92`)
+
+Independent re-read of the ledger against current `main` (51 commits
+past the August `6b490be` review; published artifact is **v0.1.6**).
+Did not re-run the Full Local Gate, macOS serial tests, or `gh`.
+
+### Original A1–A15 (August ledger) — implemented, do not re-open
+
+Spot-checked, not re-derived:
+
+| ID | Still true in tree? |
+|---|---|
+| A1 live-test count | **Closed and restamped.** ROADMAP now says **37** (`:477`); `#[ignore =]` attrs are 33+1+1+1+1. Dedicated `check-linux-live-test-count.sh` exists. |
+| A2 FHS `PATH` | Code-complete in WP10 (`tools/dev/check.sh` runtime-bin). |
+| A3 exact-pin sentence | Reworded (WP5). |
+| A7/A10 caret+registry | `LinuxFieldRegistry` + `current_for` exist (`atspi_event_map.rs`). C.2 closed by probe (`ROADMAP.md:486`, `FIXED.md` A7). |
+| A8 `Replace` vs range | `NativeRangeSet` emits `ReplaceRange` (`engine_core.rs:1134`). |
+| A11 grammar-spec skip | **Closed.** `ci.yml:16-17` is now `docs/superpowers/plans/**` (specs take the full lane). |
+| A12 plan sequencing | Linux 2.1–2.5 no longer listed as remaining (`ROADMAP.md:1415-1424`). `AGENTS.md:65-67` is Linux-wired / Windows-scaffold. |
+| A41 fatal-without-a11y | `PlatformError::AccessibilityUnavailable` exists; G1 later reused the same variant for a missing accept tap (`b8d3626`). |
+| A50 trailing `\|` panic | `is_go_command` uses `tokens.first()` (`compat/src/lib.rs:513-516`). |
+| A53 `post_verify` | **Verified** on the v0.1.6 run (`2d18c34` / `FIXED.md:33`). |
+
+The other A16–A75 items remain historical WP work. `FIXED.md` is the
+per-ID evidence. Do not clone them into a new A-list.
+
+### What is actually open on `8613a92`
+
+Source of truth for sequencing:
+`docs/superpowers/plans/2026-09-08-full-audit-next-steps.md`
+(Qfd §20 ledger). ROADMAP header `:88-96` agrees; ROADMAP "Current
+execution order" item 7 (Windows Phase 1 at `:1425`) is **stale relative
+to that plan** — G6 verification is next, not UIA.
+
+| ID | Sev | Status | Next action |
+|---|---|---|---|
+| **G6** | Med | Code shipped `9b91b35`; **macOS serial lane RED** (run 34578291953). Logs unfetched (`gh` token expired, recorded in `8613a92`). | Re-auth, pull the failing test, fix or revert. **Not fixed until that lane is green.** |
+| **G7** | Med | OPEN | Marshal Carbon register/unregister to the main thread. After G6 is green. |
+| **G20** | Info | OPEN | Annotate bare `unsafe` blocks while item 6 is open. |
+| **G11 policy** | Med | Recording table exists; 22 LOOK IDs still not closed | Owner: record or change the ready-to-tag policy. |
+| **ln1** | — | Code for G1 shipped; live niri row unchecked | Owner Wayland session (`MANUAL-VALIDATION-LINUX.md`). |
+| **G2 Chromium live** | — | Code closed; live recording attached to caret-marker gates | Granted Mac. |
+| **G14** | Low | OPEN (pre-emptive) | `&exp=` on signed `compme://` before any irreversible command. |
+| **G15** | Low | OPEN (decision) | Warm-up vs 250 ms hard-exit watchdog. |
+| **G19** | Med | DEFERRED | Release-workflow checkout `persist-credentials`; next tag. |
+| **Windows Phase 1** | — | Not started | After item 6; `physical_memory_bytes` is now a real `GlobalMemoryStatusEx` probe (2026-09-15, UNVERIFIED — no windows lane run since); first remaining slice is `RtlGetVersion`. |
+| **22 macOS LOOK gates** | — | Unchanged owner evidence | `docs/ACCEPTANCE.md` ledger. |
+
+Closed since the August review and **not** to be re-filed: G1, G2–G5, G8
+(all three slices including overlay collapse `02eaaaf`), G9, G10, G12,
+G13, G16 (incl. Wayland overlay capability `3e061ba`), G17, G18, C.2
+`shown=0`, v0.1.6 `post_verify`, settings-command + host-event seams
+(`bbf3724`/`4584b35`).
+
+### Working-tree note
+
+`AGENTS.md` has one uncommitted Lessons line (CLI flag spelling). Not a
+product finding. `.gate/*.log` files are untracked local gate output.
+
+### Do not treat `2FIX.md` WP boxes as the current queue
+
+Every `[x]` below is the August 25–26 implementation record. Current
+work is G6 verification, then G7/G20, then Windows 1.1.
 
 ## Implementation audit — 2026-08-25
 
@@ -1244,10 +1311,13 @@ re-planned.
   tag**; follow the run through every environment approval and verify the
   published cask/checksum end-to-end before reporting success.
 - **Windows Phase 1**: per WP5/A33's recorded decision. The scaffold is
-  honest (`UnsupportedField` everywhere; `physical_memory_bytes`
-  hardcoded 0 at `platform_windows/src/lib.rs:142-144` is the known
-  RAM-fit trap to fix when the phase starts). Do not start before C.2
-  produces a ghost.
+  honest (`UnsupportedField` everywhere). The `physical_memory_bytes`
+  RAM-fit trap — hardcoded 0, which made `ram_verdict` rate every catalog
+  entry `Exceeds` — was closed 2026-09-15 with a real
+  `GlobalMemoryStatusEx` probe, but **that hunk has never been compiled**:
+  it is `cfg(windows)` and the only lane that builds it is
+  `windows-latest`. Treat it as unverified until that lane is green. Do
+  not start the rest of the phase before C.2 produces a ghost.
 - **Governance** (required reviewers, tag-creation scope, release-env
   self-approval): owner decisions, compensated meanwhile by the weekly
   read-only governance check. Revisit when a second maintainer exists.

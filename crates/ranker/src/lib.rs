@@ -68,9 +68,54 @@ pub fn truncate_at_sentence_end(text: &str) -> &str {
     text
 }
 
+/// Abbreviations whose period is essentially NEVER a sentence end, so cutting
+/// there truncates a completion mid-phrase ("Dr." out of "Dr. Chen will call").
+///
+/// The list is deliberately SHORT, and everything on it is a word that
+/// essentially never ends an English sentence. Candidates that were considered
+/// and rejected, because running a single-line ghost past a real sentence
+/// boundary is the worse failure:
+///
+/// - `etc.`, `Inc.`, `Ltd.`, `Jr.` — all common sentence-enders.
+/// - `no.` — far more often the word "no" ending a sentence ("The answer is
+///   no. We should move on") than the ordinal "No. 5".
+/// - `st.`, `est.` — same problem ("head west. Then", "the highest est.").
+/// - Dotted single-letter runs (`U.S.`, `a.m.`, `Ph.D.`) — a rule for these was
+///   written and removed: it rescues "the U.S. economy" but breaks "at 9 a.m.
+///   Then we left", and the second shape is at least as common mid-completion.
+const NON_TERMINAL_ABBREVIATIONS: &[&str] = &[
+    "e.g.", "i.e.", "dr.", "mr.", "mrs.", "ms.", "prof.", "vs.", "fig.", "cf.",
+];
+
 fn is_common_abbreviation_period(text: &str, period_index: usize) -> bool {
-    let prefix = text[..period_index + 1].to_ascii_lowercase();
-    ["e.g.", "i.e."].iter().any(|abbr| prefix.ends_with(abbr))
+    let prefix = text[..period_index + 1].to_lowercase();
+    if !NON_TERMINAL_ABBREVIATIONS
+        .iter()
+        .any(|abbr| prefix.ends_with(abbr))
+    {
+        return false;
+    }
+    // Only when the abbreviation is a whole token: "addr." must not match
+    // "dr.", and "vs." must not fire inside a URL-ish "elvs.".
+    //
+    // Slicing is safe for any input: every entry is ASCII and `ends_with` is a
+    // byte-suffix test, so `len - matched` always lands on a char boundary even
+    // when `to_lowercase` changed the byte length earlier in the string.
+    let head = &prefix[..prefix.len() - matched_abbreviation_len(&prefix)];
+    head.chars()
+        .next_back()
+        .is_none_or(|c| !c.is_alphanumeric())
+}
+
+/// Length in bytes of the entry from [`NON_TERMINAL_ABBREVIATIONS`] that
+/// `prefix` ends with. Longest match wins so "mrs." is not scored as "s.".
+fn matched_abbreviation_len(prefix: &str) -> usize {
+    NON_TERMINAL_ABBREVIATIONS
+        .iter()
+        .filter(|abbr| prefix.ends_with(*abbr))
+        .map(|abbr| abbr.len())
+        .max()
+        .unwrap_or(0)
 }
 
 /// Drop a trailing run of `candidate` words that the user already has to the
@@ -442,6 +487,72 @@ mod tests {
         // whitespace.
         assert_eq!(truncate_at_sentence_end("e.g. this"), "e.g. this");
         assert_eq!(truncate_at_sentence_end("i.e. this"), "i.e. this");
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_keeps_titles_and_dotted_initials_whole() {
+        // Titles and reference abbreviations essentially never end a sentence;
+        // cutting there truncated the completion mid-phrase.
+        assert_eq!(
+            truncate_at_sentence_end("Dr. Chen will call"),
+            "Dr. Chen will call"
+        );
+        assert_eq!(
+            truncate_at_sentence_end("Mr. and Mrs. Diaz"),
+            "Mr. and Mrs. Diaz"
+        );
+        assert_eq!(
+            truncate_at_sentence_end("see Fig. 4 below"),
+            "see Fig. 4 below"
+        );
+        assert_eq!(truncate_at_sentence_end("us vs. them"), "us vs. them");
+    }
+
+    #[test]
+    fn abbreviation_allowlist_stays_out_of_sentence_ending_words() {
+        // These all LOOK like abbreviations but are ordinary sentence enders
+        // far more often, so they are deliberately absent from the allowlist.
+        // A ghost that runs past a real boundary is worse than one cut early.
+        assert_eq!(
+            truncate_at_sentence_end("The answer is no. We should move on"),
+            "The answer is no."
+        );
+        assert_eq!(
+            truncate_at_sentence_end("we headed west. Then home"),
+            "we headed west."
+        );
+        // Dotted single-letter runs: a rule to keep "U.S." whole would also
+        // swallow this, which is the commoner shape.
+        assert_eq!(
+            truncate_at_sentence_end("landed at 9 a.m. Then we left"),
+            "landed at 9 a.m."
+        );
+    }
+
+    #[test]
+    fn truncate_at_sentence_end_still_cuts_after_sentence_ending_abbreviations() {
+        // `etc.`/`Inc.` are deliberately NOT in the allowlist: they end sentences
+        // often enough that skipping them would run a single-line ghost past a
+        // real boundary, which is the worse failure.
+        assert_eq!(
+            truncate_at_sentence_end("bring pens, etc. Then go"),
+            "bring pens, etc."
+        );
+        assert_eq!(
+            truncate_at_sentence_end("paid Acme Inc. Next week"),
+            "paid Acme Inc."
+        );
+    }
+
+    #[test]
+    fn abbreviation_allowlist_only_matches_whole_tokens() {
+        // A word merely ENDING in an allowlisted abbreviation must still cut:
+        // "addr." must not be excused because it ends with "dr.".
+        assert_eq!(
+            truncate_at_sentence_end("set the addr. Then run"),
+            "set the addr."
+        );
+        assert_eq!(truncate_at_sentence_end("the elvs. Then"), "the elvs.");
     }
 
     #[test]

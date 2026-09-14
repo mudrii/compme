@@ -11,7 +11,15 @@
 //! Storage is **opt-in**: with [`StorageMode::Off`] (the default) nothing is
 //! recorded. `AcceptedOnly` stores accepted completions; `AllMonitored` is the
 //! broader opt-in. Records are inspectable (`count`/`recent`) and deletable
-//! (`delete_all`, `delete_app`).
+//! (`delete_all`, `delete_app`). `Off` stops collection but erases nothing, so
+//! the host is expected to keep an existing store OPEN in that mode: the
+//! deletion controls are what make "disable and erase" possible, and dropping
+//! the handle would strand the data a user just decided to stop adding to.
+//!
+//! `recent` is the retrieval half the host replays into its previous-input
+//! prompt context, so records outlive a restart as *usable* context rather than
+//! as a write-only log. Retrieval is recency-ordered per app; there is no FTS5
+//! index and no similarity ranking yet.
 //!
 //! **0.x schema policy:** the current SQLite schema is immutable. The first
 //! schema-changing release must introduce `PRAGMA user_version` and a
@@ -261,9 +269,28 @@ impl MemoryStore {
         conn.pragma_update(None, "secure_delete", true)?;
         // Pin journal_mode = DELETE so there is no persistent WAL/-shm sidecar
         // leaking ciphertext/metadata (sidecars are not covered by secure_delete);
-        // the rollback journal is deleted on commit. query_value, not _update:
-        // journal_mode reports the resulting mode back.
-        conn.pragma_update(None, "journal_mode", "DELETE")?;
+        // the rollback journal is deleted on commit.
+        //
+        // journal_mode is one of the pragmas that REPORTS THE RESULTING MODE
+        // back, and SQLite can refuse the change (e.g. a WAL database with a
+        // live reader) while still returning success to a plain `execute`. Read
+        // the answer and fail closed on anything but "delete": silently keeping
+        // WAL would leave a -wal/-shm sidecar holding ciphertext beside a store
+        // whose whole point is that only encrypted bytes reach disk.
+        let journal_mode: String =
+            conn.pragma_update_and_check(None, "journal_mode", "DELETE", |row| row.get(0))?;
+        // "memory" is the in-memory connection's answer (`open_in_memory`):
+        // SQLite cannot journal to a file it does not have, and a database with
+        // no file has no sidecar to leak, so that mode satisfies the same
+        // property. Anything else — "wal" above all — is refused.
+        if !matches!(
+            journal_mode.to_ascii_lowercase().as_str(),
+            "delete" | "memory"
+        ) {
+            return Err(MemoryError::Db(format!(
+                "refusing memory store: journal_mode is {journal_mode}, not delete"
+            )));
+        }
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memories (
                  id   INTEGER PRIMARY KEY AUTOINCREMENT,

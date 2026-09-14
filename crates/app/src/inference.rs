@@ -57,7 +57,18 @@ fn record_recent(buf: &mut VecDeque<String>, text: &str) {
 }
 
 impl PreviousInputs {
-    const CAPACITY: usize = 5;
+    pub(crate) const CAPACITY: usize = 5;
+
+    /// Whether this process already holds a ring for `app`. Lets the run loop
+    /// skip the store read on every focus after the first — `seed_if_empty`
+    /// re-checks under the lock, so a race here only wastes a query.
+    pub(crate) fn has_ring(&self, app: &str) -> bool {
+        self.inner
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .per_app
+            .contains_key(app)
+    }
 
     /// Record an accepted completion for `app`, redacting before storage.
     /// Existing duplicates move to newest and the oldest unique entry is evicted
@@ -105,12 +116,76 @@ impl PreviousInputs {
             .unwrap_or_default()
     }
 
+    /// Forget every in-process ring, per-app and cross-app.
+    ///
+    /// Erasing the store is not enough on its own: once a ring is seeded it
+    /// keeps steering completions for the rest of the process, and `has_ring`
+    /// would stop any later read from refreshing it — so the text a user just
+    /// confirmed "permanently erased" would stay in the prompt until relaunch.
+    /// The deletion phases call this so erase means erase.
+    pub(crate) fn clear_all(&self) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.per_app.clear();
+        state.cross_app.clear();
+    }
+
+    /// Forget one app's ring. Used by the per-app delete edge. The cross-app
+    /// ring is cleared too: it holds a merged copy with no source attribution,
+    /// so the deleted app's prose cannot be removed from it selectively, and
+    /// keeping it would leak exactly what the delete was meant to remove.
+    pub(crate) fn clear_app(&self, app: &str) {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        state.per_app.remove(app);
+        state.cross_app.clear();
+    }
+
     pub fn clear_cross_app(&self) {
         self.inner
             .lock()
             .unwrap_or_else(|e| e.into_inner())
             .cross_app
             .clear();
+    }
+
+    /// Seed this process's `app` ring from persisted records, newest first, the
+    /// first time the app is focused (design spec §6/§16 retrieval-augmented
+    /// prompting). Without this the encrypted store is write-only: records
+    /// survive a restart but nothing reads them, so every launch begins with no
+    /// previous-input context at all.
+    ///
+    /// Only seeds an app with no ring yet — once this process has recorded a
+    /// live accept for `app`, that fresher in-memory history wins and a reseed
+    /// would resurrect older prose behind it. Returns whether it seeded.
+    ///
+    /// **Per-app ring only, deliberately.** The cross-app ring is a live opt-in
+    /// that `clear_cross_app` empties when the user turns sharing off, precisely
+    /// so previously shared prose cannot reappear after a later re-enable.
+    /// Seeding it from disk would undo exactly that guarantee.
+    pub(crate) fn seed_if_empty(&self, app: &str, newest_first: Vec<String>) -> bool {
+        let mut state = self.inner.lock().unwrap_or_else(|e| e.into_inner());
+        if state.per_app.contains_key(app) {
+            return false;
+        }
+        // `record_recent` appends newest-at-back and `recent_for_scope` reverses,
+        // so replay oldest-first to land the store's newest entry at the back.
+        // Routing through `record_recent` (rather than building the deque here)
+        // keeps the capacity bound and the move-duplicates-to-newest rule in one
+        // place; a store whose rows outnumber CAPACITY keeps the newest ones.
+        let buf = state.per_app.entry(app.to_string()).or_default();
+        let mut seeded = false;
+        for text in newest_first.into_iter().rev() {
+            if text.trim().is_empty() {
+                continue;
+            }
+            record_recent(buf, &text);
+            seeded = true;
+        }
+        if !seeded {
+            // Leave no empty ring behind: an all-blank read must not count as
+            // "already hydrated" and block a later, non-empty seed.
+            state.per_app.remove(app);
+        }
+        seeded
     }
 }
 
@@ -1727,6 +1802,70 @@ mod tests {
         previous.record("app", "other".into());
         previous.record("app", "same".into());
         assert_eq!(previous.recent("app"), vec!["same", "other"]);
+    }
+
+    #[test]
+    fn seed_if_empty_replays_stored_records_newest_first() {
+        let previous = PreviousInputs::default();
+        assert!(previous.seed_if_empty(
+            "app",
+            vec!["newest".into(), "middle".into(), "oldest".into()]
+        ));
+        assert_eq!(
+            previous.recent("app"),
+            vec!["newest", "middle", "oldest"],
+            "the store's newest record must stay newest after the replay"
+        );
+        assert!(previous.has_ring("app"));
+    }
+
+    #[test]
+    fn seed_if_empty_refuses_an_app_that_already_has_history() {
+        let previous = PreviousInputs::default();
+        previous.record("app", "live accept".into());
+        assert!(!previous.seed_if_empty("app", vec!["stored".into()]));
+        assert_eq!(
+            previous.recent("app"),
+            vec!["live accept"],
+            "this session's history is never displaced by older stored prose"
+        );
+    }
+
+    #[test]
+    fn seed_if_empty_keeps_the_newest_records_when_the_store_exceeds_capacity() {
+        let previous = PreviousInputs::default();
+        let stored: Vec<String> = (0..PreviousInputs::CAPACITY + 3)
+            .map(|i| format!("record{i}"))
+            .collect();
+        assert!(previous.seed_if_empty("app", stored));
+        let recent = previous.recent("app");
+        assert_eq!(recent.len(), PreviousInputs::CAPACITY);
+        assert_eq!(
+            recent[0], "record0",
+            "record0 is the store's newest and must survive the cap"
+        );
+    }
+
+    #[test]
+    fn seed_if_empty_never_touches_the_cross_app_ring() {
+        // The cross-app ring is a live opt-in that `clear_cross_app` empties so
+        // shared prose cannot reappear after a re-enable. Seeding it from disk
+        // would defeat exactly that, so hydration is per-app only.
+        let previous = PreviousInputs::default();
+        assert!(previous.seed_if_empty("app", vec!["stored".into()]));
+        assert!(previous.recent_for_scope("app", true).is_empty());
+    }
+
+    #[test]
+    fn seed_if_empty_leaves_no_ring_behind_for_an_all_blank_read() {
+        let previous = PreviousInputs::default();
+        assert!(!previous.seed_if_empty("app", vec!["".into(), "   ".into()]));
+        assert!(
+            !previous.has_ring("app"),
+            "a blank read must not block a later, real seed"
+        );
+        assert!(previous.seed_if_empty("app", vec!["real".into()]));
+        assert_eq!(previous.recent("app"), vec!["real"]);
     }
 
     #[test]

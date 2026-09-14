@@ -154,6 +154,24 @@ source stays free of product-shaped vocabulary.
 These helpers avoid platform dependencies and are tested with Unicode-safe
 cases.
 
+**`build_context_block` and prompt injection — the accepted boundary.** The
+block carries text the user did not type (clipboard, screen OCR) into the model
+prompt under a `Context (for reference only):` header. Whitespace runs including
+newlines are collapsed to single spaces, so a multi-line source cannot forge a
+new directive line or escape the block — but a *single-line* instruction inside
+copied text does reach the model verbatim. That is accepted, not overlooked:
+both sources are opt-in and off by default (`COMPME_CLIPBOARD_CONTEXT`,
+`COMPME_SCREEN_CONTEXT`, and `context_max_chars` defaulting to 0, which returns
+an empty block), the model is local, and a steered completion can only become
+ghost text — `engine_core` cuts it at the first line break, truncates it at one
+sentence, caps its word count, and drops degenerate repeats before display.
+Nothing interprets or executes it. The one residual path worth naming: if the
+user *accepts* a steered completion it is inserted into the field and recorded
+into the previous-input ring and the memory store, so it can influence later
+prompts — but only through an explicit accept, and still only as text. Anything
+that gives model output a side effect beyond insertion would invalidate this
+reasoning and must revisit it.
+
 ### `ranker`
 
 `ranker` contains lightweight candidate shaping:
@@ -308,6 +326,32 @@ Keychain (A3 live integration), tests use a fixed key. Storage is opt-in —
 `StorageMode::Off` is the default and records nothing; `AcceptedOnly` stores
 accepted completions, `AllMonitored` is the broader opt-in. Records are
 inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
+Both halves are reachable from the product. On the first focus of an app the run
+loop replays that app's stored records into the volatile previous-input ring
+(`hydrate_previous_inputs`), so an accept collected in an earlier session can
+still steer a completion after a relaunch. Retrieval and recording resolve their
+enable gate through the same function, `previous_input_context_chars` — *not* the
+raw `context_bound`, which is floored to a positive default so a clipboard or
+screen source enabled after launch still has a budget, and so is nonzero even
+when previous-input context is off. Retrieval additionally honours the per-app
+collection policy and skips volatile `pid:N` keys, matching the write path. It is
+per-app only: the cross-app ring is a live opt-in that `clear_cross_app` empties
+when the user turns sharing off, and seeding it from disk would defeat that.
+
+The Apps pane's "Erase All Recorded Inputs" button drives `delete_all` behind a
+Cancel-default confirm; it is the only control that reaches an app ranked below
+the eight rendered rows. Both deletion paths also clear the matching in-process
+rings (`PreviousInputs::clear_all` / `clear_app`) — without that, records the
+user just erased would keep steering completions until the next launch, and the
+"already hydrated" check would stop any later read from refreshing them.
+
+**Known gap:** `StorageMode::Off` drops the store handle, so switching collection
+off also hides the deletion UI — a user must erase *before* disabling. Opening
+the store read/delete-only under `Off` was implemented and reverted: it requires
+a load-*without*-create key API first, because `load_or_create_memory_key` mints
+a fresh OS key-store entry on first use, so a leftover database path would make a
+launch with memory disabled create a keychain item and prompt for access. Closing
+it is a `ShellHost` trait change across all three adapters.
 `AllMonitored` records only established inserted-text deltas after a baseline;
 it does not scrape pre-existing field text. The run loop blocks collection for
 secure input, disabled/snoozed/excluded policy, stale browser-domain state when
