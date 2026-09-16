@@ -737,7 +737,7 @@ fn dispatch_focused_element_poll(
     notification: ObserverNotification,
     dispatch: ObserverDispatch,
     callback_tx: mpsc::Sender<CallbackMessage>,
-    last_dispatched: &mut Option<(String, Option<ScreenRect>)>,
+    last_dispatched: &mut HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)>,
 ) {
     let Ok(event) = resolve_focused_or_app_event(pid, notification) else {
         return;
@@ -748,6 +748,7 @@ fn dispatch_focused_element_poll(
     // would only re-drive overlay geometry for the same answer.
     if !focused_poll_changed(
         last_dispatched,
+        (pid, notification),
         event.identity.field_element_id(),
         event.rect,
     ) {
@@ -761,17 +762,32 @@ fn dispatch_focused_element_poll(
 /// reports `true` on any identity or rect change, `false` when the pair is
 /// identical to the previously dispatched one.
 fn focused_poll_changed(
-    last: &mut Option<(String, Option<ScreenRect>)>,
+    last: &mut HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)>,
+    key: (i32, ObserverNotification),
     identity_key: String,
     rect: Option<ScreenRect>,
 ) -> bool {
     let next = (identity_key, rect);
-    if *last == Some(next.clone()) {
+    if last.get(&key) == Some(&next) {
         false
     } else {
-        *last = Some(next);
+        last.insert(key, next);
         true
     }
+}
+
+/// Record what a consumer was actually told, so the safety poll tracks the
+/// delivered state and not merely its own history (G21). Without this an
+/// X -> Y -> X round trip completing inside one 250 ms tick, where the
+/// observer delivers Y but misses the return to X, leaves the poll memoized
+/// on X and it never re-announces - stranding the consumer on Y.
+fn remember_dispatched_poll(
+    last: &mut HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)>,
+    key: (i32, ObserverNotification),
+    identity_key: String,
+    rect: Option<ScreenRect>,
+) {
+    last.insert(key, (identity_key, rect));
 }
 
 fn resolve_focused_or_app_event(
@@ -820,7 +836,12 @@ fn run_ax_worker_loop<L, F>(
     // G6: the last dispatched safety-poll (identity, rect) — unchanged
     // polls skip the callback dispatch instead of re-driving overlay
     // geometry for an identical state.
-    let mut last_focused_poll: Option<(String, Option<ScreenRect>)> = None;
+    // G21: one entry per (pid, notification). A single shared slot let
+    // the focus poller's (identity, None) pair spend the caret poller's
+    // dispatch and vice versa, because each consumer hard-filters on
+    // notification kind and drops the other's event on the floor.
+    let mut last_focused_poll: HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)> =
+        HashMap::new();
 
     loop {
         let received = match deferred.take() {
@@ -914,6 +935,15 @@ fn run_ax_worker_loop<L, F>(
                     notification,
                     retained_element,
                     &fallback_element_id,
+                );
+                // G21: the poll memo follows what the consumer was told, so
+                // a later return to a previous state still reads as a change
+                // and the 250 ms safety net can re-announce it.
+                remember_dispatched_poll(
+                    &mut last_focused_poll,
+                    (pid, notification),
+                    event.identity.field_element_id(),
+                    event.rect,
                 );
                 let _ = callback_tx.send(CallbackMessage::Dispatch { dispatch, event });
                 worker_loop.pump_run_loop();
@@ -1018,7 +1048,7 @@ fn set_ax_messaging_timeout(timeout_seconds: f32) -> Result<(), PlatformError> {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub(crate) enum ObserverNotification {
     FocusChanged,
     CaretChanged,
@@ -1839,7 +1869,8 @@ mod tests {
         // unchanged (identity, rect) is pure waste — the first poll
         // dispatches, an identical one skips, and any change dispatches
         // again.
-        let mut last: Option<(String, Option<ScreenRect>)> = None;
+        let mut last = HashMap::new();
+        let key = (501, ObserverNotification::FocusChanged);
         let rect = || {
             Some(ScreenRect {
                 x: 1.0,
@@ -1849,22 +1880,92 @@ mod tests {
             })
         };
 
-        assert!(focused_poll_changed(&mut last, "ax:field".into(), rect()));
+        assert!(focused_poll_changed(
+            &mut last,
+            key,
+            "ax:field".into(),
+            rect()
+        ));
         assert!(
-            !focused_poll_changed(&mut last, "ax:field".into(), rect()),
+            !focused_poll_changed(&mut last, key, "ax:field".into(), rect()),
             "identical (identity, rect) skips"
         );
         assert!(
-            focused_poll_changed(&mut last, "ax:field".into(), None),
+            focused_poll_changed(&mut last, key, "ax:field".into(), None),
             "a lost rect is a change"
         );
         assert!(
-            focused_poll_changed(&mut last, "ax:other".into(), None),
+            focused_poll_changed(&mut last, key, "ax:other".into(), None),
             "a new identity is a change"
         );
         assert!(
-            focused_poll_changed(&mut last, "ax:other".into(), rect()),
+            focused_poll_changed(&mut last, key, "ax:other".into(), rect()),
             "a regained rect is a change"
+        );
+    }
+
+    #[test]
+    fn focused_poll_memo_is_kept_per_pid_and_notification() {
+        // G21: two safety pollers run against one worker - one registered
+        // for FocusChanged, one for CaretChanged - and each consumer drops
+        // the other kind. observer_caret_rect returns None for anything but
+        // CaretChanged, so the focus poll always presents (identity, None);
+        // when the caret rect is unresolvable too (non-text focus,
+        // Chromium/Electron without AXSelectedTextRange, an AX timeout) the
+        // caret poll presents the identical pair. A memo shared across kinds
+        // let the focus poll spend the caret poll's dispatch, and in that
+        // steady state neither consumer was ever told again.
+        let mut last = HashMap::new();
+        let focus = (501, ObserverNotification::FocusChanged);
+        let caret = (501, ObserverNotification::CaretChanged);
+
+        assert!(focused_poll_changed(
+            &mut last,
+            focus,
+            "ax:field".into(),
+            None
+        ));
+        assert!(
+            focused_poll_changed(&mut last, caret, "ax:field".into(), None),
+            "the caret poll must still dispatch: the focus poll's event went to a consumer that filters it out"
+        );
+        assert!(
+            !focused_poll_changed(&mut last, focus, "ax:field".into(), None),
+            "each kind still suppresses its own unchanged repeat"
+        );
+        assert!(
+            !focused_poll_changed(&mut last, caret, "ax:field".into(), None),
+            "each kind still suppresses its own unchanged repeat"
+        );
+        assert!(
+            focused_poll_changed(
+                &mut last,
+                (502, ObserverNotification::FocusChanged),
+                "ax:field".into(),
+                None
+            ),
+            "a different pid must not inherit another app's memo entry"
+        );
+    }
+
+    #[test]
+    fn observer_dispatch_refreshes_the_poll_memo() {
+        // G21: an X -> Y -> X round trip completing inside one 250 ms tick,
+        // where the observer delivers Y but misses the return to X, must
+        // still let the safety poll re-announce X - the poll is the net that
+        // exists for the callbacks the AX server drops.
+        let mut last = HashMap::new();
+        let key = (501, ObserverNotification::FocusChanged);
+
+        assert!(focused_poll_changed(&mut last, key, "ax:X".into(), None));
+        remember_dispatched_poll(&mut last, key, "ax:Y".into(), None);
+        assert!(
+            focused_poll_changed(&mut last, key, "ax:X".into(), None),
+            "focus returned to X and the observer missed it - the poll must dispatch"
+        );
+        assert!(
+            !focused_poll_changed(&mut last, key, "ax:X".into(), None),
+            "and having announced X, an unchanged repeat still skips"
         );
     }
 
