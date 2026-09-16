@@ -1760,10 +1760,19 @@ mod tests {
         let (started_tx, _started_rx) = mpsc::channel();
 
         run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+        // The callbacks thread is the consumer and nothing else joins it, so
+        // without this the assert races the dispatch it is measuring. Drop
+        // sends Stop and joins, and the channel is FIFO, so every Dispatch
+        // queued ahead of that Stop has run by the time this returns.
+        drop(callback_dispatcher);
 
+        // Snapshot before asserting: a guard held across a failing assert
+        // poisons the mutex, the callbacks thread then panics unwrapping it,
+        // and the poison cascade buries the values that explain the failure.
+        let delivered = delivered.lock().unwrap().clone();
         assert_eq!(
-            delivered.lock().unwrap().as_slice(),
-            ["ax:newest".to_string()].as_slice(),
+            delivered.as_slice(),
+            [pointer_identity("ax:newest").field_element_id()].as_slice(),
             "one resolve, from the newest element — the burst never reached a consumer"
         );
     }
@@ -1805,10 +1814,17 @@ mod tests {
         let (started_tx, _started_rx) = mpsc::channel();
 
         run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+        // Same delivery barrier as the coalescing test above.
+        drop(callback_dispatcher);
 
+        let delivered = delivered.lock().unwrap().clone();
         assert_eq!(
-            delivered.lock().unwrap().as_slice(),
-            ["ax:first".to_string(), "ax:second".to_string()].as_slice(),
+            delivered.as_slice(),
+            [
+                pointer_identity("ax:first").field_element_id(),
+                pointer_identity("ax:second").field_element_id(),
+            ]
+            .as_slice(),
             "the deferred job splits the burst; both sides still deliver"
         );
         assert!(
