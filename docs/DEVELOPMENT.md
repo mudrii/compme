@@ -209,7 +209,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~2160 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~2163 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -263,6 +263,8 @@ tools/acceptance/run-linux-atspi-session.sh --self-test
 tools/release/check-linux-live-test-count.sh --self-test
 tools/release/check-model-client-features.sh
 tools/release/check-model-client-features.sh --self-test
+tools/release/check-vendor-drift.sh
+tools/release/check-vendor-drift.sh --self-test
 tools/release/check-agent-briefs.sh
 tools/release/check-agent-briefs.sh --self-test
 tools/release/check-privacy-policy.sh
@@ -290,7 +292,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~2160 tests. The `tools/spike` workspace is separate from the
+The root suite is ~2163 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 24 portable crates and

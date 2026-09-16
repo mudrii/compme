@@ -21,11 +21,13 @@
 //! as a write-only log. Retrieval is recency-ordered per app; there is no FTS5
 //! index and no similarity ranking yet.
 //!
-//! **0.x schema policy:** the current SQLite schema is immutable. The first
-//! schema-changing release must introduce `PRAGMA user_version` and a
-//! transactional migration helper before changing the table definition; an
-//! existing encrypted store must never be treated as though it were newly
-//! created under a different schema.
+//! **0.x schema policy:** the current SQLite schema is immutable and is stamped
+//! into the database header as `PRAGMA user_version` = `SCHEMA_VERSION`. Every
+//! open reads that marker back and refuses a database a newer build wrote. The
+//! first schema-changing release bumps the constant and adds a transactional
+//! migration that upgrades an existing encrypted store in place; an existing
+//! store must never be treated as though it were newly created under a
+//! different schema.
 //!
 //! Filesystem permission and symlink hardening is Unix-only: all 13 associated
 //! implementation/regression `#[cfg(unix)]` sites have no Windows ACL analogue
@@ -39,6 +41,12 @@ use rusqlite::{params, Connection};
 use zeroize::Zeroize;
 
 const NONCE_LEN: usize = 12;
+
+/// Schema version stamped into `PRAGMA user_version` (see the 0.x schema policy
+/// in the module docs). Version 1 is the original — and so far only — schema, so
+/// the first schema change bumps this to 2 in the same commit as the migration
+/// that upgrades a version-1 store.
+const SCHEMA_VERSION: i64 = 1;
 
 /// Upper bound on stored records. After each insert the store trims oldest-first
 /// (lowest id) back down to this cap. Paired with [`MAX_RECORD_CHARS`] (a
@@ -290,6 +298,34 @@ impl MemoryStore {
             return Err(MemoryError::Db(format!(
                 "refusing memory store: journal_mode is {journal_mode}, not delete"
             )));
+        }
+        // The schema marker, checked BEFORE any DDL runs so a database this
+        // build does not understand is never written to. Like journal_mode
+        // above, the value is read back and the unexpected case fails closed:
+        // SQLite stores `user_version` in the header and never interprets it, so
+        // it is only worth stamping if every open acts on what it reads.
+        let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        match user_version {
+            // 0 is BOTH a brand-new database (SQLite's default) and every store
+            // written before this marker existed. Those two are byte-identical —
+            // this change adds no column, only the stamp — so adopting 0 as
+            // version 1 is a label, not a migration, and it is the only option
+            // that does not lock every existing install out of its own records.
+            // The first real schema change gets version 2 and an explicit
+            // 1 -> 2 upgrade; 0 keeps meaning "the original schema".
+            0 => conn.pragma_update(None, "user_version", SCHEMA_VERSION)?,
+            SCHEMA_VERSION => {}
+            // A NEWER build wrote this file (or something corrupted the header).
+            // Its rows may follow a schema this build cannot read, so opening it
+            // would mislabel or silently drop a user's records — and the row cap
+            // in `store` would start evicting them. Refusing is the whole point
+            // of the marker.
+            other => {
+                return Err(MemoryError::Db(format!(
+                    "refusing memory store: schema version {other} is not {SCHEMA_VERSION} \
+                     (database written by a newer build?)"
+                )))
+            }
         }
         conn.execute(
             "CREATE TABLE IF NOT EXISTS memories (
@@ -577,16 +613,100 @@ mod tests {
             "read the doc comment above before restamping this literal"
         );
 
-        // No migration machinery exists yet, so the version must still be the
-        // SQLite default. The first schema change flips this to 1 and adds the
-        // upgrade path.
+        // A fresh store is stamped with the current schema version, so the DDL
+        // above and the marker can never drift apart.
         let user_version: i64 = store
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(
-            user_version, 0,
-            "a non-zero user_version means a migration landed: update this test with it"
+            user_version, SCHEMA_VERSION,
+            "a different user_version means a migration landed: update this test with it"
+        );
+    }
+
+    #[test]
+    fn a_stamped_database_reopens_and_keeps_its_schema_version() {
+        // The marker must survive a close/reopen cycle and must not be re-stamped
+        // into something else: the stamp is written once, on a version-0 file.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(80), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "first run").unwrap();
+        }
+        let reopened = MemoryStore::open(&path, &key(80), StorageMode::AcceptedOnly).unwrap();
+        let version: i64 = reopened
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let rows = reopened.recent("app", 4).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(version, SCHEMA_VERSION);
+        assert_eq!(rows, vec!["first run".to_string()]);
+    }
+
+    #[test]
+    fn a_pre_marker_database_is_adopted_at_the_current_version() {
+        // Every store written before the marker existed reads back as 0, and its
+        // schema is the one this build creates. Adopting it is the pinned policy:
+        // failing closed here would strand every existing install's records.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(81), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "written before the marker").unwrap();
+            // Rewind the header to what a pre-marker build left behind.
+            store
+                .conn
+                .pragma_update(None, "user_version", 0i64)
+                .unwrap();
+        }
+        let reopened = MemoryStore::open(&path, &key(81), StorageMode::AcceptedOnly).unwrap();
+        let version: i64 = reopened
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        let rows = reopened.recent("app", 4).unwrap();
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+
+        assert_eq!(
+            version, SCHEMA_VERSION,
+            "a version-0 store must be adopted and stamped, not refused"
+        );
+        assert_eq!(
+            rows,
+            vec!["written before the marker".to_string()],
+            "adoption must keep the existing records readable"
+        );
+    }
+
+    #[test]
+    fn a_future_schema_version_is_refused() {
+        // A database a newer build wrote may have columns or semantics this build
+        // does not know; opening it would mislabel or evict a user's records.
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(82), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "from the future").unwrap();
+            store
+                .conn
+                .pragma_update(None, "user_version", SCHEMA_VERSION + 1)
+                .unwrap();
+        }
+        let reopened = MemoryStore::open(&path, &key(82), StorageMode::AcceptedOnly);
+        let message = match &reopened {
+            Err(MemoryError::Db(msg)) => Some(msg.clone()),
+            _ => None,
+        };
+        drop(reopened);
+        let _ = std::fs::remove_file(&path);
+
+        let message = message.expect("a newer schema version must be refused as a Db error");
+        assert!(
+            message.contains("schema version 2"),
+            "the error must name the version it refused: {message}"
         );
     }
 
