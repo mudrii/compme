@@ -22,7 +22,10 @@ cd "$repo_root"
 # Pinned upstream release. Cross-checked against the three `=x.y.z` Cargo.toml
 # pins and the vendored manifest, so a bump cannot land in only some of them.
 expected_version="0.1.146"
-# sha256 of https://static.crates.io/crates/llama-cpp-2/llama-cpp-2-0.1.146.crate
+# sha256 of the published llama-cpp-2 0.1.146 registry tarball, as cargo
+# verified it on download. Ground truth comes from the local registry cache
+# only: this script performs NO network access, so it adds no egress host to
+# a product whose privacy gate reviews every one (check-privacy-policy.sh).
 upstream_sha256="f3b0f368c76cc0fe475e8257aeeec269e0d6569bd48b1f503efd0963fc3ee397"
 
 usage() {
@@ -183,26 +186,14 @@ locate_cached_crate() {
   done
 }
 
-fetch_crate() {
-  version="$1"
-  dest="$2"
-  if [ -n "${COMPME_VENDOR_DRIFT_OFFLINE:-}" ]; then
-    return 1
-  fi
-  command -v curl >/dev/null 2>&1 || return 1
-  curl -fsSL --max-time 60 \
-    -o "$dest" \
-    "https://static.crates.io/crates/llama-cpp-2/llama-cpp-2-$version.crate" 2>/dev/null
-}
-
 run_self_test() {
-  for name in COMPME_VENDOR_CRATE_PATH COMPME_VENDOR_DRIFT_OFFLINE; do
+  for name in COMPME_VENDOR_CRATE_PATH; do
     if printenv "$name" >/dev/null 2>&1; then
       echo "vendor drift self-test failed: inherited $name" >&2
       return 1
     fi
   done
-  unset COMPME_VENDOR_CRATE_PATH COMPME_VENDOR_DRIFT_OFFLINE
+  unset COMPME_VENDOR_CRATE_PATH
 
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-vendor-drift.XXXXXX")"
   # shellcheck disable=SC2064
@@ -322,8 +313,8 @@ run_self_test() {
     return 1
   fi
 
-  # Offline with no cached tarball degrades to a skip, not a gate failure.
-  COMPME_VENDOR_DRIFT_OFFLINE=1 COMPME_VENDOR_CRATE_PATH="$tmp/absent.crate" \
+  # No cached tarball degrades to a skip, not a gate failure.
+  COMPME_VENDOR_CRATE_PATH="$tmp/absent.crate" \
     "$script" >"$tmp/offline.out"
   grep -q '^vendor drift check skipped: ' "$tmp/offline.out"
 
@@ -366,13 +357,8 @@ trap 'rm -rf "$scratch"' EXIT
 crate_path="$(locate_cached_crate "$expected_version")"
 crate_source="the cargo registry cache"
 if [ -z "$crate_path" ]; then
-  if fetch_crate "$expected_version" "$scratch/upstream.crate"; then
-    crate_path="$scratch/upstream.crate"
-    crate_source="static.crates.io"
-  else
-    echo "vendor drift check skipped: no local llama-cpp-2-$expected_version.crate and it could not be fetched; run a cargo build (or set COMPME_VENDOR_CRATE_PATH) to populate the registry cache"
-    exit 0
-  fi
+  echo "vendor drift check skipped: no local llama-cpp-2-$expected_version.crate; run a cargo build (or set COMPME_VENDOR_CRATE_PATH) to populate the registry cache"
+  exit 0
 fi
 
 crate_sha="$(sha256_of "$crate_path")"
