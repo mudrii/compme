@@ -839,7 +839,7 @@ Local gate evidence for this audit is recorded in §20.5.
 | G4 | Med | platform_macos | `insert_range_for_field` reads once, converts, sets — it lacks the pre-write re-read that `insert_for_field` has, so a keystroke between read and set is clobbered by the full-value write. | `crates/platform_macos/src/lib.rs:4603-4624` vs `:4447-4454` | PLAUSIBLE, **FIXED** `b4ae361` (2026-09-10, plan item 2c): the range path re-reads value + selected range immediately before the set and refuses through `ensure_ax_insert_snapshot_unchanged` exactly like `insert_for_field`; the recording fake serves scripted second reads, and the refusal (zero sets) plus the applied read-order are unit-pinned. mac CI lane green (run 34432782232, 2026-09-10; plus `7462f33`, the mac-lane clippy fixup for the builder's unneeded `mut`) |
 | G5 | Med | platform_macos | `Message::InstallResource` and the `RemoveResource` drop on the AX worker are not `catch_unwind`-wrapped (only `Run` is); a panic there kills the worker and every later adapter call fails with "AX worker dropped job result" until relaunch. | `crates/platform_macos/src/ax_worker.rs:783-807` | CONFIRMED, **FIXED** `b8d3626` |
 | G6 | Med | platform_macos | No worker-side coalescing of queued `ObserverEvent`s (each costs up to 7 AX round trips before the 25 ms callback-side coalescer runs), and the 4 Hz safety poll dispatches unchanged `(identity, rect)` pairs, so a slow AX server plus fast typing queues seconds of geometry work ahead of `insert`/`read_context`. This is the concrete cost of the accepted A66 posture. | `crates/platform_macos/src/ax_worker.rs:726-736,1229-1233`, `crates/platform_macos/src/lib.rs:5455-5459,5594-5613` | PLAUSIBLE, **FIX SHIPPED, UNVERIFIED** `9b91b35` (2026-09-11, plan item 6): contiguous same-`(pid, notification)` bursts coalesce to the newest retained element (explicit CFRetain balance for superseded elements; first non-observer message deferred, never dropped/reordered) and unchanged `(identity, rect)` safety polls skip the callback dispatch; the A66/250 ms posture is unchanged. Three new tests over the fake loop + the pure poll predicate. **The macOS lane is RED** (run 34578291953: `Test (serial, macOS state)` failed; format/clippy/parallel steps green) and the dev host's `gh` token expired before the logs could be fetched, so the failing test is unidentified — static review of every fake-loop queue simulates clean. **G6 is NOT fixed until the lane is green**: re-auth gh, pull the failing step's log, fix or revert `9b91b35`. **2026-09-16, diagnosed:** the logs were pulled on both run 34578291953 and run 35054763339 (the same code on `5ab5c65`). Both failures are **test-side**, and the coalescing half of the production code is sound (drain exits all fall through to exactly one dispatch; superseded elements carry exactly one release; the deferred slot preserves order). The tests lacked any barrier against the async `compme-callbacks` dispatcher, and asserted the input seed against the output identity, which `field_element_id()` formats as `ax:ptr=<id>`. Run 35054763339 is the proof: `defers_a_queued_job` won the race that once and printed `["ax:ptr=ax:first", "ax:ptr=ax:second"]` — correct order, nothing lost. Fixed in `cb013ad` (test-only); mac lane green on run 35055438862. **CLOSED 2026-09-16** once the poll-skip half — a separate confirmed defect found while auditing this commit, filed and fixed as G21 (`35b6ab8`, run 35068705271) — was repaired too |
-| G7 | Med | platform_macos | Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX worker thread; Apple documents Carbon Events as main-thread-only. Works in live gates, unsupported. | `crates/platform_macos/src/lib.rs:1446-1450,3215,3242,3430,3643` | CONFIRMED, OPEN |
+| G7 | Med | platform_macos | Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX worker thread; Apple documents Carbon Events as main-thread-only. Works in live gates, unsupported. | `crates/platform_macos/src/lib.rs:1486,3265,3279,3358,3430,3674` (re-located 2026-09-16) | CONFIRMED, **OPEN — design ready, deliberately NOT landed**. The deadlock is worse than this row implied: registration runs main → worker *synchronously* as the normal case (`set_tap_visible` → `set_accept_action` → `install_resource` blocks on `reply_rx.recv()`), so `DispatchQueue::main().exec_sync()` from the worker self-deadlocks on **every** arm, and a bounded wait would time out on every arm instead. Full design and the reasons it is held in §22 |
 | G8 | Med | platform_linux | D-Bus round trips (`element_owner`, up to four calls) run **under the field-registry mutex** that every run-loop AT-SPI method also takes; `front_app` walks the desktop tree to depth 16 although the contract says "must not block"; no `platform_linux` call carries a per-call timeout (zbus default 25 s) and every X11 void request is `.check()`ed (about 8 round trips per `show_ghost`). | `crates/platform_linux/src/atspi_events.rs:91-94`, `src/lib.rs:236-241,359-361`, `src/atspi_live.rs:235-284,587-613`, `src/x11_overlay.rs:93-100,441-620`, `crates/platform/src/lib.rs:524` | CONFIRMED, **FIXED** in three slices 2026-09-08/11: owner lookup moved outside the registry lock and `front_app` answers from the registry (walk only before the first focus event), 36/36 live; per-call D-Bus timeouts **FIXED** `bf5893b` (2026-09-11, plan item 5): every public `AtspiSession` method runs under `bounded_bus_call` (helper thread + 10 s deadline over a cloned connection, mapping to `PlatformError::Timeout` — the first production site of that variant), and the raw-call session connections (a11y open/GetAddress, keyring, reveal) carry `Builder::method_timeout`; the overlay `.check()` collapse still OPEN |
 | G9 | Med | app (non-Linux stub) | The `cfg(not(target_os = "linux"))` shell stub returns `Ok(())` from `set_accept_keymap_from_config_with_mods`, hard-coded keys from `effective_accept_keys_with_mods_and_grammar`, and `Ok(())` from `SettingsWindow::show`, so the run loop logs "accept keys rebound" for a no-op. Contradicts the fail-closed Windows posture; `make_tray` in the same file already returns `Err(UnsupportedField)`. | `crates/app/src/shell/stub.rs:133-152,194-196`, `crates/app/src/run_loop.rs:3462-3475` | CONFIRMED, **FIXED** `b8d3626` |
 | G10 | Med | app / platform_macos | `TrayFlags.enabled` is toggled by non-atomic load-then-store from three threads (tray menu, ToggleGlobal shortcut, SIGUSR1); two near-simultaneous toggles collapse into one. `fetch_xor(true)` at all three sites fixes it. | `crates/app/src/run_loop.rs:5215-5216,5386-5387`, `crates/platform_macos/src/tray.rs:70` | CONFIRMED, **FIXED** `b8d3626` |
@@ -959,3 +959,89 @@ makes the un-annotated remainder a real inventory of what nobody has proven.
 - **Per-domain deletion** needs a schema column, blocked by the 0.x schema
   policy. Sequence it after the `PRAGMA user_version` marker (plan item 9) so
   the first migration has a version to migrate from.
+
+---
+
+## 22. G7 Carbon main-thread marshal — design of record (2026-09-16, not landed)
+
+G7 is real: Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX
+worker, and Apple documents Carbon Events as main-thread-only. A full design
+was produced and reviewed, then **deliberately held**. Recording both so the
+analysis is not redone and the decision is not mistaken for an oversight.
+
+### 22.1 Verified call graph
+
+`accept_tap_installer` (`lib.rs:1486`) → `install_resource` (`ax_worker.rs:350`,
+**blocks on `reply_rx.recv()`**) → `install_worker_accept_tap_resource`
+(`lib.rs:3265`) → `ensure_carbon_handler_installed` (`:3430`) and
+`register_hotkey` (`:3358`, `:3674`) — all on the **worker**. Unregister runs
+on the worker too, via async `RemoveResource`. Only the dispatch handler
+(`carbon_accept_hotkey_handler`, `:3714`) is already on main.
+
+Main reaches that path through `run()` → `engine.on_tick` →
+`Engine::set_tap_visible` → `AcceptTapController::set_accept_action`, so
+**main is synchronously blocked on the worker while the Carbon FFI runs.**
+That makes `exec_sync` from the worker a guaranteed self-deadlock, and a
+bounded wait a guaranteed per-arm stall. Two facts this ledger had not
+recorded: teardown has a second initiator thread (`hide_suggestion_after`
+spawns a detached sleeper that drops `consumer_tap`), and the current
+correctness argument **rests on the worker queue's FIFO** — `rearm_consumer_tap`
+documents DROP-BEFORE-INSTALL as load-bearing, because Esc/Down exist in every
+keymap and ordering is the only thing preventing `eventHotKeyExistsErr`.
+
+### 22.2 The design
+
+Hoist the pure plan (`Vec<(id, keycode, mask)>`, all `Copy + Send`) out of the
+worker closure onto the caller's thread; keep two main-thread-only arm
+registries holding the raw `EventHotKeyRef`s; register applies inline when
+already on main and via `DispatchQueue::main().exec_async` otherwise
+(`dispatch2` is already a dependency and `.after()` is already live-proven on
+this run loop in `schedule_pasteboard_restore`). Ownership stays on the worker
+as MVP §2 requires — `WorkerResource` is deliberately not `Send`, so the token
+stays there and its `Drop` posts an unregister and returns. Only a `u64`
+crosses the boundary, so exactly one `unsafe impl Send` is needed.
+
+No deadlock is possible because the worker never waits on main: register no
+longer executes inside the worker closure, and unregister has no reply
+channel. The only wait edge left is the pre-existing main → worker one, and a
+cycle needs a worker → main edge that no longer exists.
+
+Ordering must switch from FIFO to an **id guard** (register unregisters any
+live older arm first; a stale unregister whose id does not match is a no-op),
+because in a rearm the async `RemoveResource` can reach main *after* the new
+register — FIFO gives nothing there.
+
+### 22.3 Why it is held
+
+1. **The validating gate has never run — not "cannot run now", never.**
+   `always-on-hotkeys-physical-look` is "never recorded" in `docs/ACCEPTANCE.md`,
+   as are all 22. This row's "works in live gates" rests on in-code live
+   observations, not a recorded gate.
+2. **The code being replaced has zero automated coverage** — none of the four
+   functions or either `Drop` impl appears in `lib_tests.rs`. macOS CI would
+   prove it compiles and nothing more.
+3. It replaces **two explicitly load-bearing invariants** (FIFO ordering, and
+   synchronous "the new keys are live when this returns") with new mechanisms,
+   on the product's core interaction. The failure mode is "accept keys stop
+   working" or "Tab/Esc get eaten" — discoverable only by a human at a Mac.
+4. It adds `unsafe` surface while G20 is still open in the same crate.
+5. G7 is Med severity with a zero-symptom history, and the safe fix is
+   ~200-250 lines across six functions, two `Drop` impls, a new static and a
+   new `unsafe impl` — none of it compilable on the Linux dev host. That is
+   exactly the case CLAUDE.md's "never trust a lane you can't run" exists for.
+
+### 22.4 Sequencing when the owner wants it
+
+(a) Record `always-on-hotkeys-physical-look` plus the accept/dismiss/cycle/rearm
+gates against the **current** build, so there is a baseline to regress against —
+without it a post-change failure is unattributable. (b) Land the change with
+the MVP §2 `:75` amendment ("registered on the main thread") in the same
+commit; that line is **not** checker-pinned, but editing it before the code
+would make the spec false. (c) Re-record the same gate set.
+
+The testable seam, for when it lands, needs no Carbon: inject the main-thread
+executor (the existing `AdapterAcceptTapInstaller::Custom` fake style) plus a
+register/unregister sink, then pin that every call routes through the executor
+when off-main, that register emits `unregister(old) → register(new)` in order,
+that a stale unregister after a newer register is a no-op, and that dropping a
+token emits exactly one unregister for its own id.
