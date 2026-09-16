@@ -209,7 +209,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~2171 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~2172 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -292,7 +292,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~2171 tests. The `tools/spike` workspace is separate from the
+The root suite is ~2172 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 24 portable crates and
@@ -310,6 +310,36 @@ on every push: `git config core.hooksPath tools/dev` installs
 pre-commit standard.
 The live `check-model-gates.sh` invocation requires macOS because it enumerates
 macOS-cfg test targets; `check-model-gates.sh --self-test` is host-agnostic.
+
+### Type-checking another platform's code without that platform
+
+"`platform_macos` does not build off a Mac" is true only of a *host-target*
+build. `cargo check --target` type-checks either platform crate from any host,
+**including their `#[cfg(test)]` modules**, provided the target's std is
+installed (`rustup target list --installed`; this repo's staged toolchain
+carries `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` already):
+
+```text
+cargo check --locked -p platform_macos   --target aarch64-apple-darwin   --all-targets
+cargo check --locked -p platform_windows --target x86_64-pc-windows-msvc --all-targets
+```
+
+This is deliberately **not** in the gate fence above: it needs the per-target
+std, so it would fail on a contributor machine that lacks it. Run it by hand
+before pushing anything that touches a `cfg(target_os)` branch or its tests.
+
+Both commands were verified on the Linux dev host on 2026-09-16 by injecting a
+deliberate type error into a `#[test]` body and confirming `E0308` and a
+non-zero exit — so the test modules really are checked, not skipped. That
+matters because it is cheap insurance against the failure this repo has hit
+repeatedly: macOS/Windows code shipped on static review because "it cannot be
+compiled here", then landing red on a lane nobody could run.
+
+What it still does **not** prove: it does not link (an `unresolved external
+symbol` from a `link!`ed DLL or framework survives it) and it does not execute
+a single assertion. A green cross-target check is a compile proof, never a
+behaviour proof — the platform's own CI lane remains the authority, and the
+live gates remain the authority for anything with a GUI.
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
 over inline `run:` steps), shellchecks every `tools/**/*.sh` at error severity,
 and runs native Windows/Linux portability jobs covering

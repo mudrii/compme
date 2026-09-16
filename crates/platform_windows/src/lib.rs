@@ -40,11 +40,19 @@ impl WindowsAdapter {
 }
 
 impl PlatformAdapter for WindowsAdapter {
-    /// Real impl: `RtlGetVersion`. Cheap + infallible per the contract.
+    /// Host OS version via `RtlGetVersion` — cheap and infallible per the
+    /// contract (see [`win_host::os_version`] for the probe and the format).
     fn environment(&self) -> Environment {
+        #[cfg(windows)]
+        let version = win_host::os_version();
+        // Off-Windows this adapter is only constructed by the workspace's own
+        // portability tests; report the shared "we could not tell" value rather
+        // than inventing a version for a host this adapter does not serve.
+        #[cfg(not(windows))]
+        let version = UNKNOWN_VERSION.to_string();
         Environment {
             os: OperatingSystem::Windows,
-            version: "unknown".to_string(),
+            version,
         }
     }
 
@@ -105,9 +113,11 @@ impl PlatformAdapter for WindowsAdapter {
     }
 }
 
-/// Windows implementation of `platform::shell::ShellHost` — fail-closed scaffold.
-/// Future real impl: Win32 message pump, DPAPI key storage, settings deep-links,
-/// Explorer reveal, and Startup-approved launch-at-login registration.
+/// Windows implementation of `platform::shell::ShellHost` — fail-closed scaffold
+/// apart from the host services that are already real: the Win32 message pump,
+/// the RAM probe, and native URL opening. Future real impl: DPAPI key storage,
+/// settings deep-links, Explorer reveal, and Startup-approved launch-at-login
+/// registration.
 #[derive(Debug, Default)]
 pub struct WindowsShellHost;
 
@@ -115,6 +125,28 @@ impl WindowsShellHost {
     pub fn new() -> Self {
         Self
     }
+}
+
+/// Reported by `environment()` when the host version cannot be determined —
+/// the same literal `platform_linux::linux_version` degrades to, so a caller
+/// comparing `Environment::version` across adapters sees one "could not tell"
+/// value rather than a per-platform spelling of it.
+const UNKNOWN_VERSION: &str = "unknown";
+
+/// Heartbeat duration as the `dwMilliseconds` argument of
+/// `MsgWaitForMultipleObjectsEx`, clamped strictly below `INFINITE`.
+///
+/// Win32 reads `0xFFFF_FFFF` as `INFINITE`, so a heartbeat that does not fit in
+/// a `u32` must saturate to `INFINITE - 1` (~49 days) and *not* to `u32::MAX`:
+/// the difference is "one absurdly long tick" versus "this thread never wakes
+/// again", which would wedge the run loop rather than slow it. Pure, and
+/// compiled on every host, so the clamp is provable off Windows.
+#[cfg(any(windows, test))]
+fn wait_timeout_ms(heartbeat: std::time::Duration) -> u32 {
+    const INFINITE_MS: u32 = u32::MAX;
+    u32::try_from(heartbeat.as_millis())
+        .unwrap_or(INFINITE_MS)
+        .min(INFINITE_MS - 1)
 }
 
 #[cfg(any(windows, test))]
@@ -135,8 +167,19 @@ fn open_url_with(
 }
 
 impl platform::shell::ShellHost for WindowsShellHost {
+    /// See [`win_host::pump_events`] for why this is a message wait and not a
+    /// sleep on Windows.
     fn pump_events(&self, heartbeat: std::time::Duration) {
-        std::thread::sleep(heartbeat);
+        #[cfg(windows)]
+        {
+            win_host::pump_events(heartbeat);
+        }
+        // Off-Windows there is no message queue to service; keep the historical
+        // sleep for the workspace's own portability tests.
+        #[cfg(not(windows))]
+        {
+            std::thread::sleep(heartbeat);
+        }
     }
 
     /// Installed physical memory, for `model_catalog::ram_verdict`.
@@ -249,6 +292,29 @@ mod tests {
     }
 
     #[test]
+    fn heartbeat_wait_timeout_never_reaches_infinite() {
+        use std::time::Duration;
+
+        // The ordinary case: the heartbeat passes through verbatim, in ms.
+        assert_eq!(wait_timeout_ms(Duration::from_millis(50)), 50);
+        // A zero heartbeat is a legal poll-and-drain, not a block.
+        assert_eq!(wait_timeout_ms(Duration::ZERO), 0);
+        // Sub-millisecond truncates down to that same poll, never wraps up.
+        assert_eq!(wait_timeout_ms(Duration::from_micros(999)), 0);
+        // u32::MAX ms *is* INFINITE to MsgWaitForMultipleObjectsEx, so the
+        // clamp must land one below it — the boundary an obvious
+        // `unwrap_or(u32::MAX)` would get wrong, turning a long tick into a
+        // thread that never wakes again.
+        assert_eq!(
+            wait_timeout_ms(Duration::from_millis(u64::from(u32::MAX))),
+            u32::MAX - 1
+        );
+        // And anything past the boundary saturates to that same finite ceiling
+        // rather than overflowing the `u32::try_from` into INFINITE.
+        assert_eq!(wait_timeout_ms(Duration::MAX), u32::MAX - 1);
+    }
+
+    #[test]
     fn open_url_with_rejects_interior_nul_without_launching() {
         let launched = std::sync::Mutex::new(false);
         let err = open_url_with("https://example.test/a\0b", |_| {
@@ -265,10 +331,34 @@ mod tests {
         let adapter = WindowsAdapter::new();
         // environment() is the one cheap, infallible method the scaffold answers.
         assert_eq!(adapter.environment().os, OperatingSystem::Windows);
-        // The scaffold has no real version probe yet: it reports the fixed
-        // "unknown" version. Pin it so the real version impl visibly replaces
-        // the placeholder.
-        assert_eq!(adapter.environment().version, "unknown");
+        // The version probe is real now (`RtlGetVersion`), so what is assertable
+        // depends on the host. On Windows: a dotted `major.minor.build` triple
+        // of plain integers, majoring at least 10 — every Windows that can run
+        // this (and every `windows-latest` runner, which is Server 2022/2025)
+        // reports major 10, and the shimmed `GetVersionEx` answer this probe
+        // exists to avoid would be 6.2, so the bound is what catches a
+        // regression back to the Win32 call.
+        let version = adapter.environment().version;
+        #[cfg(windows)]
+        {
+            let parts: Vec<u32> = version
+                .split('.')
+                .map(|part| {
+                    part.parse()
+                        .unwrap_or_else(|_| panic!("version component {part:?} in {version:?}"))
+                })
+                .collect();
+            assert_eq!(parts.len(), 3, "expected major.minor.build: {version:?}");
+            assert!(
+                parts[0] >= 10,
+                "RtlGetVersion should report the true (unshimmed) major: {version:?}"
+            );
+            assert!(parts[2] > 0, "build number should be real: {version:?}");
+        }
+        // Off Windows the probe cannot run, so the adapter reports the shared
+        // "could not tell" literal rather than a fabricated version.
+        #[cfg(not(windows))]
+        assert_eq!(version, UNKNOWN_VERSION);
         // No frontmost app until the real impl lands.
         assert_eq!(adapter.front_app(), None);
         // Subscribe/IO methods fail closed (UnsupportedField), never panic — the
@@ -531,7 +621,22 @@ mod tests {
         assert!(h.open_permission_settings().is_err());
         let start = std::time::Instant::now();
         h.pump_events(std::time::Duration::from_millis(5));
+        // Off Windows this is still the plain sleep, so the whole heartbeat
+        // must elapse.
+        #[cfg(not(windows))]
         assert!(start.elapsed() >= std::time::Duration::from_millis(5));
+        // On Windows only the upper bound is assertable: the contract is "at
+        // most `heartbeat`", and the message wait is *supposed* to return early
+        // when input arrives, so a lower bound would pin the opposite of the
+        // behaviour this exists to provide. Pin instead that the wait honours
+        // its timeout rather than blocking indefinitely — the bug a missing
+        // `dwMilliseconds`/`INFINITE` clamp would cause. Same shape as
+        // `platform_macos`'s `pump_events_returns_within_heartbeat_scale`.
+        #[cfg(windows)]
+        assert!(
+            start.elapsed() < std::time::Duration::from_secs(2),
+            "pump_events must return on its heartbeat timeout, not block"
+        );
     }
 
     #[test]
@@ -583,7 +688,8 @@ pub mod win_host {
     use std::sync::OnceLock;
 
     use windows::core::{BOOL, PCWSTR};
-    use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL};
+    use windows::Wdk::System::SystemServices::RtlGetVersion;
+    use windows::Win32::Foundation::{LocalFree, ERROR_SUCCESS, HLOCAL, WAIT_FAILED};
     use windows::Win32::Security::Authorization::{
         ConvertStringSecurityDescriptorToSecurityDescriptorW, GetNamedSecurityInfoW,
         SetNamedSecurityInfoW, SDDL_REVISION_1, SE_FILE_OBJECT,
@@ -596,9 +702,128 @@ pub mod win_host {
         PSECURITY_DESCRIPTOR, PSID, SECURITY_MAX_SID_SIZE, SE_DACL_PROTECTED,
     };
     use windows::Win32::System::Console::SetConsoleCtrlHandler;
-    use windows::Win32::System::SystemInformation::{GlobalMemoryStatusEx, MEMORYSTATUSEX};
+    use windows::Win32::System::SystemInformation::{
+        GlobalMemoryStatusEx, MEMORYSTATUSEX, OSVERSIONINFOW,
+    };
     use windows::Win32::UI::Shell::ShellExecuteW;
-    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    use windows::Win32::UI::WindowsAndMessaging::{
+        DispatchMessageW, MsgWaitForMultipleObjectsEx, PeekMessageW, TranslateMessage, MSG,
+        MWMO_INPUTAVAILABLE, PM_REMOVE, QS_ALLINPUT, SW_SHOWNORMAL,
+    };
+
+    /// Host Windows version as `major.minor.build` (e.g. `10.0.26100`), via
+    /// `RtlGetVersion`.
+    ///
+    /// `RtlGetVersion` is the probe to use, not `GetVersionEx`: the Win32 calls
+    /// are subject to the compatibility shim that reports `6.2` to a process
+    /// without a matching `supportedOS` manifest entry, so they would make a
+    /// Windows 11 host answer "6.2.9200". The ntdll entry point is not shimmed
+    /// and answers the true build. It is also cheap and effectively infallible,
+    /// which is what `PlatformAdapter::environment` requires.
+    ///
+    /// `dwOSVersionInfoSize` MUST be set before the call — the same versioning
+    /// contract as `GlobalMemoryStatusEx`'s `dwLength` below.
+    ///
+    /// Format: the build number, not the patch/UBR, is the third component,
+    /// because it is what distinguishes Windows releases (10.0.19045 = Win10
+    /// 22H2, 10.0.22631 = Win11 23H2). That keeps `Environment::version` a
+    /// dotted triple exactly as `platform_macos::macos_version_string` produces
+    /// (`major.minor.patch`), so the field stays comparable across adapters; a
+    /// refused probe degrades to [`UNKNOWN_VERSION`], the same literal
+    /// `platform_linux` uses when its own probe files are missing.
+    pub fn os_version() -> String {
+        let mut info = OSVERSIONINFOW {
+            dwOSVersionInfoSize: u32::try_from(std::mem::size_of::<OSVERSIONINFOW>()).unwrap_or(0),
+            ..Default::default()
+        };
+        if info.dwOSVersionInfoSize == 0 {
+            return super::UNKNOWN_VERSION.to_string();
+        }
+        // SAFETY: `info` is a live, correctly sized, properly aligned
+        // OSVERSIONINFOW owned by this frame, with `dwOSVersionInfoSize` set as
+        // the API requires. The call only writes into that struct and borrows
+        // nothing past its return.
+        let status = unsafe { RtlGetVersion(&mut info) };
+        if status.is_ok() {
+            format!(
+                "{}.{}.{}",
+                info.dwMajorVersion, info.dwMinorVersion, info.dwBuildNumber
+            )
+        } else {
+            super::UNKNOWN_VERSION.to_string()
+        }
+    }
+
+    /// One heartbeat tick of the host thread: drain the queue, block for at
+    /// most `heartbeat` while waking on any input, then drain what woke it.
+    ///
+    /// A bare `std::thread::sleep` — which is what this was — is wrong for a UI
+    /// thread. Windows delivers window messages, `WH_KEYBOARD_LL` hook
+    /// callbacks and UIA event marshalling *by dispatching into the message
+    /// queue of the thread that registered them*; a sleeping thread never pumps
+    /// that queue, so none of those callbacks run. The OS notices: it silently
+    /// unhooks a low-level keyboard hook whose thread does not answer within
+    /// `LowLevelHooksTimeout` (the accept-key hook would just stop firing, with
+    /// no error to report), and DWM ghosts a window whose thread has not
+    /// pumped for ~5 s as "Not Responding". A sleep also spends the whole
+    /// heartbeat on latency: a keystroke arriving 1 ms into a 50 ms sleep is
+    /// not seen for 49 ms.
+    ///
+    /// `MsgWaitForMultipleObjectsEx` is the primitive that fixes all of that:
+    /// it blocks (so the thread is not spinning) but returns the moment a
+    /// `QS_ALLINPUT` message arrives, and otherwise returns on the
+    /// `dwMilliseconds` timeout — so the caller's heartbeat is still the upper
+    /// bound, which is exactly what `ShellHost::pump_events` promises ("at most
+    /// `heartbeat`"). `MWMO_INPUTAVAILABLE` closes the race the plain
+    /// `MsgWaitForMultipleObjects` has: a message already sitting in the queue
+    /// that was seen but not removed does not re-signal, so without this flag
+    /// the wait would block the full timeout with work already pending.
+    ///
+    /// The wait only *signals*; it never removes anything, so the drain around
+    /// it is what actually dispatches. Draining first honours the trait's
+    /// stated order ("drain queued native UI events, then service the main
+    /// loop"); draining again afterwards is what handles whatever woke the
+    /// wait, and costs one `PeekMessageW` on an empty queue when nothing did.
+    pub fn pump_events(heartbeat: std::time::Duration) {
+        drain_message_queue();
+        // SAFETY: no wait handles are supplied (`None` => count 0, null array),
+        // so the call waits only on this thread's own message queue and writes
+        // through no pointer of ours.
+        let wait = unsafe {
+            MsgWaitForMultipleObjectsEx(
+                None,
+                super::wait_timeout_ms(heartbeat),
+                QS_ALLINPUT,
+                MWMO_INPUTAVAILABLE,
+            )
+        };
+        if wait == WAIT_FAILED {
+            // A failed wait returns immediately. Without this the caller's
+            // heartbeat loop would spin a core flat out; degrade to the old
+            // sleep so a broken wait costs latency, not CPU.
+            std::thread::sleep(heartbeat);
+        }
+        drain_message_queue();
+    }
+
+    /// Dispatch every message currently queued for this thread. A null window
+    /// filter takes messages for any window this thread owns plus thread-posted
+    /// messages, which is what a host that will later own an overlay window and
+    /// a keyboard hook needs. `WM_QUIT` is drained like any other message: this
+    /// crate posts none, and the run loop's stop signal is the console control
+    /// handler's flag, not a quit message.
+    fn drain_message_queue() {
+        let mut msg = MSG::default();
+        // SAFETY: `msg` is a live, properly aligned MSG owned by this frame.
+        // `PeekMessageW` writes only into it; `TranslateMessage` and
+        // `DispatchMessageW` only read it, and neither retains the pointer.
+        unsafe {
+            while PeekMessageW(&mut msg, None, 0, 0, PM_REMOVE).as_bool() {
+                let _ = TranslateMessage(&msg);
+                DispatchMessageW(&msg);
+            }
+        }
+    }
 
     /// Installed physical memory in bytes, via `GlobalMemoryStatusEx`.
     ///

@@ -22,12 +22,22 @@ shell_flags = { path = "../shell_flags" }
 # already. The full UIA adapter extends this target-specific feature set.
 [target.'cfg(windows)'.dependencies]
 windows = { version = "=0.62.2", features = [
+  # RtlGetVersion for environment(). It is generated into
+  # `windows::Wdk::System::SystemServices` (ntdll), so the Wdk feature is what
+  # makes the module exist; the function itself is additionally gated on
+  # Win32_System_SystemInformation below, which supplies its OSVERSIONINFOW.
+  "Wdk_System_SystemServices",
   "Win32_Foundation",
   "Win32_Security",
   "Win32_Security_Authorization",
   "Win32_System_Console",
-  # GlobalMemoryStatusEx / MEMORYSTATUSEX for the RAM-fit probe.
+  # GlobalMemoryStatusEx / MEMORYSTATUSEX for the RAM-fit probe, and
+  # OSVERSIONINFOW for the RtlGetVersion probe above.
   "Win32_System_SystemInformation",
   "Win32_UI_Shell",
+  # ShellExecuteW's SW_SHOWNORMAL, plus the heartbeat message pump:
+  # MsgWaitForMultipleObjectsEx / PeekMessageW / TranslateMessage /
+  # DispatchMessageW and their MSG, QS_ALLINPUT, MWMO_INPUTAVAILABLE and
+  # PM_REMOVE constants.
   "Win32_UI_WindowsAndMessaging",
 ] }

@@ -142,11 +142,12 @@ gates green on 3-OS CI.
 
 ## Phase 1 — Windows adapter (implementation actionable; live acceptance needs a Windows desktop)
 
-(status 2026-09-09: **nothing in 1.1–1.7 is implemented.** `platform_windows`
-is still the fail-closed scaffold: `environment()` reports
-`version: "unknown"` (pinned by test), `physical_memory_bytes()` returns 0,
-`pump_events` is a `thread::sleep`, every subscribe/IO method returns
-`UnsupportedField`. The only real Win32 code is Phase 0's `win_host`
+(status 2026-09-16: **slice 1.1 has landed; 1.2–1.7 are not implemented.**
+`environment()` now reports a real `RtlGetVersion` triple (e.g. `10.0.26100`,
+falling back to `"unknown"`), `physical_memory_bytes()` is a real
+`GlobalMemoryStatusEx` probe, and `pump_events` is
+`MsgWaitForMultipleObjectsEx` + a drained `PeekMessageW` queue rather than a
+`thread::sleep`. Every subscribe/IO method still returns `UnsupportedField`. The only real Win32 code is Phase 0's `win_host`
 (`ShellExecuteW` open_url, `harden_owner_only`,
 `install_console_ctrl_handler`). Audit plan items 7 (slice 1.1) and 8 (UIA
 read-only slice) are the next cuts.)

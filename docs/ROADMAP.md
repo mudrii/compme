@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-16 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2171 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-16 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2172 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -205,6 +205,14 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   (never panics, no partial state); each method is doc-commented with the Win32 API
   its real impl will use (UIA / `WH_KEYBOARD_LL` / `SendInput` / layered overlay).
   Unit-tested (environment, fail-closed `subscribe_focus` + `insert_replacing`).
+  **Phase 1 slice 1.1 landed 2026-09-16:** `environment().version` is a real
+  `RtlGetVersion` triple (`Wdk_System_SystemServices`; the Win32 calls are
+  shimmed to 6.2 without a manifest, which is why the Wdk entry point is
+  used), `physical_memory_bytes()` is a real `GlobalMemoryStatusEx` probe,
+  and `pump_events` waits on `MsgWaitForMultipleObjectsEx(QS_ALLINPUT,
+  MWMO_INPUTAVAILABLE)` draining the queue either side — a sleeping thread
+  pumps nothing, so a future `WH_KEYBOARD_LL` hook would be silently
+  unhooked past `LowLevelHooksTimeout`. Adapter IO remains fail-closed.
 - **`crates/platform_linux`** (`5236a56`) — initially shipped as the same
   fail-closed foundation; its wired AT-SPI2/X11 implementation and live gates
   are recorded below.
