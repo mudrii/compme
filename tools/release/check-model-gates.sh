@@ -4684,6 +4684,8 @@ require_development_gate_line '^tools/acceptance/run-a1b-live-gates\.sh --self-t
 require_line "$development_doc" '^Use `--allow-manual` only after executing and recording the MANUAL checklist$' "DEVELOPMENT A1b allow-manual policy"
 require_development_gate_line '^tools/release/check-model-client-features\.sh[[:space:]]*$' "DEVELOPMENT model client feature policy"
 require_development_gate_line '^tools/release/check-model-client-features\.sh --self-test[[:space:]]*$' "DEVELOPMENT model client feature policy self-test"
+require_development_gate_line '^tools/release/check-vendor-drift\.sh[[:space:]]*$' "DEVELOPMENT vendored llama-cpp-2 drift check"
+require_development_gate_line '^tools/release/check-vendor-drift\.sh --self-test[[:space:]]*$' "DEVELOPMENT vendored llama-cpp-2 drift check self-test"
 require_development_gate_line '^bash tools/release/check-model-gates\.sh[[:space:]]*$' "DEVELOPMENT release gate policy check"
 require_development_gate_line '^tools/release/run-model-gates\.sh --self-test[[:space:]]*$' "DEVELOPMENT model gate self-test"
 require_development_gate_line '^tools/release/update-cask\.sh --self-test[[:space:]]*$' "DEVELOPMENT cask updater self-test"
