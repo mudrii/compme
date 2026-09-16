@@ -135,6 +135,12 @@ impl AxWorkerLoop for ChannelAxWorkerLoop {
     }
 
     fn pump_run_loop(&mut self) {
+        // SAFETY: `kCFRunLoopDefaultMode` is an immutable `extern` constant
+        // exported by CoreFoundation, which is linked into every process that
+        // uses this crate and initialised before `main`. It is read and never
+        // written, so the read cannot race, and the CFString it names lives
+        // for the process lifetime — outlasting this call, which is all
+        // `run_in_mode` needs of the mode.
         let _ = CFRunLoop::run_in_mode(
             unsafe { kCFRunLoopDefaultMode },
             AX_WORKER_RUN_LOOP_SLICE,
@@ -401,6 +407,11 @@ impl AxWorkerHandle {
         self.install_resource(move || {
             let (element, element_owner) = create_app_ax_element(pid)?;
             // Wake Chromium/Electron a11y once per focus bind, not per read.
+            // SAFETY: `create_app_ax_element` returns a non-null application
+            // `AXUIElementRef` together with `element_owner`, the create-rule
+            // `CFType` that owns it. `element_owner` is still live here — it
+            // only moves into the resource's owner list below — so the ref is
+            // valid for this call.
             unsafe { enable_manual_accessibility(element) };
             install_worker_observer_resource(
                 tx,
@@ -424,6 +435,11 @@ impl AxWorkerHandle {
         self.install_resource(move || {
             let (app_element, app_owner) = create_app_ax_element(pid)?;
             // Wake Chromium/Electron a11y once per focus bind, not per read.
+            // SAFETY (both calls): `create_app_ax_element` returns a non-null
+            // application `AXUIElementRef` together with `app_owner`, the
+            // create-rule `CFType` that owns it. `app_owner` is live across
+            // both calls — it only moves into `element_owners` further down —
+            // so the ref is valid for each AX read.
             unsafe { enable_manual_accessibility(app_element) };
             let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
             let focused_element = focused_owner
@@ -570,6 +586,20 @@ fn install_worker_observer_resource(
         dispatch,
     });
     let refcon = callback_state.as_mut() as *mut ObserverCallbackState as *mut c_void;
+    // SAFETY: three preconditions, each discharged by the
+    // `WorkerObserverResource` this function builds immediately below.
+    // - `element` is *borrowed*, not owned (`RawAxElement::borrowed`): its
+    //   create-rule owners arrive in `element_owners` and are stored in the
+    //   same struct as the registration, and `Drop for WorkerObserverResource`
+    //   takes the registration FIRST, so the notifications are removed while
+    //   the element is still alive.
+    // - `refcon` points into `callback_state`, a `Box` whose heap allocation
+    //   does not move when the box is stored in `_callback_state`; that same
+    //   drop order means no callback can fire after the state is freed.
+    // - AX observers bind to the *calling* thread's run loop
+    //   (`RawAxObserverBackend::current_run_loop`). This runs inside a
+    //   `Message::InstallResource` job, i.e. on the AX worker thread — the
+    //   thread that pumps that run loop and that later drops the resource.
     let registration =
         unsafe { register_raw_ax_observer_with_refcon(pid, element, &notifications, refcon) }?;
 
@@ -795,12 +825,18 @@ fn resolve_focused_or_app_event(
     notification: ObserverNotification,
 ) -> Result<ObserverEvent, PlatformError> {
     let (app_element, _app_owner) = create_app_ax_element(pid)?;
+    // SAFETY: `app_element` is the non-null ref owned by `_app_owner`, a named
+    // binding — not a bare `_`, which would drop the owner immediately — so it
+    // stays alive to the end of this function.
     let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
     let focused_element = focused_owner
         .as_ref()
         .map(|focused_owner| focused_owner.as_CFTypeRef() as AXUIElementRef);
     let target_element = choose_caret_observer_element(app_element, focused_element);
 
+    // SAFETY: `target_element` is either `app_element` (owned by `_app_owner`)
+    // or the focused element owned by `focused_owner`; both owners are live
+    // until this function returns, so the ref is valid for the identity read.
     Ok(ObserverEvent {
         pid,
         notification,
@@ -840,6 +876,19 @@ fn run_ax_worker_loop<L, F>(
     // the focus poller's (identity, None) pair spend the caret poller's
     // dispatch and vice versa, because each consumer hard-filters on
     // notification kind and drops the other's event on the floor.
+    //
+    // Never pruned, deliberately. It holds two small entries (an identity
+    // string plus an optional rect) per pid the frontmost-app rebinder has
+    // bound during this worker's lifetime — i.e. per app the user actually
+    // focused while compme ran, kilobytes at worst, released with the
+    // process. A capacity bound would be the wrong trade: both live pollers
+    // tick at 4 Hz, so any cap small enough to ever fire would evict entries
+    // still in use, and a missing entry reads as "changed" — reinstating
+    // exactly the redundant overlay-geometry dispatches G6 removed. (A
+    // recycled pid inherits the dead app's entry; a false "unchanged" would
+    // need the new app's focused element to reproduce that identity string,
+    // which carries the element pointer and CFHash, byte for byte.) Revisit
+    // only if a worker is ever shown to see unbounded distinct pids.
     let mut last_focused_poll: HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)> =
         HashMap::new();
 
@@ -906,6 +955,25 @@ fn run_ax_worker_loop<L, F>(
                 // member — the older snapshots are superseded before any
                 // consumer ever saw them, so their CFRetain is balanced here
                 // (the same create-rule handoff the resolve path performs).
+                //
+                // INVARIANT the merge rests on: the coalesced message keeps
+                // the OLDEST member's `dispatch` and `callback_tx` and
+                // discards the newest's (`dispatch: _`, `callback_tx: _`
+                // below). That is only sound while (pid, notification)
+                // selects exactly ONE subscription. It does today:
+                // `subscribe_focus` registers only FocusChanged and
+                // `subscribe_caret` only CaretChanged (`lib.rs`), and
+                // `run_loop` takes one of each. Nothing enforces it — the
+                // subscription registry is keyed by id and would hold two of
+                // a kind happily. If two of a kind ever coexist (a cancel
+                // overlapping a re-subscribe is the likely way), a burst
+                // spanning both would route the newer subscription's event
+                // through the older subscription's closure: if that one has
+                // been cancelled its `active` flag drops the event and the
+                // new subscriber silently never sees it; if it is merely a
+                // second live subscription, the event reaches the wrong
+                // callback. Key the drain on the subscription, not on
+                // (pid, notification), before allowing that.
                 loop {
                     match worker_loop.try_recv() {
                         Ok(Message::ObserverEvent {
@@ -939,6 +1007,20 @@ fn run_ax_worker_loop<L, F>(
                 // G21: the poll memo follows what the consumer was told, so
                 // a later return to a previous state still reads as a change
                 // and the 250 ms safety net can re-announce it.
+                //
+                // `field_element_id()` allocates (about six `format!`s plus a
+                // join) on the very path 9b91b35 set out to cheapen. Measured
+                // against what it sits next to, that is accepted rather than
+                // optimised: it is pure — no FFI, no AX round trip — and runs
+                // once per DISPATCH, not once per raw callback, because the
+                // drain above has already collapsed the burst. The branch it
+                // runs in has just spent up to 7 cross-process AX round trips
+                // (50 ms messaging timeout each) resolving this event, and
+                // every event that reaches a consumer has the same string
+                // computed again downstream by
+                // `CaretFieldTracker::field_for_event`. Caching it on
+                // `ObserverEvent` would buy nanoseconds against milliseconds
+                // and add a field that must be kept in sync with `identity`.
                 remember_dispatched_poll(
                     &mut last_focused_poll,
                     (pid, notification),
@@ -1030,6 +1112,11 @@ fn run_callback_dispatcher(rx: mpsc::Receiver<CallbackMessage>) {
 }
 
 fn set_ax_messaging_timeout(timeout_seconds: f32) -> Result<(), PlatformError> {
+    // SAFETY: `AXUIElementCreateSystemWide` follows CF's create rule, so the
+    // +1 it returns is null-checked and then handed to exactly one
+    // `wrap_under_create_rule`, which balances it on drop. The timeout is set
+    // through that same non-null ref while `_system_wide_owner` still holds it
+    // alive.
     unsafe {
         let system_wide = AXUIElementCreateSystemWide();
         if system_wide.is_null() {
@@ -1224,6 +1311,12 @@ impl ObserverBackend for RawAxObserverBackend {
     type Source = CFRunLoopSource;
 
     fn create_observer(&mut self, pid: i32) -> Result<Self::Observer, PlatformError> {
+        // SAFETY: `&mut observer` is a valid, aligned out-pointer to a live
+        // local, and `ax_observer_callback` has the `AXObserverCallback`
+        // signature AX expects. The out value is read only after both a
+        // success code and a null check, and `AXObserverCreate` follows CF's
+        // create rule, so its +1 is taken by exactly one
+        // `wrap_under_create_rule`.
         unsafe {
             let mut observer: AXObserverRef = ptr::null_mut();
             let err = AXObserverCreate(pid, ax_observer_callback, &mut observer);
@@ -1246,6 +1339,12 @@ impl ObserverBackend for RawAxObserverBackend {
         &mut self,
         observer: &Self::Observer,
     ) -> Result<Self::Source, PlatformError> {
+        // SAFETY: `observer.as_ref()` is the live `AXObserverRef` owned by the
+        // observer's `CFType`, so it is valid for this call.
+        // `AXObserverGetRunLoopSource` is a CF *Get*-rule accessor — the
+        // source is owned by the observer, not by us — which is why the
+        // non-null result is taken with `wrap_under_get_rule`. That retains,
+        // so the returned `CFRunLoopSource` keeps it alive on its own.
         unsafe {
             let source = AXObserverGetRunLoopSource(observer.as_ref());
             if source.is_null() {
@@ -1259,6 +1358,10 @@ impl ObserverBackend for RawAxObserverBackend {
     }
 
     fn add_run_loop_source(&mut self, source: &Self::Source) -> Result<(), PlatformError> {
+        // SAFETY: the only raw operand is `kCFRunLoopCommonModes`, an
+        // immutable CoreFoundation `extern` constant that is read (never
+        // written) and lives for the process lifetime. The run loop and the
+        // source are owned safe wrappers, valid by their own type invariants.
         unsafe {
             self.run_loop.add_source(source, kCFRunLoopCommonModes);
         }
@@ -1266,6 +1369,11 @@ impl ObserverBackend for RawAxObserverBackend {
     }
 
     fn remove_run_loop_source(&mut self, source: &Self::Source) {
+        // SAFETY: as in `add_run_loop_source` — the only raw operand is the
+        // immutable, process-lifetime `kCFRunLoopCommonModes` constant, and
+        // the run loop and source are owned safe wrappers. Both callers (the
+        // registration rollback and `Drop`) reach this only after
+        // `add_run_loop_source` succeeded for that same source.
         unsafe {
             self.run_loop.remove_source(source, kCFRunLoopCommonModes);
         }
@@ -1360,7 +1468,17 @@ fn resolve_retained_observer_element(
     };
 
     let element = retained_element as AXUIElementRef;
+    // SAFETY: `retained_element` carries the +1 that `retain_observer_element`
+    // took with `CFRetain`, and this is the only place that consumes it as an
+    // owned reference. The single other disposal path,
+    // `release_retained_observer_element`, runs only where the value is
+    // discarded in the same step (the burst drain's superseded member, and the
+    // callback's send-failure path), so the +1 is taken by exactly one
+    // create-rule owner and released exactly once.
     let _owner = unsafe { CFType::wrap_under_create_rule(retained_element as CFTypeRef) };
+    // SAFETY: `element` is that same retained ref, held alive across this read
+    // by `_owner` — a named binding, so it lives to the end of the function
+    // rather than dropping immediately as a bare `_` would.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     Ok((identity, observer_caret_rect(notification, element)))
 }
@@ -1405,6 +1523,16 @@ unsafe extern "C" fn ax_observer_callback(
             return;
         };
 
+        // SAFETY: `refcon` was null-checked above and is the pointer
+        // `install_worker_observer_resource` derived from its boxed
+        // `ObserverCallbackState`. That box lives in the same
+        // `WorkerObserverResource` as the registration, whose `Drop` removes
+        // the notifications first; both that removal and this callback run on
+        // the AX worker thread (the callback is delivered by that thread's run
+        // loop, pumped in `pump_run_loop`), so no callback can be in flight
+        // while the state is freed. The state is never mutated after
+        // construction, and this reference does not escape the closure — only
+        // copies and `Arc`/`Sender` clones of its fields do.
         let state = unsafe { &*(refcon as *const ObserverCallbackState) };
         let fallback_element_id = ax_element_id(element);
         let retained_element = retain_observer_element(element);
@@ -1438,6 +1566,12 @@ fn retain_observer_element(element: AXUIElementRef) -> Option<usize> {
         return None;
     }
 
+    // SAFETY: `element` was null-checked above and is the AX element AX handed
+    // to the observer callback, valid for that callback's duration. The +1
+    // `CFRetain` adds outlives the callback; ownership of it passes to the
+    // returned `usize`, which every consumer balances exactly once (see
+    // `resolve_retained_observer_element` and
+    // `release_retained_observer_element`).
     let retained = unsafe { CFRetain(element as CFTypeRef) };
     if retained.is_null() {
         None
@@ -1448,6 +1582,11 @@ fn retain_observer_element(element: AXUIElementRef) -> Option<usize> {
 
 fn release_retained_observer_element(element: Option<usize>) {
     if let Some(element) = element {
+        // SAFETY: a `Some` here is always the +1 produced by
+        // `retain_observer_element`, and it is released exactly once: the
+        // burst drain overwrites the variable in the same step, and the
+        // callback's send-failure path reaches this only when the worker never
+        // received the message, so no other owner of that +1 exists.
         unsafe {
             CFRelease(element as CFTypeRef);
         }
@@ -1573,12 +1712,21 @@ mod tests {
         }
 
         fn try_recv(&mut self) -> Result<Message, mpsc::TryRecvError> {
-            match self.messages.pop_front() {
-                Some(Ok(message)) => Ok(message),
-                // A queued timeout entry carries no message; coalescing
-                // treats it as "nothing queued".
-                Some(Err(_)) | None => Err(mpsc::TryRecvError::Empty),
+            // Peek first, and pop only what is actually returned. A queued
+            // timeout entry carries no message, so coalescing still sees
+            // "nothing queued" — but `ChannelAxWorkerLoop::try_recv` cannot
+            // *consume* a timeout (a real channel reports `Empty` and leaves
+            // the channel untouched), so neither may the fake. Popping it
+            // here would swallow the idle `pump` that entry stands for and
+            // let a burst test that interleaves `timeout_message()` quietly
+            // under-count run-loop service.
+            if !matches!(self.messages.front(), Some(Ok(_))) {
+                return Err(mpsc::TryRecvError::Empty);
             }
+            self.messages
+                .pop_front()
+                .and_then(Result::ok)
+                .ok_or(mpsc::TryRecvError::Empty)
         }
 
         fn pump_run_loop(&mut self) {
@@ -1860,6 +2008,35 @@ mod tests {
         assert!(
             job_ran_rx.recv_timeout(Duration::from_secs(1)).is_ok(),
             "the queued job runs after the burst, never dropped"
+        );
+    }
+
+    #[test]
+    fn observer_burst_drain_leaves_a_queued_timeout_for_the_next_recv() {
+        // The fake's `try_recv` mirrors `ChannelAxWorkerLoop::try_recv`,
+        // which cannot consume a timeout: a real channel reports `Empty` and
+        // leaves the queue untouched, so the pump that entry stands for still
+        // happens. A fake that popped it would lose one `pump` per
+        // interleaved `timeout_message()` and make burst timing tests lie.
+        let (callback_tx, _callback_rx) = mpsc::channel();
+        let dispatch: ObserverDispatch = Arc::new(|_event: ObserverEvent| {});
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            observer_burst_message(Arc::clone(&dispatch), callback_tx.clone(), "ax:first"),
+            timeout_message(),
+            observer_burst_message(Arc::clone(&dispatch), callback_tx.clone(), "ax:second"),
+            stop_message(),
+        ]));
+        let events = worker_loop.events();
+        let (started_tx, _started_rx) = mpsc::channel();
+
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            // observer, the idle timeout the drain declined to consume, the
+            // second observer, then the deferred Stop (which needs no recv).
+            ["recv", "pump", "recv", "pump", "recv", "pump"],
+            "the drain must leave a queued timeout for the next recv"
         );
     }
 
