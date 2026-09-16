@@ -41,7 +41,9 @@ impl WindowsAdapter {
 
 impl PlatformAdapter for WindowsAdapter {
     /// Host OS version via `RtlGetVersion` — cheap and infallible per the
-    /// contract (see [`win_host::os_version`] for the probe and the format).
+    /// contract. See `win_host::os_version` for the probe and the format —
+    /// a plain code span, not an intra-doc link, because that module is
+    /// `cfg(windows)` and the off-Windows rustdoc build cannot resolve it.
     fn environment(&self) -> Environment {
         #[cfg(windows)]
         let version = win_host::os_version();
@@ -167,7 +169,7 @@ fn open_url_with(
 }
 
 impl platform::shell::ShellHost for WindowsShellHost {
-    /// See [`win_host::pump_events`] for why this is a message wait and not a
+    /// See `win_host::pump_events` for why this is a message wait and not a
     /// sleep on Windows.
     fn pump_events(&self, heartbeat: std::time::Duration) {
         #[cfg(windows)]
