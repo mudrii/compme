@@ -5,15 +5,25 @@
 # workspace and tools/spike point `[patch.crates-io]` at it, so an unnoticed
 # edit here ships into every binary with no compiler or lockfile signal.
 #
-# Ground truth is the upstream `.crate` tarball (pinned by sha256 below),
-# taken from a local cargo registry cache when one has it and fetched only as
-# a fallback. Every path that differs from that tarball must appear in the
-# allowlist with the digest of the vendored file and the reason it is patched,
-# so neither a new difference nor a changed patch can pass as "intentional",
-# and a patch that silently disappears fails too.
+# Ground truth is the committed digest manifest next to this script
+# (vendor-llama-cpp-2.sha256): one sha256 per file of the published .crate.
+# A normal run needs nothing else — no tarball, no registry cache, no network
+# — because both lockfiles resolve llama-cpp-2 through `[patch.crates-io]` to
+# vendor/, so cargo never downloads that tarball and a CI runner never has
+# one. Every path whose vendored bytes differ from the manifest must appear in
+# the allowlist with the digest of the vendored file and the reason it is
+# patched, so neither a new difference nor a changed patch can pass as
+# "intentional", and a patch that silently disappears fails too.
 #
-# Bumping llama-cpp-2 means re-stamping expected_version, upstream_sha256, and
-# every allowlist digest in the same commit as the vendored rebase.
+# When a tarball does happen to be at hand (a dev box, or
+# COMPME_VENDOR_CRATE_PATH), the run additionally re-derives the manifest from
+# it, so a hand-doctored manifest is caught; the output says which of the two
+# assurance levels you got. `--write-manifest` regenerates the manifest from a
+# tarball and is the only mode that requires one.
+#
+# Bumping llama-cpp-2 means re-stamping expected_version and upstream_sha256,
+# re-running --write-manifest, and re-stamping every allowlist digest, all in
+# the same commit as the vendored rebase.
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -23,13 +33,16 @@ cd "$repo_root"
 # pins and the vendored manifest, so a bump cannot land in only some of them.
 expected_version="0.1.146"
 # sha256 of the published llama-cpp-2 0.1.146 registry tarball, as cargo
-# verified it on download. Ground truth comes from the local registry cache
-# only: this script performs NO network access, so it adds no egress host to
-# a product whose privacy gate reviews every one (check-privacy-policy.sh).
+# verified it on download. Recorded in the digest manifest's header and
+# re-checked against any local tarball: this script performs NO network
+# access, so it adds no egress host to a product whose privacy gate reviews
+# every one (check-privacy-policy.sh).
 upstream_sha256="f3b0f368c76cc0fe475e8257aeeec269e0d6569bd48b1f503efd0963fc3ee397"
 
+manifest_path="$repo_root/tools/release/vendor-llama-cpp-2.sha256"
+
 usage() {
-  echo "usage: check-vendor-drift.sh [--self-test]" >&2
+  echo "usage: check-vendor-drift.sh [--self-test | --write-manifest]" >&2
 }
 
 # kind|path|sha256-of-the-vendored-file|why it differs from upstream
@@ -61,21 +74,78 @@ sha256_of() {
 
 # `.cargo-ok` is cargo's extraction marker, not crate content: the extracted
 # registry copy has it and the .crate tarball does not. Ignoring it on both
-# sides keeps the comparison identical whichever upstream source is used.
+# sides keeps the comparison identical whichever source is used.
 list_tree() {
   dir="$1"
   (cd "$dir" && find . -type f ! -name .cargo-ok | sed 's|^\./||' | LC_ALL=C sort)
 }
 
-# Compare a vendored tree against an upstream tree, allowing only the paths in
-# the allowlist file (same line format as `allowlist`).
-compare_trees() {
-  upstream="$1"
+# Manifest body format: "<sha256>  <path>", LC_ALL=C sorted. The two-space
+# separator matches sha256sum's own output, and fixes the field offsets: the
+# digest is bytes 1-64 and the path starts at byte 67, so a path may contain
+# anything but a newline.
+digest_tree() {
+  dir="$1"
+  list_tree "$dir" | while IFS= read -r tree_path; do
+    printf '%s  %s\n' "$(sha256_of "$dir/$tree_path")" "$tree_path"
+  done
+}
+
+manifest_paths() {
+  awk '{ print substr($0, 67) }' "$1"
+}
+
+manifest_digest_of() {
+  awk -v want="$2" 'substr($0, 67) == want { print substr($0, 1, 64); exit }' "$1"
+}
+
+# Read the committed manifest into $2 as bare "<sha256>  <path>" lines.
+# A missing or malformed manifest is a hard failure: it is ground truth, not
+# a cache that may be absent.
+read_manifest() {
+  src="$1"
+  out="$2"
+  if [ ! -f "$src" ]; then
+    echo "vendor drift check failed: digest manifest $src is missing; it is committed ground truth, regenerate it with --write-manifest" >&2
+    return 1
+  fi
+  header_version="$(sed -n 's/^# version: \(.*\)$/\1/p' "$src" | head -1)"
+  if [ "$header_version" != "$expected_version" ]; then
+    echo "vendor drift check failed: malformed digest manifest $src: header records version ${header_version:-<none>}, this checker expects $expected_version" >&2
+    return 1
+  fi
+  header_sha="$(sed -n 's/^# tarball-sha256: \(.*\)$/\1/p' "$src" | head -1)"
+  if [ "$header_sha" != "$upstream_sha256" ]; then
+    echo "vendor drift check failed: malformed digest manifest $src: header records tarball-sha256 ${header_sha:-<none>}, this checker expects $upstream_sha256" >&2
+    return 1
+  fi
+  grep -v -e '^#' -e '^[[:space:]]*$' "$src" >"$out" || true
+  if [ ! -s "$out" ]; then
+    echo "vendor drift check failed: malformed digest manifest $src: it records no file digests" >&2
+    return 1
+  fi
+  bad_line="$(grep -n -v -E '^[0-9a-f]{64}  [^[:space:]].*$' "$out" | head -1 || true)"
+  if [ -n "$bad_line" ]; then
+    echo "vendor drift check failed: malformed digest manifest $src: entry $(printf '%s' "$bad_line" | cut -d: -f1) is not \"<sha256>  <path>\"" >&2
+    return 1
+  fi
+  dupe="$(manifest_paths "$out" | LC_ALL=C sort | uniq -d | head -1)"
+  if [ -n "$dupe" ]; then
+    echo "vendor drift check failed: malformed digest manifest $src: duplicate path $dupe" >&2
+    return 1
+  fi
+}
+
+# Compare a vendored tree against the upstream digests in an entries file,
+# allowing only the paths in the allowlist file (same line format as
+# `allowlist`).
+compare_manifest() {
+  entries="$1"
   vendor="$2"
   allow_file="$3"
   work="$(mktemp -d "${TMPDIR:-/tmp}/compme-vendor-drift-cmp.XXXXXX")"
 
-  list_tree "$upstream" >"$work/upstream.list"
+  manifest_paths "$entries" >"$work/upstream.list"
   list_tree "$vendor" >"$work/vendor.list"
   LC_ALL=C sort -u "$work/upstream.list" "$work/vendor.list" >"$work/union.list"
   : >"$work/seen.list"
@@ -84,12 +154,18 @@ compare_trees() {
   allowed=0
   while IFS= read -r path; do
     [ -n "$path" ] || continue
-    if [ -f "$upstream/$path" ] && [ -f "$vendor/$path" ]; then
-      if cmp -s "$upstream/$path" "$vendor/$path"; then
+    upstream_sha="$(manifest_digest_of "$entries" "$path")"
+    if [ -f "$vendor/$path" ]; then
+      vendor_sha="$(sha256_of "$vendor/$path")"
+    else
+      vendor_sha=""
+    fi
+    if [ -n "$upstream_sha" ] && [ -n "$vendor_sha" ]; then
+      if [ "$upstream_sha" = "$vendor_sha" ]; then
         continue
       fi
       kind="patched"
-    elif [ -f "$vendor/$path" ]; then
+    elif [ -n "$vendor_sha" ]; then
       kind="added"
     else
       echo "vendor drift check failed: $path is missing from the vendored tree (upstream ships it)" >&2
@@ -111,9 +187,8 @@ compare_trees() {
       failed=1
       continue
     fi
-    actual_sha="$(sha256_of "$vendor/$path")"
-    if [ "$actual_sha" != "$allow_sha" ]; then
-      echo "vendor drift check failed: allowlisted $path changed: expected sha256 $allow_sha, found $actual_sha" >&2
+    if [ "$vendor_sha" != "$allow_sha" ]; then
+      echo "vendor drift check failed: allowlisted $path changed: expected sha256 $allow_sha, found $vendor_sha" >&2
       failed=1
       continue
     fi
@@ -186,6 +261,71 @@ locate_cached_crate() {
   done
 }
 
+verify_crate_sha() {
+  crate_file="$1"
+  crate_sha="$(sha256_of "$crate_file")"
+  if [ "$crate_sha" != "$upstream_sha256" ]; then
+    echo "vendor drift check failed: $crate_file has sha256 $crate_sha, expected $upstream_sha256 for llama-cpp-2 $expected_version" >&2
+    return 1
+  fi
+}
+
+# Unpack a .crate tarball and print the crate directory inside it.
+extract_crate() {
+  ex_crate="$1"
+  ex_version="$2"
+  ex_dest="$3"
+  mkdir -p "$ex_dest"
+  if ! tar xzf "$ex_crate" -C "$ex_dest" 2>/dev/null; then
+    echo "vendor drift check failed: $ex_crate is not a readable .crate tarball" >&2
+    return 1
+  fi
+  if [ ! -d "$ex_dest/llama-cpp-2-$ex_version" ]; then
+    echo "vendor drift check failed: $ex_crate does not contain llama-cpp-2-$ex_version/" >&2
+    return 1
+  fi
+  printf '%s\n' "$ex_dest/llama-cpp-2-$ex_version"
+}
+
+# The stronger assurance level: the committed digests really are the published
+# tarball's, so a hand-doctored manifest cannot launder drift.
+assert_manifest_reproduces() {
+  ar_entries="$1"
+  ar_crate="$2"
+  ar_version="$3"
+  ar_work="$4"
+  ar_dir="$(extract_crate "$ar_crate" "$ar_version" "$ar_work/upstream")" || return 1
+  digest_tree "$ar_dir" >"$ar_work/fresh-entries.txt"
+  if ! diff -u "$ar_entries" "$ar_work/fresh-entries.txt" >"$ar_work/manifest.diff" 2>&1; then
+    echo "vendor drift check failed: the committed digest manifest does not re-derive from $ar_crate; regenerate it with --write-manifest" >&2
+    sed -n '1,20p' "$ar_work/manifest.diff" >&2
+    return 1
+  fi
+}
+
+write_manifest() {
+  wm_crate="$1"
+  wm_out="$2"
+  wm_work="$3"
+  wm_dir="$(extract_crate "$wm_crate" "$expected_version" "$wm_work/upstream")" || return 1
+  {
+    echo "# Upstream file digests for llama-cpp-2 $expected_version — the ground truth"
+    echo "# for tools/release/check-vendor-drift.sh."
+    echo "#"
+    echo "# Generated by: tools/release/check-vendor-drift.sh --write-manifest"
+    echo "# version: $expected_version"
+    echo "# tarball-sha256: $upstream_sha256"
+    echo "#"
+    echo "# One line per file in the published .crate, as \"<sha256>  <path>\","
+    echo "# LC_ALL=C sorted, excluding cargo's .cargo-ok extraction marker. Committed"
+    echo "# so the drift check verifies vendor/llama-cpp-2 offline, with no registry"
+    echo "# cache and no network: both lockfiles patch llama-cpp-2 to vendor/, so a CI"
+    echo "# runner never downloads the tarball. Re-stamp it with --write-manifest in"
+    echo "# the same commit as any llama-cpp-2 bump."
+    digest_tree "$wm_dir"
+  } >"$wm_out"
+}
+
 run_self_test() {
   for name in COMPME_VENDOR_CRATE_PATH; do
     if printenv "$name" >/dev/null 2>&1; then
@@ -210,6 +350,10 @@ run_self_test() {
   printf 'license\n' >"$vd/LICENSE-MIT"
   printf '{"v":1}\n' >"$vd/.cargo-ok"
 
+  # The fixture's "upstream" is a digest list, exactly like the committed
+  # manifest body: no upstream tree is consulted during a comparison.
+  digest_tree "$up" >"$tmp/entries.txt"
+
   patched_sha="$(sha256_of "$vd/src/patched.rs")"
   license_sha="$(sha256_of "$vd/LICENSE-MIT")"
   {
@@ -218,12 +362,12 @@ run_self_test() {
   } >"$tmp/allow.txt"
 
   # Clean tree: the allowlisted patch and addition pass, `.cargo-ok` is ignored.
-  compare_trees "$up" "$vd" "$tmp/allow.txt" >"$tmp/clean.out"
+  compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >"$tmp/clean.out"
   grep -q '^vendor tree matches upstream except 2 allowlisted paths$' "$tmp/clean.out"
 
-  # Injected drift in a file nobody patched.
+  # A vendored file whose digest does not match the manifest.
   printf 'sneaky\n' >"$vd/src/keep.rs"
-  if compare_trees "$up" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/modified.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/modified.err"; then
     echo "vendor drift self-test failed: an unallowlisted modified file was accepted" >&2
     return 1
   fi
@@ -232,7 +376,7 @@ run_self_test() {
 
   # Injected drift inside an allowlisted file: the digest must catch it.
   printf 'patched plus a smuggled line\n' >"$vd/src/patched.rs"
-  if compare_trees "$up" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/digest.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/digest.err"; then
     echo "vendor drift self-test failed: a changed allowlisted file was accepted" >&2
     return 1
   fi
@@ -241,7 +385,7 @@ run_self_test() {
 
   # A file added to the vendored tree without an allowlist entry.
   printf 'extra\n' >"$vd/src/extra.rs"
-  if compare_trees "$up" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/added.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/added.err"; then
     echo "vendor drift self-test failed: an unallowlisted added file was accepted" >&2
     return 1
   fi
@@ -250,7 +394,7 @@ run_self_test() {
 
   # A file dropped from the vendored tree.
   rm -f "$vd/src/keep.rs"
-  if compare_trees "$up" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/removed.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/removed.err"; then
     echo "vendor drift self-test failed: a file missing from the vendored tree was accepted" >&2
     return 1
   fi
@@ -259,7 +403,7 @@ run_self_test() {
 
   # The patch silently reverting to upstream is drift, not a pass.
   printf 'upstream\n' >"$vd/src/patched.rs"
-  if compare_trees "$up" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/lost.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow.txt" >/dev/null 2>"$tmp/lost.err"; then
     echo "vendor drift self-test failed: a lost patch was accepted" >&2
     return 1
   fi
@@ -268,11 +412,94 @@ run_self_test() {
 
   # An allowlist entry filed under the wrong kind.
   sed 's/^patched|src\/patched.rs/added|src\/patched.rs/' "$tmp/allow.txt" >"$tmp/allow-kind.txt"
-  if compare_trees "$up" "$vd" "$tmp/allow-kind.txt" >/dev/null 2>"$tmp/kind.err"; then
+  if compare_manifest "$tmp/entries.txt" "$vd" "$tmp/allow-kind.txt" >/dev/null 2>"$tmp/kind.err"; then
     echo "vendor drift self-test failed: a mis-filed allowlist kind was accepted" >&2
     return 1
   fi
   grep -q 'allowlist records src/patched\.rs as added, the tree shows patched' "$tmp/kind.err"
+
+  # Manifest validation: missing, and every shape of malformed.
+  if read_manifest "$tmp/absent.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-missing.err"; then
+    echo "vendor drift self-test failed: a missing digest manifest was accepted" >&2
+    return 1
+  fi
+  grep -q 'digest manifest .*absent\.sha256 is missing' "$tmp/manifest-missing.err"
+
+  good_manifest="$tmp/manifest.sha256"
+  {
+    printf '# version: %s\n' "$expected_version"
+    printf '# tarball-sha256: %s\n' "$upstream_sha256"
+    printf '\n'
+    cat "$tmp/entries.txt"
+  } >"$good_manifest"
+  read_manifest "$good_manifest" "$tmp/entries-out.txt"
+  if ! cmp -s "$tmp/entries.txt" "$tmp/entries-out.txt"; then
+    echo "vendor drift self-test failed: a well-formed manifest did not round-trip" >&2
+    return 1
+  fi
+
+  sed "s/^# version: .*/# version: 9.9.9/" "$good_manifest" >"$tmp/manifest-version.sha256"
+  if read_manifest "$tmp/manifest-version.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-version.err"; then
+    echo "vendor drift self-test failed: a manifest with the wrong version header was accepted" >&2
+    return 1
+  fi
+  grep -q "header records version 9\.9\.9, this checker expects $expected_version" "$tmp/manifest-version.err"
+
+  grep -v '^# tarball-sha256: ' "$good_manifest" >"$tmp/manifest-nosha.sha256"
+  if read_manifest "$tmp/manifest-nosha.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-nosha.err"; then
+    echo "vendor drift self-test failed: a manifest with no tarball-sha256 header was accepted" >&2
+    return 1
+  fi
+  grep -q 'header records tarball-sha256 <none>' "$tmp/manifest-nosha.err"
+
+  grep '^#' "$good_manifest" >"$tmp/manifest-empty.sha256"
+  if read_manifest "$tmp/manifest-empty.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-empty.err"; then
+    echo "vendor drift self-test failed: a manifest with no digests was accepted" >&2
+    return 1
+  fi
+  grep -q 'it records no file digests' "$tmp/manifest-empty.err"
+
+  sed 's|^[0-9a-f]\{64\}  src/keep.rs$|deadbeef src/keep.rs|' "$good_manifest" >"$tmp/manifest-shape.sha256"
+  if read_manifest "$tmp/manifest-shape.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-shape.err"; then
+    echo "vendor drift self-test failed: a malformed manifest entry was accepted" >&2
+    return 1
+  fi
+  grep -q 'is not "<sha256>  <path>"' "$tmp/manifest-shape.err"
+
+  { cat "$good_manifest"; grep 'src/keep.rs$' "$tmp/entries.txt"; } >"$tmp/manifest-dupe.sha256"
+  if read_manifest "$tmp/manifest-dupe.sha256" "$tmp/entries-out.txt" 2>"$tmp/manifest-dupe.err"; then
+    echo "vendor drift self-test failed: a manifest with a duplicate path was accepted" >&2
+    return 1
+  fi
+  grep -q 'duplicate path src/keep\.rs' "$tmp/manifest-dupe.err"
+
+  # A manifest that disagrees with the tarball, on a hermetic fake .crate.
+  fake_version="9.9.9"
+  fake_root="$tmp/fake/llama-cpp-2-$fake_version"
+  mkdir -p "$fake_root/src"
+  printf 'fake lib\n' >"$fake_root/src/lib.rs"
+  printf 'fake manifest\n' >"$fake_root/Cargo.toml"
+  (cd "$tmp/fake" && tar czf "$tmp/fake.crate" "llama-cpp-2-$fake_version")
+  mkdir -p "$tmp/repro-ok"
+  digest_tree "$fake_root" >"$tmp/fake-entries.txt"
+  assert_manifest_reproduces "$tmp/fake-entries.txt" "$tmp/fake.crate" "$fake_version" "$tmp/repro-ok"
+  sed 's|^[0-9a-f]\{64\}|00000000000000000000000000000000000000000000000000000000000000ff|' \
+    "$tmp/fake-entries.txt" >"$tmp/fake-entries-doctored.txt"
+  mkdir -p "$tmp/repro-bad"
+  if assert_manifest_reproduces "$tmp/fake-entries-doctored.txt" "$tmp/fake.crate" "$fake_version" \
+    "$tmp/repro-bad" 2>"$tmp/repro.err"; then
+    echo "vendor drift self-test failed: a doctored manifest was accepted against the tarball" >&2
+    return 1
+  fi
+  grep -q 'does not re-derive from .*fake\.crate' "$tmp/repro.err"
+
+  mkdir -p "$tmp/repro-missing"
+  if assert_manifest_reproduces "$tmp/fake-entries.txt" "$tmp/fake.crate" "0.0.0" \
+    "$tmp/repro-missing" 2>"$tmp/repro-layout.err"; then
+    echo "vendor drift self-test failed: a tarball with the wrong crate directory was accepted" >&2
+    return 1
+  fi
+  grep -q 'does not contain llama-cpp-2-0\.0\.0/' "$tmp/repro-layout.err"
 
   # Version pin agreement across the three Cargo.toml pins and the manifest.
   printf 'llama-cpp-2 = { version = "=9.9.9", default-features = false, features = ["metal"] }\n' >"$tmp/model-client.toml"
@@ -313,37 +540,62 @@ run_self_test() {
     return 1
   fi
 
-  # No cached tarball degrades to a skip, not a gate failure.
+  # No local tarball must still VERIFY against the committed manifest. This is
+  # the CI shape: both lockfiles patch llama-cpp-2 to vendor/, so no runner
+  # ever has the .crate.
   COMPME_VENDOR_CRATE_PATH="$tmp/absent.crate" \
     "$script" >"$tmp/offline.out"
-  grep -q '^vendor drift check skipped: ' "$tmp/offline.out"
+  grep -q '^vendor tree matches upstream except ' "$tmp/offline.out"
+  grep -q "^no local llama-cpp-2-$expected_version\.crate: " "$tmp/offline.out"
+  grep -q '^vendor drift check passed: ' "$tmp/offline.out"
+
+  # ... and a missing manifest must fail that same run, not skip it. Run the
+  # script against a stand-in repo root whose inputs are symlinks to the real
+  # ones and whose manifest is absent.
+  fake_repo="$tmp/fake-repo"
+  mkdir -p "$fake_repo/tools/release" "$fake_repo/crates/model_client" "$fake_repo/tools/spike"
+  cp "$script" "$fake_repo/tools/release/check-vendor-drift.sh"
+  ln -s "$repo_root/vendor" "$fake_repo/vendor"
+  ln -s "$repo_root/crates/model_client/Cargo.toml" "$fake_repo/crates/model_client/Cargo.toml"
+  ln -s "$repo_root/tools/spike/Cargo.toml" "$fake_repo/tools/spike/Cargo.toml"
+  if COMPME_VENDOR_CRATE_PATH="$tmp/absent.crate" \
+    "$fake_repo/tools/release/check-vendor-drift.sh" >/dev/null 2>"$tmp/no-manifest.err"; then
+    echo "vendor drift self-test failed: a run with no digest manifest was accepted" >&2
+    return 1
+  fi
+  grep -q 'digest manifest .*vendor-llama-cpp-2\.sha256 is missing' "$tmp/no-manifest.err"
 
   if "$script" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "vendor drift self-test failed: extra --self-test argument was accepted" >&2
     return 1
   fi
-  grep -q '^usage: check-vendor-drift\.sh \[--self-test\]$' "$tmp/self-test-argc.err"
+  grep -q '^usage: check-vendor-drift\.sh \[--self-test | --write-manifest\]$' "$tmp/self-test-argc.err"
   if "$script" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
     echo "vendor drift self-test failed: extra normal argument was accepted" >&2
     return 1
   fi
-  grep -q '^usage: check-vendor-drift\.sh \[--self-test\]$' "$tmp/normal-argc.err"
+  grep -q '^usage: check-vendor-drift\.sh \[--self-test | --write-manifest\]$' "$tmp/normal-argc.err"
 
   echo "Self-test passed"
 }
 
-if [ "${1:-}" = "--self-test" ]; then
-  if [ "$#" -ne 1 ]; then
-    usage
-    exit 2
-  fi
-  run_self_test
-  exit 0
-fi
-if [ "$#" -ne 0 ]; then
+mode="verify"
+if [ "$#" -gt 1 ]; then
   usage
   exit 2
 fi
+case "${1:-}" in
+  "") ;;
+  --self-test)
+    run_self_test
+    exit 0
+    ;;
+  --write-manifest) mode="write" ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac
 
 check_version_pins \
   "$repo_root/crates/model_client/Cargo.toml" \
@@ -355,27 +607,27 @@ scratch="$(mktemp -d "${TMPDIR:-/tmp}/compme-vendor-drift-run.XXXXXX")"
 trap 'rm -rf "$scratch"' EXIT
 
 crate_path="$(locate_cached_crate "$expected_version")"
-crate_source="the cargo registry cache"
-if [ -z "$crate_path" ]; then
-  echo "vendor drift check skipped: no local llama-cpp-2-$expected_version.crate; run a cargo build (or set COMPME_VENDOR_CRATE_PATH) to populate the registry cache"
+
+if [ "$mode" = "write" ]; then
+  if [ -z "$crate_path" ]; then
+    echo "vendor drift check failed: --write-manifest needs a local llama-cpp-2-$expected_version.crate; run a cargo build against crates.io or set COMPME_VENDOR_CRATE_PATH" >&2
+    exit 1
+  fi
+  verify_crate_sha "$crate_path"
+  write_manifest "$crate_path" "$manifest_path" "$scratch"
+  echo "wrote $manifest_path from $crate_path ($(grep -c -v -e '^#' -e '^[[:space:]]*$' "$manifest_path") upstream files)"
   exit 0
 fi
 
-crate_sha="$(sha256_of "$crate_path")"
-if [ "$crate_sha" != "$upstream_sha256" ]; then
-  echo "vendor drift check failed: $crate_path has sha256 $crate_sha, expected $upstream_sha256 for llama-cpp-2 $expected_version" >&2
-  exit 1
-fi
-
-mkdir -p "$scratch/upstream"
-tar xzf "$crate_path" -C "$scratch/upstream"
-upstream_dir="$scratch/upstream/llama-cpp-2-$expected_version"
-if [ ! -d "$upstream_dir" ]; then
-  echo "vendor drift check failed: $crate_path does not contain llama-cpp-2-$expected_version/" >&2
-  exit 1
-fi
-
+read_manifest "$manifest_path" "$scratch/entries.txt"
 allowlist >"$scratch/allow.txt"
-compare_trees "$upstream_dir" "$repo_root/vendor/llama-cpp-2" "$scratch/allow.txt" >"$scratch/compare.out"
-cat "$scratch/compare.out"
-echo "vendor drift check passed: vendor/llama-cpp-2 matches llama-cpp-2 $expected_version from $crate_source"
+compare_manifest "$scratch/entries.txt" "$repo_root/vendor/llama-cpp-2" "$scratch/allow.txt"
+
+if [ -n "$crate_path" ]; then
+  verify_crate_sha "$crate_path"
+  assert_manifest_reproduces "$scratch/entries.txt" "$crate_path" "$expected_version" "$scratch"
+  echo "digest manifest re-derived from $crate_path: the committed digests are the published tarball's"
+else
+  echo "no local llama-cpp-2-$expected_version.crate: verified against the committed digest manifest alone (set COMPME_VENDOR_CRATE_PATH to a tarball to also re-derive it)"
+fi
+echo "vendor drift check passed: vendor/llama-cpp-2 matches llama-cpp-2 $expected_version"

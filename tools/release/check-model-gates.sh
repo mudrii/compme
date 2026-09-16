@@ -3851,6 +3851,8 @@ ruby -ryaml -e '
     "A1b self-test" => ["A1b runner self-test", "tools/acceptance/run-a1b-live-gates.sh --self-test"],
     "model client feature policy" => ["Model client feature policy", "tools/release/check-model-client-features.sh"],
     "model client feature policy self-test" => ["Model client feature policy self-test", "tools/release/check-model-client-features.sh --self-test"],
+    "vendor drift" => ["Vendored llama-cpp-2 drift check", "tools/release/check-vendor-drift.sh"],
+    "vendor drift self-test" => ["Vendored llama-cpp-2 drift check self-test", "tools/release/check-vendor-drift.sh --self-test"],
     "agent brief alignment" => ["Agent brief alignment", "tools/release/check-agent-briefs.sh"],
     "agent brief alignment self-test" => ["Agent brief alignment self-test", "tools/release/check-agent-briefs.sh --self-test"],
     "privacy policy" => ["Privacy policy", "tools/release/check-privacy-policy.sh"],

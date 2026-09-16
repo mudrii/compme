@@ -191,6 +191,12 @@ jobs:
       - name: Model client feature policy self-test
         run: tools/release/check-model-client-features.sh --self-test
 
+      - name: Vendored llama-cpp-2 drift check
+        run: tools/release/check-vendor-drift.sh
+
+      - name: Vendored llama-cpp-2 drift check self-test
+        run: tools/release/check-vendor-drift.sh --self-test
+
       - name: Agent brief alignment
         run: tools/release/check-agent-briefs.sh
 
