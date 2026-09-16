@@ -25,6 +25,20 @@
 //! parameter and anything after it fails closed. With no trusted key
 //! configured, signed links are rejected (fail-closed default-off).
 //!
+//! **Expiry (G14):** every signed link MUST carry `exp=<unix seconds>` inside
+//! the signed prefix (before `&sig=`), and is rejected once that deadline
+//! passes. `exp` is **required on signed links, optional on unsigned ones**:
+//! a signature is a standing grant that a captured link would otherwise replay
+//! forever, so the fail-closed rule belongs where the authority lives — an
+//! unsigned link carries no authority at all (any page can mint one from
+//! scratch), so a deadline on it protects nothing. Backward compatibility
+//! costs nothing here: the only signer is the in-repo `sign_link` example,
+//! which now stamps `exp` itself, and requiring it today means the future
+//! non-reversible commands this gate exists for cannot ship without it. An
+//! `exp` on an unsigned link is still honoured when present (never silently
+//! ignored). The deadline is compared against an injected clock; only the
+//! public entry points read the system clock.
+//!
 //! **Reversibility is NOT a full substitute for signing.** Because any page can
 //! fire a deep link, an unsigned link can still nuisance-toggle a user's apps
 //! (clickjacking / DoS by rapid toggling). Two host-layer requirements are
@@ -106,6 +120,14 @@ pub enum ParseError {
     UntrustedSignature,
     /// The signature did not verify against the trusted key for this payload.
     InvalidSignature,
+    /// The `exp` value was not plain unix seconds (ASCII digits fitting `u64`).
+    MalformedExpiry(String),
+    /// A signed link carried no `exp=` deadline (required on signed links).
+    MissingExpiry,
+    /// The link's `exp=` deadline has passed. Distinct from a malformed link
+    /// and from an untrusted one: this link was well-formed and correctly
+    /// signed, it is simply a replay of one whose authority has run out.
+    ExpiredLink { exp: u64, now: u64 },
 }
 
 impl std::fmt::Display for ParseError {
@@ -145,6 +167,15 @@ impl std::fmt::Display for ParseError {
                 write!(f, "signed link but no trusted key configured")
             }
             ParseError::InvalidSignature => write!(f, "signature verification failed"),
+            ParseError::MalformedExpiry(value) => {
+                write!(f, "malformed expiry (need unix seconds): {value}")
+            }
+            ParseError::MissingExpiry => {
+                write!(f, "signed link without an `exp` deadline")
+            }
+            ParseError::ExpiredLink { exp, now } => {
+                write!(f, "link expired (exp={exp}, now={now})")
+            }
         }
     }
 }
@@ -157,8 +188,25 @@ const MAX_SCOPE_LEN: usize = 253;
 
 /// Parse and validate a `compme://setOverride?...` deep link. Returns the
 /// reversible command, or a specific [`ParseError`] — never a partial/guessed
-/// result.
+/// result. An `exp=` deadline is optional here (an unsigned link has no
+/// authority to expire) but is enforced against the system clock when present.
 pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
+    parse_deep_link_at(url, now_unix_secs())
+}
+
+/// [`parse_deep_link`] with the clock injected, so the expiry rule stays pure
+/// and deterministically testable: only the two public entry points read the
+/// system clock, never the verifier below them.
+fn parse_deep_link_at(url: &str, now_unix_secs: u64) -> Result<OverrideCommand, ParseError> {
+    let (command, expiry) = parse_payload(url)?;
+    check_expiry(expiry, now_unix_secs)?;
+    Ok(command)
+}
+
+/// Parse the link body into the command plus its optional `exp=` deadline,
+/// without judging that deadline — the caller decides whether a missing one is
+/// allowed and compares it against its injected clock.
+fn parse_payload(url: &str) -> Result<(OverrideCommand, Option<u64>), ParseError> {
     let rest = url.strip_prefix(SCHEME).ok_or(ParseError::NotOurScheme)?;
 
     // Split `command?query` (an absent `?` means no params at all).
@@ -176,6 +224,7 @@ pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
     let mut domain: Option<String> = None;
     let mut enabled: Option<bool> = None;
     let mut excluded: Option<bool> = None;
+    let mut expiry: Option<u64> = None;
 
     for pair in query.split('&').filter(|p| !p.is_empty()) {
         let (key, value) = pair
@@ -186,6 +235,7 @@ pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
             "domain" => set_once(&mut domain, key, value.to_string())?,
             "enabled" => set_once(&mut enabled, key, parse_bool(value)?)?,
             "excluded" => set_once(&mut excluded, key, parse_bool(value)?)?,
+            "exp" => set_once(&mut expiry, key, parse_unix_seconds(value)?)?,
             other => return Err(ParseError::UnknownParam(other.to_string())),
         }
     }
@@ -206,7 +256,7 @@ pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
         (None, Some(false)) => OverrideAction::Include,
     };
 
-    Ok(OverrideCommand { scope, action })
+    Ok((OverrideCommand { scope, action }, expiry))
 }
 
 /// An Ed25519 public key the host trusts to sign deep links (A3 §16 signing).
@@ -237,20 +287,43 @@ pub enum LinkTrust {
 /// Like [`parse_deep_link`], but signature-aware: a trailing
 /// `&sig=<128 hex>` parameter is split off and verified (Ed25519, over the
 /// exact URL bytes preceding `&sig=`) against the host's trusted key before
-/// the payload is parsed. Unsigned links still parse (the reversible subset
-/// needs no signature) and are labeled [`LinkTrust::Unsigned`].
+/// the payload is parsed. A verified payload must also carry an `exp=` unix
+/// deadline it has not yet reached, so a captured signed link stops working
+/// (G14). Unsigned links still parse (the reversible subset needs no
+/// signature, and no deadline) and are labeled [`LinkTrust::Unsigned`].
 pub fn parse_deep_link_with_trust(
     url: &str,
     trusted: Option<&TrustedKey>,
 ) -> Result<(OverrideCommand, LinkTrust), ParseError> {
+    parse_deep_link_with_trust_at(url, trusted, now_unix_secs())
+}
+
+/// [`parse_deep_link_with_trust`] with the clock injected. A signed link must
+/// carry an `exp=` deadline inside the signed prefix (module docs) and is
+/// rejected once `now_unix_secs` reaches it, so a captured link stops
+/// verifying instead of replaying forever (G14).
+fn parse_deep_link_with_trust_at(
+    url: &str,
+    trusted: Option<&TrustedKey>,
+    now_unix_secs: u64,
+) -> Result<(OverrideCommand, LinkTrust), ParseError> {
     match split_trailing_signature(url)? {
-        None => parse_deep_link(url).map(|command| (command, LinkTrust::Unsigned)),
+        None => {
+            parse_deep_link_at(url, now_unix_secs).map(|command| (command, LinkTrust::Unsigned))
+        }
         Some((payload, signature)) => {
             let key = trusted.ok_or(ParseError::UntrustedSignature)?;
             key.0
                 .verify_strict(payload.as_bytes(), &signature)
                 .map_err(|_| ParseError::InvalidSignature)?;
-            parse_deep_link(payload).map(|command| (command, LinkTrust::Signed))
+            // Parse first (a signed-but-malformed payload must still surface
+            // its own parse error), then apply the signed-link expiry rule.
+            let (command, expiry) = parse_payload(payload)?;
+            if expiry.is_none() {
+                return Err(ParseError::MissingExpiry);
+            }
+            check_expiry(expiry, now_unix_secs)?;
+            Ok((command, LinkTrust::Signed))
         }
     }
 }
@@ -306,6 +379,43 @@ pub fn prompt_decision_for_link(command: &OverrideCommand, trust: LinkTrust) -> 
             LinkTrust::Signed => "signed link, verified".to_string(),
         },
     }
+}
+
+/// Wall-clock unix seconds, read only at the public API edge. A clock before
+/// the epoch saturates to `u64::MAX`, expiring every deadline — the fail-closed
+/// direction, where returning 0 would make every captured link look fresh.
+fn now_unix_secs() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|elapsed| elapsed.as_secs())
+        .unwrap_or(u64::MAX)
+}
+
+/// Reject a link whose `exp` deadline has been reached. `now == exp` is already
+/// expired (the deadline is the first instant the link is dead, as with a JWT
+/// `exp`). `None` means no deadline was supplied; the caller has already
+/// decided whether that is allowed for this trust level.
+fn check_expiry(expiry: Option<u64>, now_unix_secs: u64) -> Result<(), ParseError> {
+    match expiry {
+        Some(exp) if now_unix_secs >= exp => Err(ParseError::ExpiredLink {
+            exp,
+            now: now_unix_secs,
+        }),
+        _ => Ok(()),
+    }
+}
+
+/// Plain unix seconds: ASCII digits only, fitting in `u64`. The digit check is
+/// ours rather than `from_str`'s because `u64::from_str` accepts a leading `+`
+/// (the same leniency `parse_hex` guards against below), and `+1` must be
+/// malformed, not a deadline in 1970.
+fn parse_unix_seconds(value: &str) -> Result<u64, ParseError> {
+    if value.is_empty() || !value.bytes().all(|b| b.is_ascii_digit()) {
+        return Err(ParseError::MalformedExpiry(value.to_string()));
+    }
+    value
+        .parse::<u64>()
+        .map_err(|_| ParseError::MalformedExpiry(value.to_string()))
 }
 
 /// Decode a hex string into bytes; `None` on odd length or a non-hex digit.
@@ -949,6 +1059,15 @@ mod tests {
         format!("{payload}&sig={}", encode_hex(&sig.to_bytes()))
     }
 
+    /// A deterministic "now" for the injected clock (2027-01-15, unix seconds).
+    const TEST_NOW: u64 = 1_800_000_000;
+
+    /// Sign `payload` with an `exp=` deadline appended INSIDE the signed
+    /// prefix — the only shape a signed link may take (module docs).
+    fn signed_url_expiring_at(payload: &str, exp: u64) -> String {
+        signed_url(&format!("{payload}&exp={exp}"))
+    }
+
     #[test]
     fn an_unsigned_link_parses_as_unsigned_trust() {
         assert_eq!(
@@ -991,9 +1110,14 @@ mod tests {
 
     #[test]
     fn a_validly_signed_link_parses_as_signed_trust() {
-        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&excluded=true");
+        // A signed link carries its `exp=` inside the signed prefix; here it is
+        // still in the future for the injected clock.
+        let url = signed_url_expiring_at(
+            "compme://setOverride?app=com.apple.TextEdit&excluded=true",
+            TEST_NOW + 60,
+        );
         assert_eq!(
-            parse_deep_link_with_trust(&url, Some(&test_trusted_key())),
+            parse_deep_link_with_trust_at(&url, Some(&test_trusted_key()), TEST_NOW),
             Ok((
                 OverrideCommand {
                     scope: Scope::App("com.apple.TextEdit".into()),
@@ -1001,6 +1125,202 @@ mod tests {
                 },
                 LinkTrust::Signed,
             ))
+        );
+    }
+
+    // ---- link expiry (G14) ----
+
+    #[test]
+    fn a_signed_link_is_rejected_once_its_expiry_has_passed() {
+        // A captured link must stop verifying. The deadline instant itself is
+        // already dead (`now == exp`), as with a JWT `exp` — pinning the `>=`
+        // so a `>` mutant (one free second) fails.
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
+        for exp in [TEST_NOW - 1, TEST_NOW] {
+            let url = signed_url_expiring_at(payload, exp);
+            assert_eq!(
+                parse_deep_link_with_trust_at(&url, Some(&test_trusted_key()), TEST_NOW),
+                Err(ParseError::ExpiredLink { exp, now: TEST_NOW }),
+                "exp={exp} must be expired at now={TEST_NOW}"
+            );
+        }
+        // The expiry failure is its OWN error: the link is neither malformed
+        // nor untrusted, so a host can say "this link has expired" rather than
+        // "this link is broken" or "we do not trust this signer".
+        let expired = signed_url_expiring_at(payload, TEST_NOW - 1);
+        let err = parse_deep_link_with_trust_at(&expired, Some(&test_trusted_key()), TEST_NOW)
+            .expect_err("expired");
+        assert_ne!(err, ParseError::MalformedExpiry((TEST_NOW - 1).to_string()));
+        assert_ne!(err, ParseError::MissingExpiry);
+        assert_ne!(err, ParseError::UntrustedSignature);
+        assert_ne!(err, ParseError::InvalidSignature);
+        assert!(err.to_string().contains("expired"), "{err}");
+    }
+
+    #[test]
+    fn a_signed_link_before_its_expiry_is_accepted() {
+        // One second before the deadline is the tightest accepted case; pins
+        // the other side of the `>=` boundary above.
+        let url = signed_url_expiring_at(
+            "compme://setOverride?domain=docs.google.com&excluded=true",
+            TEST_NOW + 1,
+        );
+        assert_eq!(
+            parse_deep_link_with_trust_at(&url, Some(&test_trusted_key()), TEST_NOW),
+            Ok((
+                OverrideCommand {
+                    scope: Scope::Domain("docs.google.com".into()),
+                    action: OverrideAction::Exclude,
+                },
+                LinkTrust::Signed,
+            ))
+        );
+    }
+
+    #[test]
+    fn a_signed_link_without_an_expiry_is_rejected() {
+        // The required-vs-optional decision, pinned: `exp` is REQUIRED on a
+        // signed link. A signature is a standing grant, so the fail-closed
+        // posture applies to it; the only signer is the in-repo `sign_link`
+        // example (which stamps `exp`), so nothing already-signed regresses,
+        // and a future non-reversible command cannot ship an unexpiring link
+        // by forgetting to add the parameter.
+        let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
+        assert_eq!(
+            parse_deep_link_with_trust_at(&url, Some(&test_trusted_key()), TEST_NOW),
+            Err(ParseError::MissingExpiry)
+        );
+    }
+
+    #[test]
+    fn tampering_with_the_expiry_after_signing_fails_verification() {
+        // `exp` lives INSIDE the signed prefix, so extending it is exactly as
+        // detectable as retargeting the app: the bytes change, the signature
+        // does not cover them any more. If this ever returns Ok, the deadline
+        // has been moved outside the signature and G14 is back.
+        let key = test_trusted_key();
+        let payload = "compme://setOverride?app=com.apple.TextEdit&enabled=true";
+        let url = signed_url_expiring_at(payload, TEST_NOW - 1);
+        let extended = url.replace(
+            &format!("exp={}", TEST_NOW - 1),
+            &format!("exp={}", TEST_NOW + 3600),
+        );
+        assert_ne!(extended, url, "the replacement must have changed the URL");
+        assert_eq!(
+            parse_deep_link_with_trust_at(&extended, Some(&key), TEST_NOW),
+            Err(ParseError::InvalidSignature),
+            "reviving an expired link by editing `exp` must fail verification"
+        );
+        // ...and shortening a live link's deadline is equally unsigned.
+        let live = signed_url_expiring_at(payload, TEST_NOW + 3600);
+        let shortened = live.replace(
+            &format!("exp={}", TEST_NOW + 3600),
+            &format!("exp={}", TEST_NOW - 1),
+        );
+        assert_eq!(
+            parse_deep_link_with_trust_at(&shortened, Some(&key), TEST_NOW),
+            Err(ParseError::InvalidSignature)
+        );
+    }
+
+    #[test]
+    fn a_malformed_expiry_value_is_rejected_as_malformed() {
+        // Distinct from an expired deadline: these never parse as a time at
+        // all. `+1` is the `u64::from_str` leniency the crate rejects for hex
+        // too — it must not decode to a 1970 deadline.
+        let key = test_trusted_key();
+        for bad in [
+            "",                     // empty
+            "abc",                  // not a number
+            "+1",                   // from_str accepts a leading `+`; we must not
+            "-1",                   // negative
+            "12.5",                 // fractional
+            "1e9",                  // exponent notation
+            " 1",                   // leading space
+            "18446744073709551616", // u64::MAX + 1 (overflow)
+        ] {
+            // Sign the malformed value itself (editing it afterwards would
+            // fail on the signature instead, hiding what is under test).
+            let url = signed_url(&format!(
+                "compme://setOverride?app=com.apple.TextEdit&enabled=true&exp={bad}"
+            ));
+            assert_eq!(
+                parse_deep_link_with_trust_at(&url, Some(&key), TEST_NOW),
+                Err(ParseError::MalformedExpiry(bad.to_string())),
+                "exp value {bad:?} must be rejected as malformed"
+            );
+            // Same verdict on the unsigned parser, which shares the payload
+            // parser (the malformed value is never silently dropped).
+            assert_eq!(
+                parse_deep_link(&format!(
+                    "compme://setOverride?app=com.apple.TextEdit&enabled=true&exp={bad}"
+                )),
+                Err(ParseError::MalformedExpiry(bad.to_string())),
+                "unsigned exp value {bad:?} must be rejected as malformed"
+            );
+        }
+        // A duplicate `exp` is still a duplicate param, not a last-one-wins.
+        assert_eq!(
+            parse_deep_link("compme://setOverride?app=com.foo.bar&enabled=true&exp=1&exp=2"),
+            Err(ParseError::DuplicateParam("exp".into()))
+        );
+    }
+
+    #[test]
+    fn an_unsigned_link_may_omit_an_expiry_but_never_outlives_one() {
+        // `exp` is OPTIONAL on unsigned links: they carry no authority to
+        // expire (any page can mint one from scratch), so demanding a deadline
+        // there would reject honest links for no security gain. When one IS
+        // present it is still honoured — never parsed and ignored.
+        let live = "compme://setOverride?app=com.foo.bar&enabled=true";
+        assert_eq!(
+            parse_deep_link_with_trust_at(live, Some(&test_trusted_key()), TEST_NOW),
+            Ok((
+                OverrideCommand {
+                    scope: Scope::App("com.foo.bar".into()),
+                    action: OverrideAction::Enable,
+                },
+                LinkTrust::Unsigned,
+            ))
+        );
+        assert!(parse_deep_link_at(&format!("{live}&exp={}", TEST_NOW + 1), TEST_NOW).is_ok());
+        assert_eq!(
+            parse_deep_link_at(&format!("{live}&exp={}", TEST_NOW - 1), TEST_NOW),
+            Err(ParseError::ExpiredLink {
+                exp: TEST_NOW - 1,
+                now: TEST_NOW
+            })
+        );
+    }
+
+    #[test]
+    fn the_public_entry_points_read_the_system_clock() {
+        // The clock-injecting functions are private, so pin that the public
+        // wrappers actually feed them wall-clock seconds: a hardcoded 0 (or a
+        // monotonic uptime) would make a 1970 deadline look fresh.
+        let key = test_trusted_key();
+        let payload = "compme://setOverride?app=com.foo.bar&enabled=true";
+        let long_expired = signed_url_expiring_at(payload, 1);
+        match parse_deep_link_with_trust(&long_expired, Some(&key)) {
+            Err(ParseError::ExpiredLink { exp: 1, now }) => {
+                assert!(now > 1_700_000_000, "clock looks wrong: {now}");
+            }
+            other => panic!("a 1970 deadline must be expired, got {other:?}"),
+        }
+        // Same for the unsigned entry point (matched on the variant, not on a
+        // second clock read, which could tick between the two calls).
+        assert!(
+            matches!(
+                parse_deep_link(&format!("{payload}&exp=1")),
+                Err(ParseError::ExpiredLink { exp: 1, .. })
+            ),
+            "parse_deep_link must expire a 1970 deadline too"
+        );
+        // A deadline in the year 2200 is still live on the same clock.
+        let far_future = signed_url_expiring_at(payload, 7_258_118_400);
+        assert_eq!(
+            parse_deep_link_with_trust(&far_future, Some(&key)).map(|(_, trust)| trust),
+            Ok(LinkTrust::Signed)
         );
     }
 
@@ -1191,7 +1511,10 @@ mod tests {
         // Anything after the sig value would be unsigned, attacker-appendable
         // bytes — including a second sig.
         let url = signed_url("compme://setOverride?app=com.apple.TextEdit&enabled=true");
-        for appended in ["&excluded=true", "&sig=00", "&x=1"] {
+        // `&exp=` is in the list because an expiry appended AFTER the signature
+        // would be unsigned: the deadline only means something inside the
+        // signed prefix, so a trailing one must fail closed, not extend a link.
+        for appended in ["&excluded=true", "&sig=00", "&x=1", "&exp=9999999999"] {
             assert_eq!(
                 parse_deep_link_with_trust(&format!("{url}{appended}"), Some(&test_trusted_key()),),
                 Err(ParseError::MisplacedSignature),

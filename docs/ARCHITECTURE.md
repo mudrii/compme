@@ -392,7 +392,12 @@ model paths, security settings) requires `LinkTrust::Signed`:
 `parse_deep_link_with_trust` verifies a trailing `&sig=<128 hex>` **Ed25519**
 signature over the exact URL byte-prefix against a host-pinned `TrustedKey`,
 with no canonicalization before verification and fail-closed when no key is
-configured. After verification, domain scopes are canonicalized to lowercase
+configured. A signed link must also carry `exp=<unix seconds>` inside that
+signed prefix and is rejected once the deadline passes (`ExpiredLink`, distinct
+from a malformed or untrusted link), so a captured link cannot be replayed
+forever; `exp` is required on signed links and optional (but still honoured) on
+unsigned ones, which carry no authority to expire. After verification, domain
+scopes are canonicalized to lowercase
 with one terminal DNS root dot removed; config, personalization, and preference
 lookups use the same canonical spelling. The §16
 web-config flow is wired end-to-end: `platform_macos::url_events` installs the

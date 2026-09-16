@@ -3007,10 +3007,12 @@ fn only_a_verified_signed_deep_link_reaches_confirmation_and_mutates_prefs() {
         "ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c",
     )
     .expect("fixture public key");
+    // exp=7258118400 is 2200-01-01Z: the fixture must stay live, and the
+    // signature covers the expiry, so it cannot be extended without resigning.
     let signed = concat!(
-        "compme://setOverride?app=com.apple.TextEdit&excluded=true",
-        "&sig=721848ed25850b98440cdb91f5077077b8f1077446be885c3b8c6b3c3a2a986f",
-        "8884b34489c675afdc344af112d58251f8df40098903d97a861605baa667a005",
+        "compme://setOverride?app=com.apple.TextEdit&excluded=true&exp=7258118400",
+        "&sig=5e71197071bc0a5bffb59fe5559feb1cf574afba1d0c7f7a533b8e6636bdfe3f",
+        "9e56010503f2d965dc51251b7cf60d0570bf0c10c24f37e218f4b3bfac90260c",
     );
     let mut prefs = Prefs::default();
     let confirmations = RefCell::new(Vec::new());
