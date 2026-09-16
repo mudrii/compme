@@ -940,7 +940,12 @@ runs. The retired screenshot matrix is not current release evidence.
 - **Encrypted-store schema posture:** the SQLite schema is immutable throughout
   0.x. Before any first schema change, land `PRAGMA user_version` handling and a
   transactional migration helper; do not alter table definitions first and
-  strand existing encrypted stores.
+  strand existing encrypted stores. **Half landed 2026-09-16:** the store now
+  stamps `PRAGMA user_version = SCHEMA_VERSION`, reads it back on every open,
+  adopts a pre-marker `0` database (every existing install is one, and no
+  column changed, so adopting is a relabel rather than a migration) and
+  **refuses a database written by a newer build**. The transactional migration
+  helper is still outstanding and is what the first real column change needs.
 - **Remaining:** visual LOOK only: pane layout, instructions field,
   sender/strength controls, and persistence closed (assisted Batches 1-2);
   Context opt-in verified live (Batch 6). Residual is a visible steering effect
@@ -1073,9 +1078,20 @@ remains of the seam work:
   focus latency for now. The safety poll dispatches the observed focus but does
   not command an observer rebind; a callback-to-rebind ownership path is
   deferred unless live measurement shows user-visible impact.
-- **Operational logging seam (A31):** before Windows/Linux UI adapter work C.5,
-  choose the smallest shared facility — `log` with env-filtered stderr or a
-  house micro-logger. Do not add a logging dependency before that decision.
+- **Operational logging seam (A31): DECIDED 2026-09-16 — keep the house
+  facility, add no dependency.** The choice was between `log` with
+  env-filtered stderr and a house micro-logger, and the tree already answered
+  it: a `write_stderr(std::fmt::Arguments)` helper exists in **three** crates
+  (`app/src/main.rs`, `model_client/src/lib.rs`, `platform_macos/src/lib.rs`)
+  across 23 call sites, and no crate depends on `log`. Adopting `log` would
+  add a dependency plus an init/filter surface to replace something that
+  already works and never allocates on the quiet path.
+  The implementation step, sized and **not yet done**: collapse those three
+  copies into one shared helper (the `shell_flags`-style zero-dep crate split
+  is the precedent) and give it an env-gated level check, so a second native
+  shell has one place to write to. Do that when Windows Phase 1 needs its
+  first diagnostic, not before — and revisit `log` only if a dependency ever
+  needs to emit into the same stream.
 
 The two structural seams are prerequisites worth doing **before** the first
 real Windows/Linux UI adapter, so native shells translate events instead of

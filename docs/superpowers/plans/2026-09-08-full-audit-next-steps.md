@@ -419,9 +419,15 @@ the code. Corrections the items above must carry; nothing here reorders them.
   `:479,483,486` updated in the same commit; the Windows doc-test/audit step
   is a second topology edit (`:481`). **Vendor drift:** allowlist the
   vendored `Cargo.lock` too; the checker must be `--self-test`-able and join
-  the pinned DEVELOPMENT gate list. **`user_version`:** the DDL pin
-  `the_0x_schema_is_exactly_this_ddl_until_a_migration_lands` asserts
-  `user_version == 0`; defer until a schema change is actually scheduled.
+  the pinned DEVELOPMENT gate list. **`user_version`:** ✅ **landed 2026-09-16.** The store stamps and reads
+  back `PRAGMA user_version`, adopts a pre-marker `0` database (every
+  existing install is one, and no column changed, so adopting is a relabel
+  not a migration) and refuses one written by a newer build. The DDL pin
+  `the_0x_schema_is_exactly_this_ddl_until_a_migration_lands` was amended in
+  the same commit — it asserted `user_version == 0`, which this makes false
+  by design — and now asserts `SCHEMA_VERSION`, so the DDL snapshot and the
+  marker cannot drift. The transactional migration helper is still
+  outstanding and is what the first real column change needs.
 - **Item 10 G11:** the sentence is `ROADMAP.md:160-163` (not `:133-134`);
   RELEASING `:157-161` and the runbook have no 22-gate step. Neither option
   is checker-pinned. **Governance:** the checker emits six pending decisions

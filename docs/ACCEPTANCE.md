@@ -357,6 +357,36 @@ Failure classification looks for common blockers:
 - wrong focused target
 - transient AX observer setup failures
 
+### Expected exit codes
+
+**Exit code 70 during model warm-up is expected, not a failure** (Qfd §20,
+G15, decided 2026-09-16). A quit issued while the *first* decode is in flight
+can hit the A32 last-resort watchdog: llama.cpp's Metal shader compile is not
+abort-polled, so the cooperative cancellation the shutdown path asks for
+cannot be honoured within the 250 ms grace window, and
+`terminate_after_inference_shutdown_timeout` hard-exits with 70
+(`crates/app/src/run_loop.rs`, `INFERENCE_SHUTDOWN_TIMEOUT_EXIT_CODE`).
+
+A gate run that quits during warm-up and reports 70 should be recorded as a
+pass with the exit code noted. Treat 70 as a real failure only when the quit
+was issued after the first completion had already been produced — by then the
+model is warm, the abort callback is live, and the worker is expected to
+acknowledge within the window.
+
+**Why this was chosen over lengthening the deadline.** The alternative was a
+longer forced-exit deadline while warm-up is in flight. That would make the
+one path in the product that must never block or deadlock — the last-resort
+hard exit — depend on mutable state read at shutdown, to buy a bounded and
+already-contained loss. No user data is at risk either way: the memory store
+is autocommit with `journal_mode=DELETE`, so nothing is half-written.
+
+**The accepted cost**, recorded so it is not rediscovered as a surprise: a
+warm-up hard exit pre-empts the cipher/key zeroize, so key material may
+survive in freed pages (and therefore potentially in swap or a core dump)
+until the OS reclaims them. The same key already lives in the OS key store,
+so this widens the window rather than the exposure. Revisit if llama.cpp ever
+abort-polls shader compilation, which would remove the trade-off entirely.
+
 ## A2 Compatibility And Context Smoke Gates (Local/Manual Only)
 
 As of 2026-07-16, the previously open A2 code prerequisites are implemented:

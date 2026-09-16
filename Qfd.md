@@ -847,7 +847,7 @@ Local gate evidence for this audit is recorded in §20.5.
 | G12 | Med | docs | Release-boundary anchors drifted a release behind and are not guarded: `README.md:35-39` and `docs/ROADMAP.md:5,93-109` still name `v0.1.5` / `14ae81e`; `check-version-docs.sh` only pins the "latest published artifact" phrases. Qfd §10/§13/§14/§19 `post_verify` "next tag will prove" items and `FIXED.md:33` (A53 "real-tag proof pending") are satisfied by `2d18c34` but unflipped. Qfd §14 (`:460,552`) still says no doctests exist although CI now runs them. | `README.md:35-39`, `docs/ROADMAP.md:5`, `tools/release/check-version-docs.sh:199-201`, `.github/workflows/ci.yml:111-112` | CONFIRMED, **FIXED** 2026-09-08 (plan item 0: boundaries restamped, `check-version-docs.sh` now anchors both, Qfd/FIXED rows flipped) |
 | G13 | Med | redaction | The generic secret branch `[A-Za-z0-9+/=._-]{32,}` plus `looks_high_entropy` counting `/` as base64 punctuation redacts **every path or URL segment run of 32+ characters** (`https:[redacted-secret]`), silently stripping most URLs from memory and diagnostics. Deliberate over-redaction bias, but unpinned by any test. | `crates/redaction/src/lib.rs:44,55-61` | CONFIRMED (reproduced, §20.5), **FIXED** `b8d3626` (`/` no longer an entropy signal; mixed-case/digit paths remain an accepted, pinned cost) |
 | G14 | Low | webconfig | Signed `compme://` deep links carry no nonce or expiry, so a captured link verifies forever. Mitigated: only reversible enable/exclude commands exist and every link prompts. Add `&exp=` inside the signed prefix before any non-reversible command lands. | `crates/webconfig/src/lib.rs:250-267,279-292` | CONFIRMED, OPEN (pre-emptive) |
-| G15 | Low | app / model_client | The detached 250 ms hard-exit watchdog (A32) fires during a quit issued while the first decode is in flight (Metal shader compile is not abort-polled), pre-empting cipher/key zeroize; the memory store is autocommit + `journal_mode=DELETE` so no user data is lost. Either lengthen the deadline during warm-up or record exit code 70 as expected in ACCEPTANCE. | `crates/app/src/run_loop.rs:95-136`, `crates/app/src/inference.rs:660-686`, `vendor/llama-cpp-2/src/model.rs:866-877` | CONFIRMED, OPEN (decision) |
+| G15 | Low | app / model_client | The detached 250 ms hard-exit watchdog (A32) fires during a quit issued while the first decode is in flight (Metal shader compile is not abort-polled), pre-empting cipher/key zeroize; the memory store is autocommit + `journal_mode=DELETE` so no user data is lost. Either lengthen the deadline during warm-up or record exit code 70 as expected in ACCEPTANCE. | `crates/app/src/run_loop.rs:95-136`, `crates/app/src/inference.rs:660-686`, `vendor/llama-cpp-2/src/model.rs:866-877` | CONFIRMED, **DECIDED 2026-09-16**: exit code 70 during warm-up is documented as expected in `docs/ACCEPTANCE.md` ("Expected exit codes") rather than lengthening the deadline — making the last-resort hard exit depend on mutable state read at shutdown is a worse trade than a bounded, already-contained loss (the store is autocommit + `journal_mode=DELETE`, so nothing is half-written). The pre-empted cipher/key zeroize is recorded there as the accepted cost; revisit if llama.cpp ever abort-polls shader compilation |
 | G16 | Low | platform_linux | Autostart entry writes `NoDisplay=true` because "the tray is its entry point" but Linux has no tray; keyring `CreateItem` key copy is not zeroized (read side is); `open_url` spawns an unjoined reaper thread per call; stale "zenity, then kdialog" comments (chain is zenity-only); `atspi_caps` always reports `OverrideRedirect` so a Wayland session resolves to `UxMode::Inline` and every `show_ghost` fails late. | `crates/platform_linux/src/lib.rs:54,684-701,734,764-772,911,930`, `src/keyring.rs:155-160`, `src/atspi_caps.rs` | CONFIRMED, **FIXED** `b8d3626` (autostart, keyring zeroize, comments); Wayland overlay capability report still OPEN |
 | G17 | Low | app | Backpressure eviction: when the oldest droppable event is `Focus(A)`, `retain` drops every `Caret(A)` in the queue, including carets after a later re-`Focus(A)`. Benign today (coalescing + safety poll) but the documented invariant is broken. | `crates/app/src/run_loop.rs:280-297` | CONFIRMED, **FIXED** `b8d3626` |
 | G18 | Low | docs ↔ code | `docs/ARCHITECTURE.md:854-855` "self-generated synthetic events are tagged and ignored": the tag is written but `is_self_generated_event` is `allow(dead_code)` and the Carbon handler hard-codes `source_user_data: 0`. ARCHITECTURE `:682` / ROADMAP `:406` "one geometry round trip per 25 ms" describes duplicate suppression, not round-trip coalescing. ROADMAP `:995,1007` counts drifted (`run()` is 1,559 lines, `SettingsFlags` has 42 fields). `docs/RELEASE-NOTES-v0.1.6.md` contradicts `docs/RELEASING.md:349-354` ("no hand-written file" from v0.1.3 on). `personalization/src/lib.rs:13-15` claims deep links can set instruction text; webconfig only carries enable/exclude. | as cited | CONFIRMED, **FIXED** 2026-09-08 (item 0; the ARCHITECTURE, ROADMAP, RELEASING, personalization wordings corrected) |
@@ -889,3 +889,73 @@ installed here), `platform_macos` tests and live-mode doc pins (mac only),
 `redact("see https://example.com/some/long/path/segment/that/keeps/going")`
 returns `"see https:[redacted-secret]"` and an absolute source path of 60+
 characters returns `"open [redacted-secret]"`. Full table in the plan file.
+
+---
+
+## 21. 2026-09-15 independent audit of `8613a92` (AUD-1..14)
+
+An independent audit of `8613a92`, cross-validated by a second model before
+and after the fixes, was implemented in `5ab5c65`. Until 2026-09-16 its
+findings existed **only in that commit message** — no ledger row, no plan
+entry, nothing greppable. This section recovers them so they can be tracked
+like every other finding; the evidence is the commit body and the diff.
+
+### 21.1 Recovered ledger
+
+| ID | Area | Finding | Status |
+|---|---|---|---|
+| AUD-1 | memory / app | The encrypted store was **write-only**: `MemoryStore::recent` had no production caller, so records survived a restart but never steered a completion — the spec's whole stated purpose for the store. | **FIXED** `5ab5c65` — `PreviousInputs::seed_if_empty`/`has_ring` + `run_loop::hydrate_previous_inputs` replay an app's records into the prompt ring on first focus, keyed as the write path. Gated on `previous_input_context_chars`, **not** `context_bound` (which is floored to a positive default and is nonzero even with previous-input context off — gating there would have enabled the feature for users who record nothing) |
+| AUD-2 | app / platform_macos | No erase-all, and only the top-8 rendered apps were deletable, so an app ranked below the window had no deletion path at all. | **FIXED** `5ab5c65` — `apps_erase_all` flag, `apps_erase_all_phase` (Cancel-default confirm → `delete_all` → recompose), macOS Apps-pane button. Both delete paths also clear the live `PreviousInputs` rings, which otherwise kept steering completions until relaunch |
+| AUD-3 | platform_windows | `physical_memory_bytes` returned 0, so `ram_verdict` rated every catalog model `Exceeds` and `offerable_by_ram` refused every model — the same defect `platform_linux` already fixed. | **FIXED** `5ab5c65` — real `GlobalMemoryStatusEx` probe. Shipped UNVERIFIED (never compiled locally); **verified green on the `windows-latest` lane 2026-09-16**, run 35055438862 |
+| AUD-4 | — | **UNRECOVERABLE.** Named nowhere: not in the commit message, not in any tracked or untracked file, not in the diff. See §21.2. | **UNKNOWN** |
+| AUD-5 | platform_macos | The macOS lane was red on `9b91b35` and the token to read the log had expired. | **CLOSED 2026-09-16** — superseded by G6/G21; lane green on run 35068705271 |
+| AUD-6 | platform_macos | 96 bare `unsafe` blocks, all in `platform_macos`; the finding argues blind safety claims are worse than none. Directly contests **G20**, which asks for the annotations. | **DECIDED 2026-09-16** — annotate only where the invariant is genuinely verifiable from surrounding code; never fabricate. See §21.3 |
+| AUD-7 | app | `run()` decomposition needs its own series with the token-diff proof. | OPEN — unchanged; overlaps the ROADMAP seam work |
+| AUD-8 | memory | `journal_mode` was not read back, so the code did not do what its comment claimed. | **FIXED** `5ab5c65` — read back, fails closed on anything but delete/memory |
+| AUD-9 | webconfig | `parse_hex` accepted a leading `+` via `from_str_radix`, so a 128-char `+1` run parsed as a well-formed signature and reported `InvalidSignature` where `MalformedSignature` was the truth. | **FIXED** `5ab5c65` — non-hex bytes rejected before any crypto runs, on both the signature and the trust root |
+| AUD-10 | app (test) | `config_startup` used `env_clear()`, which strips the dynamic loader path; on a non-FHS host the child died before `main` and the exit-code assertion still passed, proving nothing. | **FIXED** `5ab5c65` — forwards only loader variables (which cannot influence which config is read) and asserts the child actually started |
+| AUD-11 | compat | Non-ASCII prose did not activate terminal suggestions. | **FIXED** `5ab5c65` |
+| AUD-12 | ranker | Abbreviation allowlist. | **FIXED** `5ab5c65` |
+| AUD-13 | docs | The context-block injection boundary was not written down. | **FIXED** `5ab5c65` — recorded in `docs/ARCHITECTURE.md` |
+| AUD-14 | tools | Claimed `check.sh` does not report its skips. | **WITHDRAWN** — it does |
+
+### 21.2 What could not be recovered, and why that matters
+
+The commit body says "**Eleven** of fourteen findings closed". Only **nine**
+fixes are named (AUD-1, 2, 3, 8, 9, 10, 11, 12, 13), plus three deliberate
+non-fixes (5, 6, 7) and one withdrawal (14) — thirteen IDs accounted for, and
+**AUD-4 is never mentioned anywhere**. Every file in the diff maps to a named
+finding (webconfig → AUD-9, compat → AUD-11, ranker → AUD-12, memory → AUD-8,
+`config_startup` → AUD-10, ARCHITECTURE → AUD-13, and the app/macOS/Windows
+files → AUD-1/2/3), so AUD-4's content cannot be inferred from the code either.
+
+Recovering it needs the original audit transcript. Recorded here rather than
+quietly renumbered: a ledger that silently drops an ID is worse than one that
+admits a hole. **This is also the second time the same failure mode has cost
+real time** — G6 sat unverified for five days because its status lived only in
+a commit message. Findings belong in this file when they are found, not when
+someone later notices they are missing.
+
+### 21.3 G20 / AUD-6 resolution (adopted 2026-09-16)
+
+G20 asks for `SAFETY:` comments on the ~80 unannotated `unsafe` blocks;
+AUD-6 refuses on the grounds that mass-produced claims are worse than none.
+Both are right about something, so neither is adopted wholesale: **annotate a
+block only where the precondition is genuinely established by the surrounding
+code — pointer validity, create-rule ownership, thread affinity, lifetime —
+and leave the rest untouched, listed as unestablished.** Generic filler is
+forbidden. This makes the annotation set evidence rather than decoration, and
+makes the un-annotated remainder a real inventory of what nobody has proven.
+
+### 21.4 Known product gaps recorded by `5ab5c65` (neither is a regression)
+
+- **Erase only works before disabling.** `StorageMode::Off` drops the store
+  handle and the deletion UI with it, so a user who disables collection first
+  cannot then erase. Opening the store read/delete-only was implemented and
+  **reverted**: it routes through `load_or_create_memory_key`, which MINTS an
+  OS key-store entry, so a leftover database path would create a keychain item
+  (and a prompt) on a launch with memory disabled. Needs a
+  **load-without-create key API** first.
+- **Per-domain deletion** needs a schema column, blocked by the 0.x schema
+  policy. Sequence it after the `PRAGMA user_version` marker (plan item 9) so
+  the first migration has a version to migrate from.
