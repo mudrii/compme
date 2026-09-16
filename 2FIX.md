@@ -52,7 +52,8 @@ to that plan** — G6 verification is next, not UIA.
 
 | ID | Sev | Status | Next action |
 |---|---|---|---|
-| **G6** | Med | Code shipped `9b91b35`; **macOS serial lane RED** (run 34578291953). Logs unfetched (`gh` token expired, recorded in `8613a92`). | Re-auth, pull the failing test, fix or revert. **Not fixed until that lane is green.** |
+| **G6** | Med | ✅ **CLOSED 2026-09-16** — mac lane green (run 35068705271). Both failures were test-side (no dispatcher barrier; seed-vs-`ax:ptr=` expectation), fixed in `cb013ad`; the coalescing code itself was sound. | Done. |
+| **G21** | Med | ✅ **FIXED 2026-09-16** (`35b6ab8`) — found while auditing G6: its poll-skip memo was a single slot shared by the focus and caret pollers, suppressing every safety poll of both kinds after the first in degraded-AX apps. Now per-`(pid, notification)` plus an observer-side refresh. | Done. |
 | **G7** | Med | OPEN | Marshal Carbon register/unregister to the main thread. After G6 is green. |
 | **G20** | Info | OPEN | Annotate bare `unsafe` blocks while item 6 is open. |
 | **G11 policy** | Med | Recording table exists; 22 LOOK IDs still not closed | Owner: record or change the ready-to-tag policy. |

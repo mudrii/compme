@@ -85,12 +85,17 @@
 > §15 F2 / integration-spec / ARCHITECTURE amendments in the same commit;
 > CI green on every lane, macOS included — item 2 is closed except for the
 > Chromium-family live recording attached to the caret-marker gates). The
-> next actionable step is closing item 6's open verification: the G6
-> commit `9b91b35` (observer-burst coalescing + poll skip) is **red on the
-> macOS lane** (run 34578291953, serial-test step; format/clippy/parallel
-> green) and the dev host could not fetch the failing log (gh token
-> expired) — re-auth, pull the log, fix or revert, then continue item 6
-> (G7 main-thread Carbon marshal, G20 unsafe annotations). Items 4a + 4b
+> G6 closed 2026-09-16: the failing log was finally pulled, and both
+> failures were test-side (no barrier against the async callback
+> dispatcher; the expectation compared the input seed against the
+> `ax:ptr=`-formatted output identity) — fixed in `cb013ad`. Auditing the
+> same commit then found G21, a real defect in its *other* half: the
+> safety-poll memo was a single slot shared by the focus and caret
+> pollers, so in degraded-AX apps every poll of both kinds after the first
+> was suppressed. Repaired per-`(pid, notification)` with an observer-side
+> refresh in `35b6ab8`; all five lanes green (run 35068705271). The next
+> actionable step is the rest of item 6 (G7 main-thread Carbon marshal,
+> G20 unsafe annotations). Items 4a + 4b
 > (the `run()` seams, `bbf3724`/`4584b35`) and item 5 (Linux hardening:
 > `3e061ba`/`6ed8289` Wayland capability, `bf5893b` D-Bus timeouts,
 > `02eaaaf` overlay collapse) are closed.

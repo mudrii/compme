@@ -213,17 +213,27 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
 
 ## Item 6 — AX worker throughput (M, mac lane)
 
-- G6: ⚠️ **shipped `9b91b35`, UNVERIFIED — the macOS lane is red** (run
-  34578291953, `Test (serial, macOS state)`; format/clippy/parallel steps
-  green). The dev host's gh token expired before the logs could be
-  fetched, so the failing test is unidentified — static review of every
-  fake-loop queue simulates clean. The implementation drains contiguous
-  same-`(pid, notification)` events to the newest (explicit CFRetain
-  balance; first non-observer message deferred one iteration, never
-  dropped or reordered) and skips unchanged-`(identity, rect)` polls, the
-  A66/250 ms posture unchanged. **Fix-forward: re-auth gh, pull the failing
-  step's log, fix the test/impl or revert `9b91b35`, verify the lane
-  green before continuing item 6.**
+- G6: ✅ **closed 2026-09-16** (mac lane green, run 35068705271). The
+  coalescing half of `9b91b35` was sound all along — contiguous
+  same-`(pid, notification)` events drain to the newest with balanced
+  CFRetain, and the deferred first non-observer message preserves order.
+  Its two tests had never compiled anywhere: they asserted a shared
+  `Mutex<Vec<_>>` with no barrier against the async callback dispatcher,
+  and compared the input seed (`ax:first`) against the output identity,
+  which `field_element_id()` formats as `ax:ptr=ax:first`. Fixed test-only
+  in `cb013ad`.
+- G21: ✅ **fixed 2026-09-16** (`35b6ab8`, same run green). Auditing G6
+  found its poll-skip half unsound: `last_focused_poll` was a single
+  `(identity, rect)` slot, but the focus and caret pollers share one
+  worker and each consumer filters on notification kind. Since
+  `observer_caret_rect` is `None` for non-caret notifications, a degraded
+  caret read made both pollers present the identical pair, so the second
+  was skipped as "unchanged" — suppressing every safety poll of both
+  kinds after the first, exactly the A66 250 ms guarantee the poll exists
+  to provide. Now keyed per `(pid, notification)`, with
+  `remember_dispatched_poll` refreshing the memo from the `ObserverEvent`
+  arm so an X → Y → X round trip inside one tick cannot strand a consumer.
+  Three tests; count pins 2158 → 2160.
 - G7: marshal Carbon register/unregister to the main thread via
   `DispatchQueue::main().exec_sync`, resource ownership stays on the worker.
 - G20: annotate the 80 bare `unsafe` blocks in the same pass (mechanical;
