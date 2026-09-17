@@ -93,9 +93,12 @@
 > safety-poll memo was a single slot shared by the focus and caret
 > pollers, so in degraded-AX apps every poll of both kinds after the first
 > was suppressed. Repaired per-`(pid, notification)` with an observer-side
-> refresh in `35b6ab8`; all five lanes green (run 35068705271). The next
-> actionable step is the rest of item 6 (G7 main-thread Carbon marshal,
-> G20 unsafe annotations). Items 4a + 4b
+> refresh in `35b6ab8`; all five lanes green (run 35068705271). G20's
+> annotation half is complete (2026-09-16: every remaining production
+> `unsafe` block annotated per the §21.3 rule; see the Qfd G20 row). The
+> next actionable step is G7 — main-thread Carbon marshal, design of
+> record in Qfd §22, deliberately held until the physical-hotkey baseline
+> gates are recorded at a Mac. Items 4a + 4b
 > (the `run()` seams, `bbf3724`/`4584b35`) and item 5 (Linux hardening:
 > `3e061ba`/`6ed8289` Wayland capability, `bf5893b` D-Bus timeouts,
 > `02eaaaf` overlay collapse) are closed.

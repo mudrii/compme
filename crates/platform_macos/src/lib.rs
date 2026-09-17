@@ -683,6 +683,10 @@ pub fn pump_app_events() {
         let event = app.nextEventMatchingMask_untilDate_inMode_dequeue(
             NSEventMask::Any,
             Some(&distant_past),
+            // SAFETY: `NSDefaultRunLoopMode` is an immutable extern NSString
+            // constant exported by Foundation that lives for the process
+            // lifetime and is only read here; the main-thread marker at the
+            // top of this function already proved main-thread affinity.
             unsafe { NSDefaultRunLoopMode },
             true,
         );
@@ -2021,6 +2025,9 @@ fn macos_secure_input_enabled() -> bool {
     let _guard = SECURE_INPUT_QUERY_LOCK
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // SAFETY: `IsSecureEventInputEnabled` takes no arguments and reads only
+    // process-global HIToolbox state, so any thread may call it; the lock
+    // above serializes the query, it is not a memory-safety precondition.
     unsafe { IsSecureEventInputEnabled() != 0 }
 }
 
@@ -2165,6 +2172,12 @@ unsafe fn screen_ocr_with_image(image_ref: *mut c_void, max_chars: usize) -> Opt
     // run loop is a manual poll loop with no per-iteration pool, so without this
     // they would accumulate for the process lifetime. The owned `String` result
     // is copied out before the pool drains.
+    // SAFETY: the block's one external precondition — `image_ref` is a valid
+    // `CGImageRef` — is this `unsafe fn`'s documented `# Safety` contract,
+    // discharged by the caller. Inside the block every Vision/Foundation
+    // `msg_send!` matches that API's declared signature, and every create-rule
+    // return (`alloc`+`initWithCGImage:`, `new`) is null-checked by handing it
+    // to `Retained::from_raw(..)?` before any use.
     objc2::rc::autoreleasepool(|_| unsafe {
         let image: *const CGImageOpaque = image_ref.cast();
         let handler_alloc: *mut AnyObject = msg_send![class!(VNImageRequestHandler), alloc];
@@ -2274,6 +2287,9 @@ fn process_exists(pid: i32) -> bool {
         return false;
     }
 
+    // SAFETY: signal 0 performs an existence/permission check and sends no
+    // signal, so any `pid` is a valid argument; `pid > 0` is guarded above,
+    // and failures arrive through the return value, not a violated contract.
     if unsafe { kill(pid, 0) } == 0 {
         return true;
     }
@@ -3255,6 +3271,10 @@ impl Drop for WorkerAcceptTapResource {
     // after this restructure is the remaining human step.)
     fn drop(&mut self) {
         for hotkey in self.hotkeys.drain(..) {
+            // SAFETY: every ref in `hotkeys` came from a successful
+            // `RegisterEventHotKey` (`register_hotkey` pushes only on status
+            // 0), and `drain(..)` yields each exactly once, so this is the
+            // one unregister each live registration gets.
             unsafe {
                 let _ = UnregisterEventHotKey(hotkey);
             }
@@ -3283,6 +3303,9 @@ fn install_carbon_accept_hotkeys(
     handler: Arc<AcceptTapHandler>,
     action: AcceptAction,
 ) -> Result<WorkerResource, PlatformError> {
+    // SAFETY: `GetApplicationEventTarget` takes no arguments and returns
+    // the application's process-lifetime event target, valid for every
+    // Carbon call below.
     let target = unsafe { GetApplicationEventTarget() };
     ensure_carbon_handler_installed(target)?;
 
@@ -3410,6 +3433,9 @@ impl WorkerShortcutResource {
 fn install_process_shortcut_hotkeys(
     handler: Arc<AcceptTapHandler>,
 ) -> Result<WorkerResource, PlatformError> {
+    // SAFETY: `GetApplicationEventTarget` takes no arguments and returns
+    // the application's process-lifetime event target, valid for every
+    // Carbon call below.
     let target = unsafe { GetApplicationEventTarget() };
     ensure_carbon_handler_installed(target)?;
 
@@ -3470,6 +3496,14 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
         event_kind: K_EVENT_HOTKEY_PRESSED,
     };
     let mut handler_ref: EventHandlerRef = ptr::null_mut();
+    // SAFETY: `target` is the application event target from
+    // `GetApplicationEventTarget`; `carbon_accept_hotkey_handler` is an
+    // `extern "C"` fn with the `EventHandlerUPP` signature Carbon expects;
+    // `spec` points to a live plain-data `EventTypeSpec`; and
+    // `&mut handler_ref` is a valid, aligned out-pointer to a live local.
+    // The handler never touches the lock held across this call (it reads
+    // `CARBON_HANDLER_SLOT`), so the critical section creates no lock-order
+    // cycle.
     let handler_status = unsafe {
         InstallEventHandler(
             target,
@@ -3683,6 +3717,11 @@ impl WorkerAcceptTapResource {
             reason: format!("invalid Carbon accept-key keycode: {keycode}"),
         })?;
         let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
+        // SAFETY: `keycode` was range-checked to `u32` above, `target` is the
+        // application event target, `EventHotKeyID` is plain data, and
+        // `&mut hotkey_ref` is a valid, aligned out-pointer to a live local
+        // that enters `self.hotkeys` — for exactly one later unregister —
+        // only when the status is 0.
         let status = unsafe {
             RegisterEventHotKey(
                 keycode,
@@ -3727,6 +3766,11 @@ extern "C" fn carbon_accept_hotkey_handler(
             signature: 0,
             id: 0,
         };
+        // SAFETY: `event` is the `EventRef` Carbon passed into this handler,
+        // valid for the duration of the call by its contract; the class/kind
+        // constants match the hotkey event's direct object; and
+        // `&mut hotkey_id` is a valid, aligned out-pointer to a live local
+        // that is read only after the status check below.
         let status = unsafe {
             GetEventParameter(
                 event,
@@ -3854,6 +3898,9 @@ fn blocked_capabilities(security_state: SecurityState) -> Capabilities {
 }
 
 pub(crate) fn create_app_ax_element(pid: i32) -> Result<(AXUIElementRef, CFType), PlatformError> {
+    // SAFETY: any `pid` is a valid argument; the API follows CF's create
+    // rule, so the +1 it returns is either null (refused just below) or a
+    // ref this function owns.
     let element = unsafe { AXUIElementCreateApplication(pid) };
     if element.is_null() {
         return Err(PlatformError::CannotComplete {
@@ -3861,6 +3908,9 @@ pub(crate) fn create_app_ax_element(pid: i32) -> Result<(AXUIElementRef, CFType)
         });
     }
 
+    // SAFETY: `element` is the non-null create-rule +1 from the call above,
+    // and `wrap_under_create_rule` consumes exactly that +1, balancing it on
+    // drop.
     let owner = unsafe { CFType::wrap_under_create_rule(element as CFTypeRef) };
     Ok((element, owner))
 }
@@ -3955,6 +4005,12 @@ fn capabilities_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below): it is the non-null
+    // focused-or-application ref paired with `_owners`, the create-rule
+    // owners keeping it alive; `_owners` is a named binding, so it lives to
+    // the end of this function and each helper (identity, value/range/settable
+    // reads, bounds reads, sidebar metadata) gets a valid element for the
+    // duration of its call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4134,6 +4190,11 @@ fn read_context_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below): it is the non-null
+    // focused-or-application ref paired with `_owners`, the create-rule
+    // owners keeping it alive; `_owners` is a named binding, so it lives to
+    // the end of this function and each helper (identity, value, range) gets
+    // a valid element for the duration of its call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4154,6 +4215,12 @@ fn caret_rect_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below): it is the non-null
+    // focused-or-application ref paired with `_owners`, the create-rule
+    // owners keeping it alive; `_owners` is a named binding, so it lives to
+    // the end of this function and each helper (identity, range read, both
+    // bounds reads inside the closures) gets a valid element for the duration
+    // of its call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4243,12 +4310,23 @@ fn popup_anchor_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below, including the block
+    // further down): it is the non-null focused-or-application ref paired
+    // with `_owners`, the create-rule owners keeping it alive; `_owners` is a
+    // named binding, so it lives to the end of this function and each helper
+    // gets a valid element for the duration of its call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
     }
 
     unsafe {
+        // SAFETY (this block): `element` is the owned ref from above;
+        // `copy_ax_element_attribute` and `create_app_ax_element` each return
+        // their ref paired with the create-rule owner that keeps it alive
+        // (`element_window`/its `_owner`, `_app_owner`), and
+        // `read_ax_cgrect_attribute` only reads those owner-paired window
+        // refs while their owners are still live.
         let element_window = copy_ax_element_attribute(element, AX_WINDOW_ATTRIBUTE)?;
         let (app_element, _app_owner) = create_app_ax_element(pid)?;
         let app_window = copy_ax_element_attribute(app_element, "AXFocusedWindow")?;
@@ -4334,6 +4412,12 @@ fn caret_diagnostics_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below): it is the non-null
+    // focused-or-application ref paired with `_owners`, the create-rule
+    // owners keeping it alive; `_owners` is a named binding, so it lives to
+    // the end of this function and each helper (identity, range read, marker
+    // and native bounds reads) gets a valid element for the duration of its
+    // call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4413,6 +4497,10 @@ fn axset_readback_with_re_poll(
     original_value: &str,
     landed_value: &str,
 ) -> String {
+    // SAFETY (both reads): `element` is borrowed from the caller —
+    // `insert_for_field`/`insert_range_for_field` still hold its create-rule
+    // owners in `_owners` across this call — so it is valid for each read,
+    // which is `AxRangeTarget::read_value`'s contract.
     let mut readback =
         unsafe { target.read_value(element) }.unwrap_or_else(|_| landed_value.to_string());
     let mut polls = 1;
@@ -4491,6 +4579,12 @@ fn insert_for_field(
     target: &dyn AxRangeTarget,
 ) -> Result<AxSetApply, PlatformError> {
     let (element, _owners) = target.copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below — identity, the two
+    // snapshot reads, the pre-write re-read pair, and the set block):
+    // `copy_focused_or_app_element` returned a non-null ref whose create-rule
+    // owners live in `_owners`, a named binding held to the end of this
+    // function, so `element` is valid for each call — exactly the
+    // `AxRangeTarget` method contract.
     let identity = unsafe { target.resolve_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4565,6 +4659,11 @@ fn text_range_rect_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below): it is the non-null
+    // focused-or-application ref paired with `_owners`, the create-rule
+    // owners keeping it alive; `_owners` is a named binding, so it lives to
+    // the end of this function and each helper (identity, value, range,
+    // final bounds read) gets a valid element for the duration of its call.
     let identity = unsafe { resolve_ax_element_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4673,6 +4772,12 @@ fn insert_range_for_field(
     recheck_global_secure_input(&secure_input_enabled)?;
 
     let (element, _owners) = target.copy_focused_or_app_element(pid)?;
+    // SAFETY (every `unsafe` call on `element` below — identity, the value
+    // and range snapshot reads, the pre-write re-read pair, and the set
+    // block): `copy_focused_or_app_element` returned a non-null ref whose
+    // create-rule owners live in `_owners`, a named binding held to the end
+    // of this function, so `element` is valid for each call — exactly the
+    // `AxRangeTarget` method contract.
     let identity = unsafe { target.resolve_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
@@ -4745,6 +4850,10 @@ fn insert_range_for_field(
 
 fn copy_focused_or_app_element(pid: i32) -> Result<(AXUIElementRef, Vec<CFType>), PlatformError> {
     let (app_element, app_owner) = create_app_ax_element(pid)?;
+    // SAFETY: `app_element` is the non-null ref paired with `app_owner`, the
+    // create-rule owner keeping it alive to the end of this function (it
+    // moves into `owners` below), so it is valid for the focused-element
+    // read, which is `copy_focused_ui_element`'s contract.
     let focused_owner = unsafe { copy_focused_ui_element(app_element) }?;
     let focused_element = focused_owner
         .as_ref()
@@ -5849,6 +5958,11 @@ fn page_url_for_pid(pid: i32) -> Result<Option<String>, PlatformError> {
     const MAX_WALK: std::time::Duration = std::time::Duration::from_millis(250);
 
     let (app_element, _app_owner) = create_app_ax_element(pid)?;
+    // SAFETY (this block): `app_element` is the non-null ref paired with
+    // `_app_owner`, a named binding live to the end of this function; the
+    // focused window comes back paired with `window_owner`, and every child
+    // in the walk is carried in an `AxUrlNode` beside its own owner, so each
+    // element the read closures touch is owner-live for the call.
     unsafe {
         let Some((window, window_owner)) =
             copy_ax_element_attribute(app_element, "AXFocusedWindow")?
@@ -5969,6 +6083,11 @@ pub(crate) fn observer_caret_rect(
         return None;
     }
 
+    // SAFETY (all three reads): `element` is the observed element the AX
+    // worker dispatched, and both callers hold it live across this call (the
+    // callback path wraps the retained ref in `_owner`; the app-event path
+    // holds the owner-paired ref) — the parameter contract these helpers
+    // require.
     let selected_range = unsafe { read_required_ax_range_attribute(element) }.ok()?;
     let caret = selected_range.location.max(0);
     resolve_caret_rect_with_marker_first(

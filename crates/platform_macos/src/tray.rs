@@ -371,6 +371,7 @@ impl MacosTray {
             .expect("check updates tray action is present");
         let check_updates_item = NSMenuItem::new(mtm);
         check_updates_item.setTitle(&NSString::from_str(check_updates_spec.title));
+        // SAFETY: target outlives the menu (held in `_target`); selector exists.
         unsafe {
             check_updates_item.setTarget(Some(target_as_any(&target)));
             check_updates_item.setAction(Some(sel!(checkUpdates:)));
@@ -387,6 +388,7 @@ impl MacosTray {
                 .expect("tray URL action is present");
             let item = NSMenuItem::new(mtm);
             item.setTitle(&NSString::from_str(spec.title));
+            // SAFETY: as above — target outlives the menu via `_target`.
             unsafe {
                 item.setTarget(Some(target_as_any(&target)));
                 item.setAction(Some(selector));

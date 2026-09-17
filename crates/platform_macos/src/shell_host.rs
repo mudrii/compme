@@ -36,6 +36,9 @@ impl MacosShellHost {
 impl ShellHost for MacosShellHost {
     fn pump_events(&self, heartbeat: Duration) {
         crate::pump_app_events();
+        // SAFETY: `kCFRunLoopDefaultMode` is an immutable extern CFString
+        // constant exported by CoreFoundation, valid for the process
+        // lifetime; `run_in_mode` only reads it for the duration of the call.
         let mode = unsafe { core_foundation::runloop::kCFRunLoopDefaultMode };
         core_foundation::runloop::CFRunLoop::run_in_mode(mode, heartbeat, false);
     }
@@ -79,6 +82,10 @@ impl ShellHost for MacosShellHost {
 
         let checker = NSSpellChecker::sharedSpellChecker();
         let string = NSString::from_str(word);
+        // SAFETY: `checker` is the shared spell checker returned above and
+        // `string` is a live NSString for the duration of the call; every
+        // other argument is a plain value or the explicitly-allowed null
+        // `wordCount` out-pointer, and the result is an `NSRange` by value.
         let misspelled = unsafe {
             checker.checkSpellingOfString_startingAt_language_wrap_inSpellDocumentWithTag_wordCount(
                 &string,

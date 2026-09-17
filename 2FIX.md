@@ -54,8 +54,8 @@ to that plan** — G6 verification is next, not UIA.
 |---|---|---|---|
 | **G6** | Med | ✅ **CLOSED 2026-09-16** — mac lane green (run 35068705271). Both failures were test-side (no dispatcher barrier; seed-vs-`ax:ptr=` expectation), fixed in `cb013ad`; the coalescing code itself was sound. | Done. |
 | **G21** | Med | ✅ **FIXED 2026-09-16** (`35b6ab8`) — found while auditing G6: its poll-skip memo was a single slot shared by the focus and caret pollers, suppressing every safety poll of both kinds after the first in degraded-AX apps. Now per-`(pid, notification)` plus an observer-side refresh. | Done. |
-| **G7** | Med | OPEN | Marshal Carbon register/unregister to the main thread. After G6 is green. |
-| **G20** | Info | OPEN | Annotate bare `unsafe` blocks while item 6 is open. |
+| **G7** | Med | OPEN — design of record in Qfd §22, deliberately held | Marshal Carbon register/unregister to the main thread. Sequencing per §22.4: record the physical-hotkey baseline gates first. |
+| **G20** | Info | ✅ **ANNOTATIONS COMPLETE 2026-09-16** — remaining blocks annotated per §21.3 (`lib.rs` 67, `shell_host.rs` 2, `tray.rs` 2, `settings_window.rs` 2; `ax_worker.rs` stays 17 + 2 deliberately listed); mac-lane CI pending at annotation time — see the Qfd G20 row for the closure flip. | Flip to CLOSED once the mac lane is green. |
 | **G11 policy** | Med | Recording table exists; 22 LOOK IDs still not closed | Owner: record or change the ready-to-tag policy. |
 | **ln1** | — | Code for G1 shipped; live niri row unchecked | Owner Wayland session (`MANUAL-VALIDATION-LINUX.md`). |
 | **G2 Chromium live** | — | Code closed; live recording attached to caret-marker gates | Granted Mac. |
@@ -79,7 +79,9 @@ product finding. `.gate/*.log` files are untracked local gate output.
 ### Do not treat `2FIX.md` WP boxes as the current queue
 
 Every `[x]` below is the August 25–26 implementation record. Current
-work is G6 verification, then G7/G20, then Windows 1.1.
+work was G6 verification, then G7/G20, then Windows 1.1 — G6 and G20 are
+closed; G7 is designed (Qfd §22) and deliberately held pending the
+live-baseline recording.
 
 ## Implementation audit — 2026-08-25
 

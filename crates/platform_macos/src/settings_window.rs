@@ -897,6 +897,9 @@ impl KeyRecorderField {
         // set_ivars BEFORE init (the SettingsTarget pattern); NSView's
         // designated initializer is initWithFrame:.
         let frame = NSRect::new(NSPoint::new(0.0, 0.0), NSSize::new(160.0, 24.0));
+        // SAFETY: `this` is a valid allocated instance whose ivars were set
+        // before init (above); `initWithFrame:` is NSView's designated
+        // initializer, and `frame` is plain data.
         unsafe { objc2::msg_send![super(this), initWithFrame: frame] }
     }
 }
@@ -1641,6 +1644,8 @@ fn build_window(
         segmented.setLabel_forSegment(&NSString::from_str(title), index as isize);
         segmented.setWidth_forSegment(width, index as isize);
     }
+    // SAFETY: target outlives the window (held by MacosSettingsWindow);
+    // selector exists.
     unsafe {
         let any: &AnyObject = target.as_ref();
         segmented.setTarget(Some(any));
