@@ -18,18 +18,20 @@
 //! write/intercept floors (see `uia_caps`) and every subscribe method still
 //! fails closed in `lib.rs`.
 
+use std::os::raw::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use windows::core::{IUnknown, Interface};
+use windows::core::Interface;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     SAFEARRAY,
 };
+use windows::Win32::System::Ole::{SafeArrayDestroy, SafeArrayGetElement};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    IUIAutomationTextRange, TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start,
-    UIA_TextPatternId, UIA_E_ELEMENTNOTAVAILABLE,
+    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, UIA_TextPatternId,
+    UIA_ValuePatternId, UIA_E_ELEMENTNOTAVAILABLE,
 };
 
 use crate::uia_caps::UiaFieldFacts;
@@ -46,6 +48,9 @@ const UIA_STARTUP_TIMEOUT: Duration = Duration::from_secs(10);
 
 pub(crate) enum UiaRequest {
     /// The focused element's identity, or `None` when nothing has focus.
+    /// Test-only until the event slice lands (which will carry identity on
+    /// the events themselves); the hardware smoke exercises it.
+    #[cfg(test)]
     FocusedIdentity {
         reply: Sender<Result<Option<(u32, String)>, PlatformError>>,
     },
@@ -105,9 +110,14 @@ impl UiaWorker {
             .map_err(|_| PlatformError::CannotComplete {
                 reason: "UIA worker is gone (channel closed)".into(),
             })?;
-        reply_rx.recv_timeout(UIA_CALL_TIMEOUT)?
+        // A dead reply channel is the worker-died case; a timeout is the
+        // contract's bounded-wait. Both map to the portable error set.
+        reply_rx
+            .recv_timeout(UIA_CALL_TIMEOUT)
+            .map_err(|_| PlatformError::Timeout)?
     }
 
+    #[cfg(test)]
     pub fn focused_identity(&self) -> Result<Option<(u32, String)>, PlatformError> {
         self.round_trip(|reply| UiaRequest::FocusedIdentity { reply })
     }
@@ -120,6 +130,31 @@ impl UiaWorker {
     pub fn read_document(&self, element_id: &str) -> Result<(String, i64, i64), PlatformError> {
         let element_id = element_id.to_string();
         self.round_trip(|reply| UiaRequest::ReadDocument { element_id, reply })
+    }
+}
+
+/// Owns a UIA-returned `*mut SAFEARRAY` and destroys it exactly once — the
+/// generated UIA methods hand back a raw array pointer with no RAII, so every
+/// early return would otherwise leak the provider's array.
+struct OwnedSafeArray(*mut SAFEARRAY);
+
+impl OwnedSafeArray {
+    fn get(&self) -> &SAFEARRAY {
+        // SAFETY: the pointer came from a successful UIA call and stays valid
+        // until `SafeArrayDestroy`; `self` owns exactly that lifetime.
+        unsafe { &*self.0 }
+    }
+}
+
+impl Drop for OwnedSafeArray {
+    fn drop(&mut self) {
+        if !self.0.is_null() {
+            // SAFETY: `self.0` was produced by a successful UIA
+            // safearray-returning call and destroyed exactly here.
+            unsafe {
+                let _ = SafeArrayDestroy(self.0);
+            }
+        }
     }
 }
 
@@ -140,7 +175,7 @@ fn run_worker(rx: Receiver<UiaRequest>, ready: Sender<Result<(), PlatformError>>
     }
     // SAFETY: standard coclass creation of the UIA client object, in-process;
     // the returned interface lives on this MTA thread for the worker's life.
-    let factory: Result<IUIAutomation> =
+    let factory: windows::core::Result<IUIAutomation> =
         unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) };
     match factory {
         Ok(factory) => {
@@ -164,6 +199,7 @@ fn run_worker(rx: Receiver<UiaRequest>, ready: Sender<Result<(), PlatformError>>
 
 fn handle_request(factory: &IUIAutomation, request: UiaRequest) {
     match request {
+        #[cfg(test)]
         UiaRequest::FocusedIdentity { reply } => {
             let _ = reply.send(focused_identity(factory));
         }
@@ -190,7 +226,9 @@ fn focused_element(factory: &IUIAutomation) -> Result<Option<IUIAutomationElemen
     // SAFETY: interface call on the factory created on this same thread.
     match unsafe { factory.GetFocusedElement() } {
         Ok(element) => Ok(Some(element)),
-        Err(ref err) if err.code() == UIA_E_ELEMENTNOTAVAILABLE => Ok(None),
+        Err(ref err) if err.code() == windows::core::HRESULT(UIA_E_ELEMENTNOTAVAILABLE as i32) => {
+            Ok(None)
+        }
         Err(err) => Err(com_error("GetFocusedElement", err)),
     }
 }
@@ -214,28 +252,51 @@ fn focused_element_matching(
 
 fn focused_pid(element: &IUIAutomationElement) -> Result<u32, PlatformError> {
     // SAFETY: interface call on an element read on this same thread.
-    unsafe { element.CurrentProcessId() }.map_err(|err| com_error("CurrentProcessId", err))
+    let pid =
+        unsafe { element.CurrentProcessId() }.map_err(|err| com_error("CurrentProcessId", err))?;
+    // UIA reports the pid as a signed int; a negative value has no meaning as
+    // a process id and would corrupt the element-id encoding, so refuse it.
+    u32::try_from(pid).map_err(|_| PlatformError::CannotComplete {
+        reason: format!("UIA CurrentProcessId returned a negative pid: {pid}"),
+    })
 }
 
 fn runtime_id(element: &IUIAutomationElement) -> Result<Vec<i32>, PlatformError> {
-    // SAFETY: interface call on an element read on this same thread.
-    let safearray =
-        unsafe { element.GetRuntimeId() }.map_err(|err| com_error("GetRuntimeId", err))?;
-    runtime_id_from_safearray(&safearray)
+    // SAFETY: interface call on an element read on this same thread. The
+    // generated API hands back a raw `*mut SAFEARRAY` owned by the caller —
+    // the guard below destroys it exactly once on every path.
+    let array = OwnedSafeArray(
+        unsafe { element.GetRuntimeId() }.map_err(|err| com_error("GetRuntimeId", err))?,
+    );
+    runtime_id_from_safearray(array.get())
 }
 
+/// UIA documents the runtime id as a one-dimensional `VT_I4` array. Read it
+/// element-by-element through `SafeArrayGetElement`, which copies with the
+/// array's own locking — no raw access-data lifetime to manage.
 fn runtime_id_from_safearray(safearray: &SAFEARRAY) -> Result<Vec<i32>, PlatformError> {
-    // SAFETY: the array is UIA's runtime-id array, documented as VT_I4; the
-    // borrow ends before any other call touches it.
-    let components =
-        unsafe { safearray.as_1d::<i32>() }.map_err(|err| com_error("GetRuntimeId(as_1d)", err))?;
-    Ok(components.to_vec())
+    let psa = safearray as *const SAFEARRAY as *mut SAFEARRAY;
+    let count = safearray.rgsabound[0].cElements;
+    let mut components = Vec::with_capacity(count as usize);
+    for index in 0..count as i32 {
+        let mut value: i32 = 0;
+        // SAFETY: `index` addresses the single dimension of a live array;
+        // `value` is the out-slot for one VT_I4 element.
+        unsafe { SafeArrayGetElement(psa, &index, &mut value as *mut i32 as *mut c_void) }
+            .map_err(|err| com_error("GetRuntimeId(element)", err))?;
+        components.push(value);
+    }
+    Ok(components)
 }
 
 fn bstr_to_string(value: windows::core::BSTR) -> String {
-    String::from_utf16_lossy(value.as_wide())
+    // BSTR derefs to its UTF-16 code units.
+    String::from_utf16_lossy(&value)
 }
 
+/// The focused element's identity, or `None` when focus is mid-transition
+/// (`UIA_E_ELEMENTNOTAVAILABLE`). Any other failure is an error.
+#[cfg(test)]
 fn focused_identity(factory: &IUIAutomation) -> Result<Option<(u32, String)>, PlatformError> {
     let Some(element) = focused_element(factory)? else {
         return Ok(None);
@@ -247,26 +308,24 @@ fn focused_identity(factory: &IUIAutomation) -> Result<Option<(u32, String)>, Pl
 
 fn field_facts(factory: &IUIAutomation, element_id: &str) -> Result<UiaFieldFacts, PlatformError> {
     let element = focused_element_matching(factory, element_id)?;
-    // SAFETY: property reads on the element read on this same thread.
-    let (has_text_pattern, has_value_pattern, is_password, framework) = unsafe {
-        (
-            element.CurrentIsTextPatternAvailable(),
-            element.CurrentIsValuePatternAvailable(),
-            element.CurrentIsPassword(),
-            element.CurrentFrameworkId(),
-        )
-    };
+    // SAFETY: pattern probes on the element read on this same thread.
+    // `GetCurrentPattern` answers S_OK with a null interface when the
+    // pattern is unavailable, so availability is a null check — the
+    // generated element type has no `CurrentIs*PatternAvailable` helpers.
+    let text_pattern = unsafe { element.GetCurrentPattern(UIA_TextPatternId) }
+        .map_err(|err| com_error("GetCurrentPattern(Text)", err))?;
+    let value_pattern = unsafe { element.GetCurrentPattern(UIA_ValuePatternId) }
+        .map_err(|err| com_error("GetCurrentPattern(Value)", err))?;
     Ok(UiaFieldFacts {
-        has_text_pattern: has_text_pattern
-            .map_err(|err| com_error("CurrentIsTextPatternAvailable", err))?
-            .as_bool(),
-        has_value_pattern: has_value_pattern
-            .map_err(|err| com_error("CurrentIsValuePatternAvailable", err))?
-            .as_bool(),
-        is_password: is_password
+        has_text_pattern: !text_pattern.as_raw().is_null(),
+        has_value_pattern: !value_pattern.as_raw().is_null(),
+        is_password: unsafe { element.CurrentIsPassword() }
             .map_err(|err| com_error("CurrentIsPassword", err))?
             .as_bool(),
-        framework: bstr_to_string(framework.map_err(|err| com_error("CurrentFrameworkId", err))?),
+        framework: bstr_to_string(
+            unsafe { element.CurrentFrameworkId() }
+                .map_err(|err| com_error("CurrentFrameworkId", err))?,
+        ),
     })
 }
 
@@ -275,63 +334,60 @@ fn read_document(
     element_id: &str,
 ) -> Result<(String, i64, i64), PlatformError> {
     let element = focused_element_matching(factory, element_id)?;
-    // SAFETY: property read on the element read on this same thread.
-    if !unsafe { element.CurrentIsTextPatternAvailable() }
-        .map_err(|err| com_error("CurrentIsTextPatternAvailable", err))?
-        .as_bool()
-    {
+    // SAFETY: pattern fetch and range reads on the element read on this same
+    // thread; every interface created here stays on the worker. The pattern
+    // comes back as a null interface when the element has no TextPattern —
+    // the generated element type has no `CurrentIsTextPatternAvailable`.
+    let pattern: IUIAutomationTextPattern = unsafe {
+        element
+            .GetCurrentPatternAs(UIA_TextPatternId)
+            .map_err(|err| com_error("GetCurrentPatternAs(Text)", err))
+    }?;
+    if pattern.as_raw().is_null() {
         return Err(PlatformError::UnsupportedField {
             reason: "focused element exposes no UIA TextPattern".into(),
         });
     }
-    // SAFETY: pattern fetch and range reads on the element read on this same
-    // thread; every interface created here stays on the worker.
-    unsafe {
-        let pattern: IUIAutomationTextPattern = element
-            .GetCurrentPatternAs(UIA_TextPatternId)
-            .map_err(|err| com_error("GetCurrentPatternAs(Text)", err))?;
-        let document = pattern
-            .DocumentRange()
-            .map_err(|err| com_error("DocumentRange", err))?;
-        let text = bstr_to_string(
-            document
-                .GetText(-1)
-                .map_err(|err| com_error("GetText", err))?,
-        );
-        let selection = pattern
-            .GetSelection()
-            .map_err(|err| com_error("GetSelection", err))?;
-        let ranges = selection
-            .as_1d::<IUnknown>()
-            .map_err(|err| com_error("GetSelection(as_1d)", err))?;
-        let Some(first) = ranges.first() else {
-            // A text field with no selection range: treat as collapsed at 0.
-            return Ok((text, 0, 0));
-        };
-        let range = IUIAutomationTextRange::from_unknown(first);
-        let start = range
-            .CompareEndpoints(
-                TextPatternRangeEndpoint_Start,
-                &document,
-                TextPatternRangeEndpoint_Start,
-            )
-            .map_err(|err| com_error("CompareEndpoints(Start)", err))?;
-        let end = range
-            .CompareEndpoints(
-                TextPatternRangeEndpoint_End,
-                &document,
-                TextPatternRangeEndpoint_Start,
-            )
-            .map_err(|err| com_error("CompareEndpoints(End)", err))?;
-        Ok((text, start as i64, end as i64))
+    let document =
+        unsafe { pattern.DocumentRange() }.map_err(|err| com_error("DocumentRange", err))?;
+    let text =
+        bstr_to_string(unsafe { document.GetText(-1) }.map_err(|err| com_error("GetText", err))?);
+    let selection =
+        unsafe { pattern.GetSelection() }.map_err(|err| com_error("GetSelection", err))?;
+    // SAFETY: interface calls on the selection array read on this same
+    // thread; `Length` bounds the indexed `GetElement` below.
+    let length =
+        unsafe { selection.Length() }.map_err(|err| com_error("GetSelection(Length)", err))?;
+    if length == 0 {
+        // A text field with no selection range: treat as collapsed at 0.
+        return Ok((text, 0, 0));
     }
+    let range =
+        unsafe { selection.GetElement(0) }.map_err(|err| com_error("GetSelection(0)", err))?;
+    let start = unsafe {
+        range.CompareEndpoints(
+            TextPatternRangeEndpoint_Start,
+            &document,
+            TextPatternRangeEndpoint_Start,
+        )
+    }
+    .map_err(|err| com_error("CompareEndpoints(Start)", err))?;
+    let end = unsafe {
+        range.CompareEndpoints(
+            TextPatternRangeEndpoint_End,
+            &document,
+            TextPatternRangeEndpoint_Start,
+        )
+    }
+    .map_err(|err| com_error("CompareEndpoints(End)", err))?;
+    Ok((text, start as i64, end as i64))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::WindowsAdapter;
-    use platform::FieldHandle;
+    use platform::{FieldHandle, PlatformAdapter};
 
     fn bogus_field() -> FieldHandle {
         FieldHandle {
@@ -399,10 +455,19 @@ mod tests {
             "smoke: framework={:?} readable={} value_pattern_recorded_via_facts",
             caps.toolkit, caps.readable_text
         );
-        let (doc, start, end) = adapter.read_context(&field).expect("document read");
-        assert!(
-            doc.encode_utf16().count() as i64 >= start.max(end),
-            "selection endpoints must fit the document they came from"
-        );
+        let ctx = adapter.read_context(&field).expect("document read");
+        let total: usize = ctx.left.encode_utf16().count()
+            + ctx
+                .selected_text
+                .as_deref()
+                .map(|text| text.encode_utf16().count())
+                .unwrap_or(0)
+            + ctx.right.encode_utf16().count();
+        if let Some(selection) = &ctx.selection {
+            assert!(
+                selection.end <= total,
+                "selection endpoints must fit the document they came from"
+            );
+        }
     }
 }
