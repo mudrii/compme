@@ -1,12 +1,14 @@
-//! Windows platform adapter — SCAFFOLD (ROADMAP Tier 1.1).
+//! Windows platform adapter — ROADMAP Tier 1.1, **read-only UIA slice live**.
 //!
-//! Implements the [`platform::PlatformAdapter`] contract so the cross-platform
-//! structure exists and CI can gate it, but the real Windows API integration is
-//! **not yet built** — it requires a Windows build+test environment (this
-//! scaffold was authored on a macOS-only host). Every method is a fail-closed
-//! stub returning [`PlatformError::UnsupportedField`] (IO/subscribe) or a safe
-//! empty value, so wiring this adapter in is inert, never a crash. Each method's
-//! doc names the Win32 API its real implementation will use.
+//! Implements the [`platform::PlatformAdapter`] contract. The read path is now
+//! real on Windows: `with_uia()` spawns the UIA worker (one dedicated MTA
+//! thread per the decision of record in `Qfd.md` §23) and `capabilities` and
+//! `read_context` read the focused element through `GetFocusedElement` +
+//! `TextPattern` — see the `uia_*` modules. Everything else is still the
+//! fail-closed scaffold: every insert, subscribe, and overlay method returns
+//! [`PlatformError::UnsupportedField`], never panics, so an unwired surface is
+//! inert, not harmful. Each stub's doc names the Win32 API its real
+//! implementation will use.
 
 use platform::{
     AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,
@@ -14,19 +16,60 @@ use platform::{
     PlatformError, ScreenRect, Subscription, TextContext,
 };
 
-/// Windows implementation of [`PlatformAdapter`] — scaffold (see module docs).
-/// Implementation map for the real adapter (built on a Windows host):
-/// - focus / caret events → UI Automation (`IUIAutomation` + event handlers)
-/// - capabilities / read_context / caret_rect → UIA TextPattern + bounding rects
+// UIA read-only slice (audit plan item 8). The pure halves — identity codec,
+// facts→capabilities mapping, document+selection→TextContext — are compiled
+// and unit-tested on every host (public like platform_linux's pure modules,
+// so they are never dead code off-Windows); only the COM half is cfg(windows).
+pub mod uia_caps;
+pub mod uia_ids;
+#[cfg(windows)]
+pub mod uia_live;
+pub mod uia_text;
+
+/// Windows implementation of [`PlatformAdapter`] — read-only UIA slice (see
+/// module docs). Implementation map for the remaining adapter:
+/// - focus / caret events → UIA `AddFocusChangedEventHandler` /
+///   `TextSelectionChanged` (next slice; the pure read path is live)
+/// - caret_rect → UIA TextPattern bounding rectangles
 /// - subscribe_accept → low-level keyboard hook (`WH_KEYBOARD_LL`)
-/// - insert / insert_replacing → UIA ValuePattern, else `SendInput` synthetic keys
+/// - insert / insert_replacing → UIA ValuePattern, else `SendInput` synthetic
+///   keys — flips `writable`/`insert_strategy` **together** (see `uia_caps`)
 /// - overlay → a layered, click-through, topmost window (separate `OverlayPresenter`)
 #[derive(Debug, Default)]
-pub struct WindowsAdapter;
+pub struct WindowsAdapter {
+    /// Live UIA worker when constructed through [`WindowsAdapter::with_uia`];
+    /// `None` for the inert [`WindowsAdapter::new`] (tests, off-Windows).
+    #[cfg(windows)]
+    uia: Option<uia_live::UiaWorker>,
+}
 
 impl WindowsAdapter {
     pub fn new() -> Self {
-        Self
+        Self {
+            #[cfg(windows)]
+            uia: None,
+        }
+    }
+
+    /// Opt into the live UIA read path: spawn the worker (COM init + the
+    /// `CUIAutomation` factory on the dedicated MTA thread) and route
+    /// `capabilities`/`read_context` through it. Fails at construction when
+    /// the worker cannot start — startup cost belongs at startup. On non-
+    /// Windows hosts this adapter does not serve fields, so this fails closed.
+    pub fn with_uia() -> Result<Self, PlatformError> {
+        #[cfg(windows)]
+        {
+            Ok(Self {
+                uia: Some(uia_live::UiaWorker::spawn()?),
+            })
+        }
+        #[cfg(not(windows))]
+        {
+            Err(PlatformError::UnsupportedField {
+                reason: "platform_windows::with_uia requires a Windows host (UIA is Windows-only)"
+                    .into(),
+            })
+        }
     }
 
     /// The error every not-yet-implemented method returns. Fail-closed: the host
@@ -79,12 +122,41 @@ impl PlatformAdapter for WindowsAdapter {
     }
 
     /// Real impl: UIA control/value/text patterns + secure-desktop probe.
-    fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+    /// Real on the UIA worker: pattern availability, `IsPassword`, and the
+    /// framework id, mapped by the pure `uia_caps` module. Inert (`new()`)
+    /// builds keep the scaffold refusal.
+    /// Real on the UIA worker: pattern availability, `IsPassword`, and the
+    /// framework id, mapped by the pure `uia_caps` module. Inert (`new()`)
+    /// builds keep the scaffold refusal.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
+        #[cfg(windows)]
+        if let Some(worker) = &self.uia {
+            return Ok(uia_caps::capabilities_from_uia(
+                &worker.field_facts(&field.element_id)?,
+            ));
+        }
         Err(Self::unsupported("capabilities"))
     }
 
-    /// Real impl: UIA TextPattern range around the caret.
-    fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
+    /// Real on the UIA worker: `TextPattern` document text plus the selection
+    /// materialized to UTF-16 endpoints by the pure `uia_text` module. Inert
+    /// (`new()`) builds keep the scaffold refusal.
+    /// Real on the UIA worker: `TextPattern` document text plus the selection
+    /// materialized to UTF-16 endpoints by the pure `uia_text` module. Inert
+    /// (`new()`) builds keep the scaffold refusal.
+    #[cfg_attr(not(windows), allow(unused_variables))]
+    fn read_context(&self, field: &FieldHandle) -> Result<TextContext, PlatformError> {
+        #[cfg(windows)]
+        if let Some(worker) = &self.uia {
+            let (document, start, end) = worker.read_document(&field.element_id)?;
+            return Ok(uia_text::text_context_from_uia_document(
+                field.clone(),
+                &document,
+                start,
+                end,
+            ));
+        }
         Err(Self::unsupported("read_context"))
     }
 

@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-16 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2172 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-17 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2190 workspace tests listed on the current tree (44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -247,6 +247,15 @@ hardware, sessions, and permissions unavailable on macOS.
   `WH_KEYBOARD_LL` accept tap +
   `SendInput`/ValuePattern insert + layered overlay, plus real ShellHost services
   (DPAPI/CredWrite key store, tray, confirm UI, launch-at-login, native event pump).
+  **Read-only slice landed 2026-09-17** (audit plan item 8; MTA apartment per
+  Qfd §23): `WindowsAdapter::with_uia()` spawns the UIA worker and
+  `capabilities`/`read_context` read the focused element via
+  `GetFocusedElement` + `TextPattern` (`uia_live` plus the host-portable
+  `uia_ids`/`uia_caps`/`uia_text`). Writes stay unclaimed (`writable=false`,
+  `InsertStrategy::None`) until the insert slice flips them together; focus/
+  caret subscriptions are the next slice; the notepad smoke (the `#[ignore]`d
+  `focused_text_field_reads_document_and_selection`) needs the
+  Windows-hardware pass.
 - The remaining **Linux** work is an XTEST/`wtype` synthetic-key fallback
   (IBus/libei work remains a Wayland decision), `text_range_rect`, a
   StatusNotifierItem tray, shortcut shell surfaces, and Wayland placement.

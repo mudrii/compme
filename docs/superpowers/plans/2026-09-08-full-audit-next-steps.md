@@ -60,6 +60,15 @@ branches).
 | 6 | AX worker throughput | G6, G7, G20 | mac lane + live | 2 d |
 | 7 | Windows Phase 1, slice 1.1 | ROADMAP 1.1 | `windows-latest` | 2 d |
 | 8 | Windows UIA read-only slice | ROADMAP 1.1 | `windows-latest` + notepad smoke | 3–5 d |
+
+> **Status 2026-09-17 (code half landed, `with_uia` + `capabilities`/
+> `read_context` via `GetFocusedElement` + `TextPattern`; CI-compiles and
+> runs its unit tests on `windows-latest`):** the apartment decision item 8
+> required before coding is Qfd §23 (MTA). `writable`/`insert_strategy` stay
+> unclaimed until the insert slice; focus/caret event subscriptions and
+> `caret_rect` are spec §1.2's remaining bullets; the notepad smoke is the
+> `#[ignore]`d `focused_text_field_reads_document_and_selection` plus a
+> Windows-hardware pass — the only part of this item still open.
 | 9 | Pre-emptive hardening | G14, G15, G19, vendor drift | Linux | 1 d |
 | 10 | Owner decisions | G11 policy, governance, release notes | — | decision |
 

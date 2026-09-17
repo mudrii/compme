@@ -152,6 +152,15 @@ falling back to `"unknown"`), `physical_memory_bytes()` is a real
 `install_console_ctrl_handler`). Audit plan items 7 (slice 1.1) and 8 (UIA
 read-only slice) are the next cuts.)
 
+(status 2026-09-17: **the read-only half of 1.2 has landed** —
+`WindowsAdapter::with_uia()` + `capabilities`/`read_context` over
+`GetFocusedElement` + `TextPattern` on a dedicated MTA worker (Qfd §23
+apartment decision), with the pure halves (`uia_ids`, `uia_caps`,
+`uia_text`) unit-tested on every lane. 1.2's event bullets
+(`AddFocusChangedEventHandler`, `subscribe_caret`) and `caret_rect`, plus
+1.3–1.7, are still open. `writable`/`insert_strategy` report the floor
+(`false`/`None`) until 1.4's insert path exists.)
+
 Order chosen so each step yields a testable increment. The `windows` dep is
 already active and pinned (`=0.62.2`, Phase 0.2/0.3, carrying
 Foundation/Security/Console features) — extend its feature list with the
