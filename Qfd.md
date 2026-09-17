@@ -1045,3 +1045,33 @@ register/unregister sink, then pin that every call routes through the executor
 when off-main, that register emits `unregister(old) → register(new)` in order,
 that a stale unregister after a newer register is a no-op, and that dropping a
 token emits exactly one unregister for its own id.
+
+## 23. UIA apartment decision — MTA on a window-less worker (2026-09-17, before coding plan item 8)
+
+The two specs disagreed and both demanded a recorded decision before code:
+`2026-07-08-cross-platform-implementation-plan.md` §1.2 said a dedicated
+**STA** thread; `2026-06-03-cross-platform-review.md` `:100,172,219` said a
+dedicated **MTA** thread that owns no windows. **Decision: MTA.** All UIA COM
+objects (`IUIAutomation` and everything reached from it) are created on one
+dedicated worker thread initialized `CoInitializeEx(COINIT_MULTITHREADED)`;
+that thread owns no windows and never pumps a message loop; every trait call
+crosses to it by bounded request/reply (10 s deadline, mapping to
+`PlatformError::Timeout` per the contract's no-unbounded-block rule). Event
+handlers (a later slice) deliver through a channel — with an MTA client UIA
+invokes callbacks on its own RPC threads, so the handler marshals the payload
+and does no apartment-bound work inside the callback, the same
+worker/dispatcher split as macOS.
+
+Why not STA: an STA services incoming cross-apartment COM calls through its
+message loop, so an STA worker that is not pumping can deadlock on any
+marshaled call that needs reentrancy — precisely the state a blocking
+request/reply worker occupies while it waits on a slow provider. The house
+adapter-worker pattern this crate already runs (`platform_macos::ax_worker`,
+the `x11_tap` threads) blocks on channels and never pumps; STA would add a
+pump-or-deadlock obligation the pattern cannot discharge. STA also buys
+nothing here: the *target* application's UI thread is the STA side of UIA
+remoting regardless of our client apartment, and Microsoft's own UIA clients
+(Accessibility Insights, the FlaUI guidance) operate the automation object
+from the MTA. The STA option in the implementation plan predates the
+blocking-worker design and is superseded by this entry; both spec status
+notes now point here.

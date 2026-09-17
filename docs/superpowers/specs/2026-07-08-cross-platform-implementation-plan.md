@@ -173,7 +173,9 @@ target-gated.
      one owner thread, mpsc request/reply, generation-stamped FieldHandles).
      (status 2026-09-09: the specs disagree — `2026-06-03-cross-platform-review.md`
      `:58,126,219` says a dedicated **MTA** thread that owns no windows. Not
-     resolved here; decide and record before coding, audit plan item 8.)
+     resolved here; decide and record before coding, audit plan item 8.
+     **Resolved 2026-09-17: MTA — see Qfd §23; the STA wording in this bullet
+     is superseded.**)
    - `AddFocusChangedEventHandler` → `subscribe_focus`; element runtime-id +
      pid → `FieldHandle{app, pid, element_id, generation}`.
    - `capabilities()`: TextPattern/ValuePattern presence → readable/writable;
