@@ -69,6 +69,11 @@ branches).
 > `caret_rect` are spec §1.2's remaining bullets; the notepad smoke is the
 > `#[ignore]`d `focused_text_field_reads_document_and_selection` plus a
 > Windows-hardware pass — the only part of this item still open.
+> **Hosted-runner fact (recorded from run 35278898187):** `windows-latest`
+> runs UIA without an interactive desktop, so focus-dependent reads fail
+> there (`GetFocusedElement` → `0x80004005`, intermittently); CI proves the
+> factory, request/reply, and stale-field paths, and every focus-dependent
+> assertion lives in the `#[ignore]`d hardware smoke.
 | 9 | Pre-emptive hardening | G14, G15, G19, vendor drift | Linux | 1 d |
 | 10 | Owner decisions | G11 policy, governance, release notes | — | decision |
 

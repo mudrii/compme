@@ -414,25 +414,13 @@ mod tests {
         ));
     }
 
-    #[test]
-    fn focused_identity_round_trips_through_the_worker() {
-        let adapter =
-            WindowsAdapter::with_uia().expect("UIA factory must build on a Windows runner");
-        // Whatever is focused on the runner, the worker must answer — Ok(None)
-        // is legal (focus mid-transition), a pid+id pair is the normal case.
-        let worker = adapter.uia.as_ref().expect("with_uia built the worker");
-        if let Some((pid, id)) = worker
-            .focused_identity()
-            .expect("focused identity round trip must not error")
-        {
-            assert_eq!(crate::uia_ids::decode_element_id(&id).unwrap().0, pid);
-        }
-    }
-
-    /// The plan-item-8 hardware smoke: a human focuses a text field (Notepad
-    /// or any editor) on a real desktop, then runs with `--ignored`. Asserts
-    /// the read path end-to-end — identity, facts, and a document read whose
-    /// selection fits the text it reports.
+    /// Focus-dependent reads need an interactive desktop. Hosted
+    /// `windows-latest` runners run UIA without one — `GetFocusedElement`
+    /// intermittently fails `0x80004005` there — so CI proves only the
+    /// factory, the request/reply mechanism, and the stale-field path (the
+    /// other test), while this smoke is the plan-item-8 hardware pass: a
+    /// human focuses a text field (Notepad or any editor) and runs with
+    /// `--ignored`, asserting the read path end-to-end.
     #[test]
     #[ignore = "needs an interactive Windows desktop with a text field focused (plan-item-8 hardware pass)"]
     fn focused_text_field_reads_document_and_selection() {
@@ -452,7 +440,7 @@ mod tests {
             .capabilities(&field)
             .expect("facts for the focused field");
         eprintln!(
-            "smoke: framework={:?} readable={} value_pattern_recorded_via_facts",
+            "smoke: framework={:?} readable={}",
             caps.toolkit, caps.readable_text
         );
         let ctx = adapter.read_context(&field).expect("document read");
