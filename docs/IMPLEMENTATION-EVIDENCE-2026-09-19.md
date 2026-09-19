@@ -209,3 +209,66 @@ The next native CI run caught the newly introduced SDK hosts in the privacy
 inventory. `edf4c19` permits the two reviewed SDK hosts only in `gpu.yml`.
 The actual checker and self-test passed, and Astra independently verified that
 both hosts remain rejected in runtime source and other workflows.
+
+## Immediate fixes — 2026-09-20
+
+The follow-up fixes were implemented with regression tests that failed against
+the old behavior, then passed with the fixes. Sol high agents handled memory,
+configuration and X11 work in parallel; Astra independently reviewed each fix
+and the final performance evidence.
+
+- `72e524f`: the version checker rejects a stale actual published-release claim
+  even when the separate tag reference remains current.
+- `34c5c93`: a layout-change grab collision releases stale X11 accept grabs;
+  a later explicit rearm recovers on the current layout. Explicit same-layout
+  rebind rollback remains intact. All 41 live Linux tests and 138 adapter unit
+  tests passed.
+- `908cd40`: basename configuration paths work for instance locking and atomic
+  persistence. Empty paths and unsafe parents retain their refusal. All 50
+  configuration unit tests and both Linux startup integration tests passed.
+- `892a617`: successful app/global memory erasure clears captured pending text,
+  partial buffers and live history. Cancelled or failed deletion preserves
+  them; failed app-row deletion no longer publishes success. Tests exercise
+  real SQLite deletion failures, subsequent flushing/typing, persisted app
+  identity and preservation of unrelated applications.
+
+Native Windows CI on `908cd40` exposed an incorrect test expectation: after
+loading the basename config, Windows correctly refused its unimplemented
+focus subscription, but the test required process success. `d7be740` corrects
+the test to require the exact documented Windows failure and the created lock
+file; Linux still requires success. Astra reviewed the correction and both
+Linux startup tests and targeted clippy passed. The queued `892a617` CI run was
+cancelled because it inherited the same assertion; the correction's CI covers
+the combined implementation. The failed configuration run's remaining model
+work was also stopped after its macOS compilation and unit tests passed.
+
+Native CI records:
+
+- [Release-claim checker, `72e524f`](https://github.com/mudrii/compme/actions/runs/35453402188): all five jobs passed.
+- [X11 mapping fix, `34c5c93`](https://github.com/mudrii/compme/actions/runs/35453485745): all five jobs passed.
+- [Combined fixes and Windows test correction, `d7be740`](https://github.com/mudrii/compme/actions/runs/35455324901): authoritative native result for the corrected configuration and memory changes.
+
+Combined portable validation passed formatting, clippy with denied warnings,
+all-target builds, doctests and rustdoc with denied warnings. Default Linux
+test runs recorded **1,861 passed, zero failed and 50 ignored**; the live Linux
+tests above ran separately. These totals are test inventory, not measured
+coverage percentages. The expected macOS inventory is 2,226 tests, including
+one new config unit test and three new memory tests; native CI verifies it.
+
+Another 36 portable shell/documentation commands passed, including version,
+metadata, vendor, privacy, agent-brief and workflow checks and their self-tests,
+plus the release-policy self-test. Repository-wide shellcheck also passed using the Nix tool
+environment. The canonical `tools/dev/check.sh` was attempted and stopped at
+step 2/56 on Apple-only dependencies (`framework` linking and `objc2`), so it
+was not a complete local pass. Native macOS bundle/icon and test-inventory
+checks require native CI. The actual missing-model smoke was inconclusive
+locally: its cleared environment omitted the Nix `libstdc++` loader path and
+the binary exited before `main`; its self-test passed.
+
+The existing Vulkan option was then calibrated without changing model code,
+defaults or budgets. Same-binary paired medians were **1,833 ms CPU versus
+120 ms Vulkan** on Quadro RTX 4000. All six real-model tests, including
+cancellation, passed on Vulkan; the quality gate scored 20/21. See the
+[performance record](PERFORMANCE-2026-09-19.md) for samples, controls and
+hardware limits. The CPU default still misses 500 ms. These results do not
+replace native desktop acceptance or real-tag release evidence.

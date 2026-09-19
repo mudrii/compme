@@ -90,7 +90,7 @@ The earlier Quadro RTX 4000 diagnostic offloaded layers to `Vulkan0` and
 measured **2,075 ms**, also failing 500 ms. It used the same prompt, token
 count and context size. That run was diagnostic because other builds were
 active. Its `/tmp/compme-vulkan-target` artifact no longer exists, so Vulkan
-was not represented as a fresh calibrated result in this record.
+was not represented as a fresh calibrated result in the initial September 19 record.
 
 The following reproducible command is reconstructed from the original
 separate Vulkan build and runtime invocations:
@@ -114,6 +114,69 @@ nix-shell -p cmake pkg-config clang libclang \
     --ignored --exact --nocapture --test-threads=1
 '
 ```
+
+### Fresh Vulkan calibration — 2026-09-20
+
+The documented Vulkan setup was rebuilt from an absent target directory with
+`CARGO_TARGET_DIR=/tmp/compme-vulkan-target`, `CARGO_BUILD_JOBS=2`, the
+`model_client/vulkan` feature, the pinned Nix Vulkan loader and NVIDIA ICD.
+The CMake cache recorded `CMAKE_BUILD_TYPE=Release`, `GGML_VULKAN=ON`,
+`GGML_CUDA=OFF` and `GGML_NATIVE=OFF`. Runtime kept the strict test contract:
+`COMPME_REQUIRE_LATENCY_BUDGET=1`, `COMPME_REQUIRE_MODEL_TESTS=1`,
+`COMPME_REQUIRE_MODEL_CONTEXT=1`, `COMPME_MODEL_GPU_LAYERS=999` and
+`COMPME_MODEL_CONTEXT_TOKENS=256`.
+
+Three invocations of the already-built test executable in fresh processes
+measured **101, 97 and 72 ms**, for a **97 ms median**. All three passed the
+unchanged 500 ms budget and produced the same completion. llama.cpp identified
+`Vulkan0` as the NVIDIA Quadro RTX 4000, assigned all 24 KV-cache layers to it,
+and reported **25/25 model layers offloaded**, a 373.71 MiB Vulkan model buffer
+and a 149.25 MiB Vulkan compute buffer. Concurrent `nvidia-smi` sampling also
+observed each latency-test process on GPU 0. The desktop compositor and
+Sunshine were active GPU clients during the samples, so this is a calibrated
+interactive-desktop result rather than an exclusive-GPU benchmark.
+
+A follow-up paired comparison used that exact Vulkan-enabled test
+executable in six more fresh processes, interleaving CPU then GPU three times.
+The only changed variable was `COMPME_MODEL_GPU_LAYERS` (`0` versus `999`);
+context 256, the prompt, the 12-token output budget and the strict 500 ms
+assertion stayed fixed.
+
+| Pair | CPU, 0/25 layers offloaded | GPU, 25/25 layers offloaded |
+|---|---:|---:|
+| 1 | 1,833 ms (failed budget) | 120 ms (passed) |
+| 2 | 1,806 ms (failed budget) | 110 ms (passed) |
+| 3 | 1,865 ms (failed budget) | 122 ms (passed) |
+| Median | **1,833 ms** | **120 ms** |
+
+All six produced the exact same completion. This same-build comparison shows a
+15.3x median improvement from full Vulkan offload on this machine and confirms
+that the CPU path still fails the default contract. It supports the existing
+Vulkan opt-in for this tested GPU; one card still cannot establish a portable
+product default.
+
+The same Vulkan executable's complete six-test ignored real-model suite passed
+in 16.52 seconds. That includes the strict under-250-ms cancellation test,
+prefix-cache equivalence, multi-candidate generation and grammar output
+vetting. Its diagnostic quality probe fixed 8/9 typo cases with 0/4 false
+fixes; an additional strict warm completion measured 69 ms.
+
+Separately, the dedicated `tests/quality.rs` 21-case corpus gate ran through
+the same Vulkan build and strict model/context environment. It passed 20/21
+cases (**95%**) against the unchanged 80% threshold (17 cases required), with
+the pinned `typo-occured` miss as its only failed case. The harness passed in
+14.01 seconds and again reported 25/25 layers offloaded to the Quadro RTX 4000.
+
+Vulkan remains an explicit build-time feature, and full offload in this run was
+selected explicitly through `COMPME_MODEL_GPU_LAYERS=999`. This result does not
+change the portable CPU default, which still fails the budget on this host, and
+does not justify making a GPU backend a product default from one card. No code,
+budget, model, prompt or production setting changed. The earlier 2,075 ms run
+remains useful historical evidence of a contaminated diagnostic, but the large
+difference is not a controlled speedup comparison because that run overlapped
+other builds and its artifact was unavailable for an otherwise identical
+rerun. The fresh result establishes only that the existing optional Vulkan
+backend meets the contract on this Quadro RTX 4000 under the conditions above.
 
 ## Follow-up: decode phase attribution
 
@@ -157,5 +220,7 @@ More threads and native SIMD improve the result but do not satisfy the
 contract; Rust release mode made no improvement in the bounded comparison. No
 production code change is justified by this single machine: a thread default
 is topology-sensitive, and `target-cpu=native` would break portable artifacts.
-Item 30 remains open for calibrated Vulkan and other target measurements or a
-backend/model strategy that preserves the existing latency budget.
+Linux Vulkan is now calibrated and green on the Quadro RTX 4000. Item 30
+remains open for Windows, macOS and CUDA target measurements and for any
+portable-CPU backend/model strategy that preserves the existing latency
+budget.
