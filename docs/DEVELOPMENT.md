@@ -635,9 +635,9 @@ XDG_DATA_DIRS="$(nix-build --no-out-link '<nixpkgs>' -A dejavu_fonts)/share:$XDG
 `model_client::LlamaModel` currently:
 
 - loads a GGUF model through `llama-cpp-2`
-- enables Metal offload on macOS through `with_n_gpu_layers(999)`; current
-  non-macOS builds are CPU-only until the planned Vulkan/CUDA features and CI
-  SDKs land
+- enables Metal offload on macOS through `with_n_gpu_layers(999)`; non-macOS
+  builds default to CPU, with opt-in `vulkan` / `cuda` features that require
+  their respective SDKs (see the build instructions above)
 - **[Updated 2026-06-08 — G3 closed]** runs on a dedicated worker thread owning a **persistent** `LlamaContext` (no longer a fresh context per completion) and **reuses the KV cache** for the shared prompt prefix (`reusable_prefix_len` + `clear_kv_cache_seq`), re-decoding only the divergent suffix
 - serializes `complete()` calls via a mutex held across the round-trip; the backend is a `'static` singleton
 - supports `warm_up()` so launch can trigger the first Metal decode before serving suggestions
