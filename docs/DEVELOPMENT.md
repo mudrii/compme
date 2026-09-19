@@ -240,6 +240,10 @@ establish GPU runtime or latency acceptance. A Linux Vulkan SDK build passed
 locally on 2026-09-19. The first Linux CUDA and Windows Vulkan CI results
 remain unverified.
 
+Manual GPU workflow runs can select one `backend` (or the default `all`);
+scheduled runs always select all three. Each backend has its own concurrency
+group so a Windows repair can run while a Linux CUDA build is in progress.
+
 Experimental Linux packaging uses `tools/bundle/make-appimage.sh --help`.
 Build the release binary on the oldest supported distribution, then supply
 that binary, a reviewed architecture-matched AppImage runtime, and an unused

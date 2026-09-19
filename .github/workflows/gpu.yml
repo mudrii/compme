@@ -4,19 +4,29 @@ on:
   schedule:
     - cron: "43 4 * * 2"
   workflow_dispatch:
+    inputs:
+      backend:
+        description: SDK build to verify
+        type: choice
+        default: all
+        options:
+          - all
+          - vulkan-linux
+          - cuda-linux
+          - vulkan-windows
 
 permissions:
   contents: read
 
-concurrency:
-  group: optional-gpu-builds
-  cancel-in-progress: false
-
 jobs:
   vulkan-linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.backend == 'all' || inputs.backend == 'vulkan-linux'
     name: Linux Vulkan SDK build
     runs-on: ubuntu-latest
     timeout-minutes: 45
+    concurrency:
+      group: optional-gpu-vulkan-linux
+      cancel-in-progress: false
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -35,9 +45,13 @@ jobs:
         run: cargo build --locked -p app --features vulkan
 
   cuda-linux:
+    if: github.event_name != 'workflow_dispatch' || inputs.backend == 'all' || inputs.backend == 'cuda-linux'
     name: Linux CUDA SDK build
     runs-on: ubuntu-24.04
     timeout-minutes: 90
+    concurrency:
+      group: optional-gpu-cuda-linux
+      cancel-in-progress: false
     env:
       CARGO_BUILD_JOBS: "2"
       CMAKE_CUDA_ARCHITECTURES: "75"
@@ -66,9 +80,13 @@ jobs:
         run: cargo build --locked -p app --features cuda
 
   vulkan-windows:
+    if: github.event_name != 'workflow_dispatch' || inputs.backend == 'all' || inputs.backend == 'vulkan-windows'
     name: Windows Vulkan SDK build
     runs-on: windows-2025
     timeout-minutes: 60
+    concurrency:
+      group: optional-gpu-vulkan-windows
+      cancel-in-progress: false
     env:
       CARGO_BUILD_JOBS: "2"
       # Avoid the pinned llama source's CMP0147 Visual Studio custom-step race.
