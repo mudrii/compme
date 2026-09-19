@@ -99,8 +99,24 @@ fn startup_accepts_a_basename_config_path() {
     let output = command.output().expect("launch compme");
 
     assert!(
+        temp.0.join("instance.lock").is_file(),
+        "startup did not create the basename-derived instance lock"
+    );
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    #[cfg(target_os = "windows")]
+    {
+        assert!(
+            !output.status.success(),
+            "Windows scaffold unexpectedly ran"
+        );
+        assert_eq!(
+            stderr.lines().collect::<Vec<_>>(),
+            ["compme: fatal: subscribe focus: UnsupportedField { reason: \"platform_windows::subscribe_focus not yet implemented (Tier 1.1 scaffold)\" }"]
+        );
+    }
+    #[cfg(not(target_os = "windows"))]
+    assert!(
         output.status.success(),
-        "basename COMPME_CONFIG rejected at startup: {}",
-        String::from_utf8_lossy(&output.stderr)
+        "basename COMPME_CONFIG rejected at startup: {stderr}"
     );
 }
