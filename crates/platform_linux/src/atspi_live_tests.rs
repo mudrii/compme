@@ -2178,6 +2178,137 @@ mod x11_accept_tap {
 
     #[test]
     #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+    fn live_accept_tap_mapping_collision_drops_the_stale_armed_plan() {
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        let (owner, root) = xtest();
+        let setup = owner.setup();
+        let min = setup.min_keycode;
+        let count = setup.max_keycode - min + 1;
+        let original = owner
+            .get_keyboard_mapping(min, count)
+            .expect("mapping request")
+            .reply()
+            .expect("mapping reply");
+        let per = usize::from(original.keysyms_per_keycode);
+        let old_tab = keycode_for_keysym(
+            min,
+            original.keysyms_per_keycode,
+            &original.keysyms,
+            KEYSYM_TAB,
+        )
+        .expect("Tab keycode");
+        let new_tab = keycode_for_keysym(
+            min,
+            original.keysyms_per_keycode,
+            &original.keysyms,
+            KEYSYM_RETURN,
+        )
+        .expect("Return keycode");
+        assert_ne!(
+            old_tab, new_tab,
+            "Tab and Return need distinct raw keycodes"
+        );
+
+        let mut changed = original.keysyms.clone();
+        let old_start = usize::from(old_tab - min) * per;
+        let new_start = usize::from(new_tab - min) * per;
+        for offset in 0..per {
+            changed.swap(old_start + offset, new_start + offset);
+        }
+        let mut mapping = KeyboardMappingGuard {
+            conn: &owner,
+            min,
+            count,
+            keysyms_per_keycode: original.keysyms_per_keycode,
+            keysyms: original.keysyms,
+            restored: false,
+        };
+
+        let (_adapter, subscription, recorded) = install_tap();
+        subscription.set_suggestion_visible(true).expect("arm");
+        owner
+            .grab_key(
+                false,
+                root,
+                x11rb::protocol::xproto::ModMask::from(0u16),
+                new_tab,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+                x11rb::protocol::xproto::GrabMode::ASYNC,
+            )
+            .expect("future Tab grab request")
+            .check()
+            .expect("the isolated Xvfb has bare Return free before the remap");
+        owner
+            .change_keyboard_mapping(count, min, mapping.keysyms_per_keycode, &changed)
+            .expect("move Tab onto the occupied keycode")
+            .check()
+            .expect("mapping change reply");
+        owner.flush().expect("flush changed mapping");
+
+        // Taking A is the barrier proving the tap consumed MappingNotify. A now
+        // carries Return, so restoring its old raw grab would consume the wrong
+        // key and still interpret it through the stale Tab plan.
+        let deadline = Instant::now() + KEY_WAIT;
+        loop {
+            let result = owner
+                .grab_key(
+                    false,
+                    root,
+                    x11rb::protocol::xproto::ModMask::from(0u16),
+                    old_tab,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                    x11rb::protocol::xproto::GrabMode::ASYNC,
+                )
+                .expect("stale keycode grab request")
+                .check();
+            if result.is_ok() {
+                break;
+            }
+            assert!(
+                Instant::now() < deadline,
+                "a MappingNotify collision must release the stale armed keycode: {result:?}"
+            );
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        owner
+            .ungrab_key(old_tab, root, x11rb::protocol::xproto::ModMask::from(0u16))
+            .expect("release stale-keycode proof grab")
+            .check()
+            .expect("release stale-keycode proof grab reply");
+
+        assert!(
+            subscription.set_suggestion_visible(true).is_err(),
+            "rearming while Tab's new keycode is occupied must retry the current layout"
+        );
+        owner
+            .ungrab_key(new_tab, root, x11rb::protocol::xproto::ModMask::from(0u16))
+            .expect("release conflicting new Tab grab")
+            .check()
+            .expect("release conflicting new Tab grab reply");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("arm the current layout after the collision clears");
+        for press in [KEY_PRESS_EVENT, KEY_RELEASE_EVENT] {
+            owner
+                .xtest_fake_input(press, new_tab, 0, root, 0, 0, 0)
+                .expect("XTEST remapped Tab")
+                .ignore_error();
+        }
+        owner.flush().expect("flush remapped Tab");
+        assert_eq!(
+            delivered(&recorded, 1),
+            vec![TapControl::Accept(AcceptAction::Word)],
+            "the current-layout plan must recover after the collision clears"
+        );
+
+        drop(subscription);
+        mapping.restore();
+        crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
+        restore_entry_focus();
+    }
+
+    #[test]
+    #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
     fn live_accept_tap_plan_build_failure_drops_the_stale_armed_plan() {
         crate::x11_keys::set_accept_chords_with_mods(None, None, None).unwrap();
         let (owner, root) = xtest();

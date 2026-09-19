@@ -184,7 +184,7 @@ are separate from the original implementation-list numbers in the table below.
 | Follow-up | Work | Status |
 |---|---|---|
 | 1 | Clear buffered monitored text after successful app/global memory erasure | In progress; preserve buffers when deletion is cancelled or fails |
-| 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | In progress; retain rollback for an explicit same-layout rebind |
+| 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | Implemented and Astra-reviewed: mapping failures disarm stale grabs; explicit same-layout rebinds retain rollback. Regression failed before the fix; 41 live Linux tests and 138 unit tests pass; native CI required |
 | 3 | Support basename-only `COMPME_CONFIG` paths for startup and persistence | Pending regression tests and fix |
 | 4 | Reconcile current documentation and guard the actual published-version claim | Implemented and Astra-reviewed: checker now pins the actual release claim as well as the tag reference. The new negative fixture failed before the fix; self-test, live check, shellcheck and policy self-test pass |
 | 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | Procedures added and Astra-reviewed in [the Linux checklist](MANUAL-VALIDATION-LINUX.md); new gates remain unchecked and desktop acceptance remains unverified |
@@ -560,7 +560,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **40 live tests** (37 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **41 live tests** (38 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`

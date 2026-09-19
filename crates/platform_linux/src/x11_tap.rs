@@ -618,15 +618,24 @@ fn set_action(
     }
 }
 
-/// Rebuild and transactionally publish the tap's sole plan. While armed, a
-/// grab failure of the new plan restores the old exact grabs; a plan-build
-/// failure (no valid chords under the new layout) releases them, disarms, and
+#[derive(Clone, Copy)]
+enum GrabFailureRecovery {
+    RestorePreviousPlan,
+    Disarm,
+}
+
+/// Rebuild and transactionally publish the tap's sole plan. An explicit rebind
+/// may restore its previous same-layout plan when the new grab fails. A mapping
+/// change must instead disarm and publish the new plan, because the old raw
+/// keycodes may now represent unrelated keys. A plan-build failure (no valid
+/// chords under the new layout) always releases the old plan, disarms, and
 /// publishes an empty plan — fail open — so neither the current arm nor any
 /// later one can grab or match stale keycodes.
 fn regrab(
     conn: &RustConnection,
     state: &TapState,
     bindings: AcceptBindings,
+    failure_recovery: GrabFailureRecovery,
 ) -> Result<(), PlatformError> {
     let new_plan = match build_grab_plan(conn, &bindings) {
         Ok(plan) => plan,
@@ -667,8 +676,16 @@ fn regrab(
             Ok(())
         }
         Err(err) => {
-            if grab_plan(conn, state.root, &current).is_err() {
-                clear_armed_state(state, &mut grabbed);
+            match failure_recovery {
+                GrabFailureRecovery::RestorePreviousPlan => {
+                    if grab_plan(conn, state.root, &current).is_err() {
+                        clear_armed_state(state, &mut grabbed);
+                    }
+                }
+                GrabFailureRecovery::Disarm => {
+                    clear_armed_state(state, &mut grabbed);
+                    *current = new_plan;
+                }
             }
             Err(err)
         }
@@ -847,6 +864,7 @@ impl X11AcceptTap {
             &self.conn,
             &self.state,
             crate::x11_keys::configured_bindings(),
+            GrabFailureRecovery::RestorePreviousPlan,
         )
     }
 
@@ -1038,7 +1056,12 @@ fn run_event_loop(conn: &RustConnection, state: &TapState, dispatch: &mpsc::Send
             Event::MappingNotify(mapping)
                 if mapping.request == Mapping::KEYBOARD || mapping.request == Mapping::MODIFIER =>
             {
-                let _ = regrab(conn, state, crate::x11_keys::configured_bindings());
+                let _ = regrab(
+                    conn,
+                    state,
+                    crate::x11_keys::configured_bindings(),
+                    GrabFailureRecovery::Disarm,
+                );
             }
             // The teardown wake, or anything else: nothing to resolve.
             _ => {}
