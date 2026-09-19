@@ -6,8 +6,9 @@
 //! data, not a TOML file — same in-repo content, no parser dependency, and
 //! invalid entries become compile errors instead of runtime parse failures.
 //!
-//! Everything here is pure. Download/IO and the platform RAM probe are
-//! later slices in other crates.
+//! Everything here is pure. Download I/O lives in `model_fetch`; platform RAM
+//! probes and the host wiring consume these decisions without moving I/O into
+//! the catalog.
 
 /// Per-model license class. `GemmaTerms`/`LlamaCommunity` require a
 /// click-through gate before download — [`download_gate`] is the pure

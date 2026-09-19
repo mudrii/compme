@@ -4,8 +4,8 @@ Compme is split into a pure completion core, a platform contract, platform
 adapters, a local model seam, and a ring of small pure feature crates (text
 features, gating, personalization, privacy, catalog/download). macOS remains
 the shipped product; Linux now has a wired AT-SPI2/X11 adapter with explicit
-unsupported surfaces, while Windows remains the fail-closed platform-I/O
-scaffold.
+unsupported surfaces. Windows has an optional read-only UIA seam, while the
+product still constructs its fail-closed adapter.
 
 Compme's committed product scope is an **open-source, multi-platform**
 re-implementation of Cotypist functionality except payment, licensing,
@@ -114,7 +114,8 @@ Key concepts:
   `assistant_field` bit derived from direct focused-element metadata for
   SidebarOnly gating.
 - `InsertStrategy`: `AxSet`, `NativeRangeSet` (adapter-native atomic range
-  replacement for the future Windows UIA / Linux AT-SPI adapters),
+  replacement, implemented by Linux AT-SPI and reserved for a future Windows
+  write path),
   `SyntheticKeys`, `Clipboard`, `ImeCommit`, or `None`. Replacement
   suggestions are gated on `supports_atomic_range_replace()` (`AxSet` and
   `NativeRangeSet`).
@@ -688,16 +689,21 @@ Major responsibilities:
 ### `platform_windows` and `platform_linux`
 
 These crates compile the portable workspace on their native CI runners.
-`platform_windows` is not a usable product adapter yet: its
-`PlatformAdapter` text, focus/caret/accept, insertion, and overlay methods fail
-closed with `UnsupportedField` (overlay `hide` remains idempotent), and its
-`ShellHost` services mostly fail closed. `platform_linux` is wired into the
-product: text, focus/caret events, insertion, the X11 accept tap, and the X11
-overlay are implemented (see below), and its `ShellHost` services fail closed
-only when the desktop service they need is absent.
+`platform_windows` is not a usable product adapter yet: the product constructs
+the inert `WindowsAdapter::new()`, whose text, focus/caret/accept, insertion,
+and overlay methods fail closed with `UnsupportedField` (overlay `hide` remains
+idempotent), and whose `ShellHost` services mostly fail closed. The optional
+`WindowsAdapter::with_uia()` constructor starts a dedicated UIA worker and
+implements focused-field capability, text, and selection reads, but the product
+does not select it and native provider acceptance is pending. `platform_linux`
+is wired into the product: text, focus/caret events, insertion, the X11 accept
+tap, X11 always-on shortcuts, and the X11 overlay are implemented (see below),
+and its `ShellHost` services fail closed only when the desktop service they need
+is absent.
 
-The current Windows foundation has real owner-only DACL hardening, a console
-control handler for orderly shutdown, and native `ShellExecuteW` URL opening.
+The current Windows foundation also has real owner-only DACL hardening, a
+console control handler for orderly shutdown, and native `ShellExecuteW` URL
+opening. Subscription, mutation, and overlay surfaces remain stubs.
 
 The Linux foundation implements the host surfaces that need neither a display
 nor an accessibility bus, so each is verifiable on a headless Linux host:

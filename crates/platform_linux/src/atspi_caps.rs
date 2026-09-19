@@ -74,8 +74,8 @@ pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
         readable_caret: facts.has_text,
         writable: facts.has_editable_text && facts.editable && facts.sensitive,
         // AT-SPI exposes no assistant/chat-input marker. Reporting false keeps
-        // SidebarOnly applications fail-closed, exactly as the Windows scaffold
-        // and the pre-classifier macOS build did.
+        // SidebarOnly applications fail-closed, as the product's inert Windows
+        // constructor does.
         assistant_field: false,
         secure,
         security_state: if secure {
@@ -99,9 +99,9 @@ pub fn capabilities_from(facts: &FieldFacts) -> Capabilities {
 /// EditableText's `InsertText`/`DeleteText` pair is *not* atomic together, so the
 /// atomic contract is met by `SetTextContents` (whole-value swap) guarded by an
 /// expected-text snapshot — the same shape as the macOS `AxSet` path. Anything
-/// else reports `None`: the synthetic-key fallback (XTEST) is not built yet, and
-/// claiming a strategy the adapter cannot perform makes the engine offer
-/// replacements it will fail to apply.
+/// else reports `None`: the constrained XTEST fallback supports preflighted
+/// plain insertion, not atomic replacement. Claiming a replacement strategy it
+/// cannot perform would make the engine offer edits it will fail to apply.
 fn insert_strategy_from(facts: &FieldFacts) -> InsertStrategy {
     if facts.has_editable_text && facts.editable && facts.sensitive {
         InsertStrategy::NativeRangeSet

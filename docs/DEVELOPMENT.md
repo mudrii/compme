@@ -23,11 +23,11 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
-The current checkout develops on `main`; the latest published release is the
-signed, notarized, and stapled v0.1.5. Earlier release notes preserve each
-artifact's original signing status. Workspace behavior may be newer than the
-latest tag, so use tag-specific release assets and notes when validating a
-published version. Specifically, `v0.1.6` points to the `v0.1.6` tag commit.
+The current checkout develops on `main`; the latest published release is `v0.1.6`,
+signed, notarized, and stapled. Earlier release notes preserve each artifact's
+original signing status. Workspace behavior may be newer than the latest tag,
+so use tag-specific release assets and notes when validating a published
+version. Specifically, `v0.1.6` points to the `v0.1.6` tag commit.
 The audit-remediation correctness fixes and CI/release hardening accumulated
 after v0.1.5 shipped in v0.1.6; the local/manual-only A2 policy and single
 model-location control shipped in v0.1.5.
@@ -59,7 +59,9 @@ without a review-forcing manifest diff; foundational (libc, getrandom) and
 pure-Rust deps stay caret-ranged.
 The root crates.io patch points exact `llama-cpp-2` 0.1.146 at
 `vendor/llama-cpp-2`; its only intentional semantic delta is the A32 safe abort-
-flag lifetime extension. `tools/spike` remains on the unpatched exact package.
+flag lifetime extension. The excluded `tools/spike` workspace declares the
+same vendored patch in its own `Cargo.toml`, so its separate lockfile resolves
+the same code.
 
 ## Prerequisites
 

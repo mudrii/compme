@@ -46,8 +46,8 @@
 //! command to the user (the §16 "user-visible" requirement) and SHOULD allow
 //! undo; (2) any future non-reversible command (custom instructions, model
 //! override, security settings) MUST be gated on [`LinkTrust::Signed`] when it
-//! is added here. The §16 web-config gate stays *partial* until the URL-scheme
-//! event reception (FFI) and the host confirmation prompt land.
+//! is added here. The macOS host receives URL-scheme events and confirms every
+//! parsed command before applying it.
 
 /// What a parsed, validated deep link asks us to do.
 #[derive(Clone, Debug, PartialEq, Eq)]

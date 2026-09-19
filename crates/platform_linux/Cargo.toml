@@ -5,13 +5,11 @@ rust-version.workspace = true
 edition = "2021"
 license.workspace = true
 
-# SCAFFOLD (ROADMAP Tier 1.1) for the AT-SPI2/X11 surfaces: those are fail-closed
-# stubs on every host so `cargo build/test --workspace` stays green on the macOS
-# dev machines that also build this crate. The host surfaces needing no desktop
-# session (version/memory probes, XDG autostart, `xdg-open`) are real and use
-# only the standard library. The real AT-SPI2 / XTEST / wtype / IBus
-# implementation lands behind `#[cfg(target_os = "linux")]` — its Linux-only
-# dependencies go under a target table so non-Linux hosts never pull them:
+# The AT-SPI2 and X11 implementations are real behind
+# `#[cfg(target_os = "linux")]`; their Linux-only dependencies stay under a
+# target table so the macOS and Windows lanes can compile and test the pure
+# policy halves without fetching native session dependencies. Wayland input and
+# overlay services remain future work:
 #
 #   [target.'cfg(target_os = "linux")'.dependencies]
 #   atspi = "..."        # AT-SPI2 accessibility over D-Bus (read/insert, focus/caret events)  -- shipped
@@ -63,9 +61,8 @@ x11rb = { version = "0.14", default-features = false, features = ["shape", "xkb"
 # libraries. fontdue brings ttf-parser + hashbrown and nothing else.
 fontdue = "0.9"
 
-# The live AT-SPI tests drive the fixture directly (seeding text, setting a
-# selection) so the read path can be checked against text the test chose. That is
-# test-side write access; the adapter's own insert path is Phase 2.4.
+# The live AT-SPI tests drive the fixture directly (seeding text and setting a
+# selection) before exercising the adapter's shipped read and write paths.
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 atspi = { version = "0.30", features = ["zbus"] }
 zbus = { version = "5.5", default-features = false, features = ["blocking-api"] }

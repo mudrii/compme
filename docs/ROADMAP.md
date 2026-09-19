@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-19 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2222 workspace tests expected for macOS (native count gate pending; 44 spike tests separate)
+> **Last updated:** 2026-09-19 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** 2222 workspace tests enumerated on macOS at `d6e0498` (2213 passed, 9 ignored; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -177,6 +177,19 @@ tested**. Everything below is what the plan still calls for.
 
 ### Authorized implementation queue — 2026-09-19
 
+The subsequent source/test/documentation review of `d6e0498` identified this
+follow-up sequence, authorized by the owner on 2026-09-19. These six numbers
+are separate from the original implementation-list numbers in the table below.
+
+| Follow-up | Work | Status |
+|---|---|---|
+| 1 | Clear buffered monitored text after successful app/global memory erasure | In progress; preserve buffers when deletion is cancelled or fails |
+| 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | In progress; retain rollback for an explicit same-layout rebind |
+| 3 | Support basename-only `COMPME_CONFIG` paths for startup and persistence | Pending regression tests and fix |
+| 4 | Reconcile current documentation and guard the actual published-version claim | Documentation corrected and Astra-reviewed; formatter, version checker and its self-test, policy self-test, and changed-crate rustdoc pass. Checker hardening remains pending |
+| 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | In progress; desktop acceptance remains unverified |
+| 6 | Investigate Linux completion latency with measured before/after evidence | Pending; retain the 500 ms budget |
+
 The owner requested implementation of review-list items **1–6 and 19–35**.
 The numbers below refer to that list, not the historical roadmap execution
 order. Windows feature slices 7–18 are not included in this request. Work
@@ -302,7 +315,7 @@ hardware, sessions, and permissions unavailable on macOS.
   caret subscriptions are the next slice; the notepad smoke (the `#[ignore]`d
   `focused_text_field_reads_document_and_selection`) needs the
   Windows-hardware pass.
-- The 2026-09-19 **Linux** working tree adds constrained XTEST plain insertion,
+- The 2026-09-19 **Linux** implementation on `main` adds constrained XTEST plain insertion,
   `text_range_rect`, StatusNotifierItem tray and X11 shortcut services.
   Remaining work includes real-desktop acceptance, Wayland input/placement
   strategy, distribution qualification and performance calibration.
@@ -471,7 +484,7 @@ the decisions testable everywhere and the I/O in one place:
 
 **Phase 2.4 insert path ✅ DONE (2026-07-27) — live-verified:**
 - `insert` writes at the caret through `EditableText.InsertText` for the native
-  strategy. The 2026-09-19 working tree adds a separately advertised constrained
+  strategy. The 2026-09-19 implementation on `main` adds a separately advertised constrained
   XTEST plain-insert fallback, with preflight refusal and uncertain-outcome
   quarantine; it never presents synthetic writes as atomic range replacement.
 - `insert_replacing_range` swaps the **whole value in one `SetTextContents`
@@ -576,7 +589,8 @@ and hardware acceptance work below.
   and "could not open the display" (measured, 4.2.2), so a headless session
   turned an irreversible-delete prompt into a silent `Ok(false)`.
 
-**Still pending for Phase 2 (2026-07-29):** the **tray** (StatusNotifierItem +
+**Historical Phase 2 status (2026-07-29; tray and X11 shortcut implementation
+superseded by the 2026-09-19 queue above):** the **tray** (StatusNotifierItem +
 `com.canonical.dbusmenu`) and **always-on shortcut registration** — plus Wayland
 placement, which is Phase 3 by design. **Accept-key rebinds wired (2026-08-18):**
 the G5 chord translation now feeds the tap — the shell stub's
@@ -717,10 +731,10 @@ interesting logic is testable on every host:
 - **`BadAccess` degrades, it does not fail.** `with_accessibility()` trial-grabs
   the accept keys, and a key already held by a window manager or IME leaves the
   tap uninstalled. The reported capability is then `KeyInterceptMode::None`, not
-  `HotkeyOnly` as the plan says: `HotkeyOnly` demotes the UX to an always-on
-  hotkey, and this adapter registers no global shortcuts yet, so claiming it would
-  promise a path Linux cannot deliver. It becomes the right answer once shortcut
-  registration lands.
+  `HotkeyOnly` as the plan says. The original implementation had no global
+  shortcuts. The separate X11 shortcut service landed on 2026-09-19, but its
+  availability does not establish an accept-key interception path; the adapter
+  still reports `None` when the accept tap is unavailable.
 - **`accept_intercept` now reports `XGrabKey`** — from `LinuxAdapter::capabilities`,
   not from the pure `atspi_caps` mapping, because tap availability is a *session*
   fact (an X server, and Tab free) that per-field AT-SPI facts cannot observe. The
@@ -1003,11 +1017,11 @@ runs. The retired screenshot matrix is not current release evidence.
   sender name/email, and the 6-stop steering strength. Edits update the live
   inference worker profile through `set_profile` and persist through the same
   settings path. Memory controls belong to the Apps pane: the 2026-09-19
-  working tree exposes Off / Accepted completions / All monitored typing,
+  implementation on `main` exposes Off / Accepted completions / All monitored typing,
   app/global erase and confirmed domain erase. They remain outside the
   personalization profile and require a native Apps-pane LOOK pass.
 - **Encrypted-store schema posture:** schema changes require a version marker
-  and transactional migration. The 2026-09-19 working tree implements the
+  and transactional migration. The 2026-09-19 implementation on `main` implements the
   first migration: legacy version 0/1 stores gain a nullable canonical-domain
   column and version 2 in one transaction. Existing ciphertext retains its
   app-only AAD; new domain records authenticate app and domain together.
@@ -1196,7 +1210,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: snoozed transition, volatile `pid:N` (secure-field fail-closed live-proven 2026-07-07, `f6fa98b`) |
-| Per-app memory inspect/delete UI | app/global erase plus domain erase and memory-mode controls implemented in the 2026-09-19 working tree; Off opens an existing store/key for cleanup without hydration; schema-v2 domain records are authenticated and deleted across apps; erase clears live context | portable tests, macOS cross-check and Astra review pass; native Apps-pane mode/erase LOOK remains open. Legacy NULL-domain rows require app/global erase. |
+| Per-app memory inspect/delete UI | app/global erase plus domain erase and memory-mode controls implemented on `main` on 2026-09-19; Off opens an existing store/key for cleanup without hydration; schema-v2 domain records are authenticated and deleted across apps; erase clears previous-input context | portable tests, macOS cross-check and Astra review pass; native Apps-pane mode/erase LOOK remains open. Buffered monitored-text erasure needs the follow-up fix below. Legacy NULL-domain rows require app/global erase. |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅; `setup-needed-docs-arc-onboarding` manual gate pins setup-needed UX in Arc/Docs | run the manual gate in Arc with Google Docs focused |
@@ -1373,17 +1387,17 @@ Windows scaffold still inherits both:
 Detection (LLM inference) has **no per-OS surface at all** — it runs through the
 same portable `model_client`/`inference` path on every OS. Sequencing: macOS
 landed G1-G5 first as the reference. Linux has since landed fail-closed atomic
-range replacement but still owes range geometry and its grammar shortcut;
+range replacement, provider-backed range geometry and the X11 grammar shortcut;
 Windows owes both range seams and its native shortcut. Grammar-fix stays inert
 where those prerequisites are absent — never misbehaves.
 This is the same parity model as Tier 1.1 foundation work, and it depends on the
-platform text-range read/replace impls that Windows/Linux owe regardless of this
+platform text-range read/replace impls that Windows still owes regardless of this
 feature.
 
 **Effort/status:** Large milestone now code-complete for the macOS reference:
 portable core (G1-G2) and macOS reference surfaces (G3-G5) are implemented and
 headless-tested. Linux explicitly implements atomic range replacement and
-retains only the range-geometry default; Windows retains both range defaults.
+provider-backed range geometry; Windows retains both range defaults.
 The
 remaining macOS risk narrowed 2026-07-07: underline/banner render, in-place
 accept, and stale-correction refusal live-proved with the real model (Batch 5

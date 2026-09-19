@@ -126,10 +126,10 @@ const AUTOSTART_ENTRY: &str = "compme.desktop";
 ///   `object:text-caret-moved` signals over D-Bus (built: `atspi_events`)
 /// - capabilities / read_context / caret_rect → AT-SPI2 Text/EditableText interfaces
 /// - subscribe_accept → X11 `XGrabKey` with `GrabModeSync` + `XAllowEvents`
-///   (ROADMAP Phase 2.3's resolved design), or a compositor path on Wayland
-/// - insert / insert_replacing → AT-SPI2 EditableText, else XTEST / `wtype` synthetic keys
-///   (Wayland restricts synthetic injection — IBus IME commit is the fallback)
-/// - overlay → an override-redirect X11 window, or a layer-shell surface on Wayland
+///   (ROADMAP Phase 2.3's resolved design); a Wayland compositor path is pending
+/// - insert / insert_replacing → AT-SPI2 EditableText; constrained XTEST supports
+///   plain insertion only. Wayland synthetic/IME insertion is not implemented
+/// - overlay → an override-redirect X11 window; Wayland placement is pending
 #[derive(Debug, Default)]
 pub struct LinuxAdapter {
     /// The accessibility-bus session, when one was opened. `None` keeps every
@@ -873,7 +873,8 @@ fn apply_autostart(dir: &Path, enabled: bool, exec: &Path) -> std::io::Result<()
 ///   the containing directory ([`reveal`]).
 ///
 /// Still fail-closed by design: `open_permission_settings` (Linux has no TCC-style
-/// pane to open) and the tray, which needs a StatusNotifierItem host.
+/// pane to open). The separate `LinuxTray` uses StatusNotifierItem/DBusMenu and
+/// reports an unavailable tray host without disabling the adapter.
 #[derive(Debug, Default)]
 pub struct LinuxShellHost;
 
