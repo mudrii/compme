@@ -33,3 +33,32 @@ jobs:
         run: tools/release/check-model-client-features.sh
       - name: Build with Vulkan
         run: cargo build --locked -p app --features vulkan
+
+  cuda-linux:
+    name: Linux CUDA SDK build
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CARGO_BUILD_JOBS: "2"
+      CMAKE_CUDA_ARCHITECTURES: "75"
+      CUDACXX: /usr/local/cuda-13.4/bin/nvcc
+      CUDA_PATH: /usr/local/cuda-13.4
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: optional-cuda
+      - name: Install CUDA SDK build dependencies
+        run: |
+          curl -fsSLo "$RUNNER_TEMP/cuda-keyring.deb" \
+            https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+          echo "d2a6b11c096396d868758b86dab1823b25e14d70333f1dfa74da5ddaf6a06dba  $RUNNER_TEMP/cuda-keyring.deb" \
+            | sha256sum --check --strict
+          sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev cuda-compiler-13-4 libcublas-dev-13-4
+      - name: Build with CUDA
+        run: cargo build --locked -p app --features cuda

@@ -199,7 +199,7 @@ existing evidence requirements.
 | 26 | Linux shortcut services | Implemented and Astra-reviewed: four X11 actions, collision/unmapped-key refusal and socket-interrupted bounded teardown; native Xvfb test passes; real desktop reservations/Wayland remain open |
 | 27 | Wayland strategy spike | Needs GNOME, KDE and sway sessions for comparative measurements |
 | 28 | Selected Wayland implementation | Depends on item 27; no compositor support inferred from Xvfb |
-| 29 | Optional off-mac GPU backends | Vulkan/CUDA feature forwarding implemented; Linux Vulkan SDK build and Quadro RTX 4000 execution verified; scheduled build added; CUDA/Windows SDK verification pending |
+| 29 | Optional off-mac GPU backends | Vulkan/CUDA feature forwarding implemented; Linux Vulkan SDK build and Quadro RTX 4000 execution verified; scheduled Linux Vulkan and bounded `sm_75` CUDA builds added; first CUDA CI result and Windows SDK verification pending |
 | 30 | Per-platform performance baselines | Linux diagnostics: CPU 1,778 ms, Vulkan 2,075 ms; both fail the existing 500 ms limit. Calibrated per-target runs remain open; budgets unchanged |
 | 31 | Windows packaging | Depends on a usable Windows adapter (items 7–18 remain outside this batch) and signing environment |
 | 32 | Linux packaging | Experimental assembler, desktop/AppStream metadata and self-test implemented; Ubuntu 24.04 release build, AppImage creation and extracted startup smoke pass; desktop distribution acceptance pending; Flathub later |
