@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-19 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** 2222 workspace tests enumerated on macOS at `d6e0498` (2213 passed, 9 ignored; 44 spike tests separate)
+> **Last updated:** 2026-09-19 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2222 workspace tests enumerated on macOS at `d6e0498` (2213 passed, 9 ignored; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
