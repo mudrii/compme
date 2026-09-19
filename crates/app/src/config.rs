@@ -352,6 +352,11 @@ fn atomic_write_owner_only_with(
             "config path has no parent",
         )
     })?;
+    let dir = if dir.as_os_str().is_empty() {
+        Path::new(".")
+    } else {
+        dir
+    };
     // Owner-only dir (on first creation only, so a deliberate later chmod
     // sticks) and file, matching the hardening memory::open applies to the
     // same app-support tree — config.env holds no secret today, but the
@@ -516,7 +521,7 @@ pub enum InstanceLockError {
 /// observers or hotkeys. Running unguarded can double-observe private context
 /// and double-insert completions.
 pub fn try_acquire_instance_lock(path: &Path) -> Result<InstanceLock, InstanceLockError> {
-    if let Some(dir) = path.parent() {
+    if let Some(dir) = path.parent().filter(|dir| !dir.as_os_str().is_empty()) {
         create_owner_only_dir_if_missing(dir).map_err(|e| InstanceLockError::Io(e.to_string()))?;
     }
     let file =
@@ -902,6 +907,39 @@ mod tests {
         );
 
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn basename_persist_setting_survives_reload_in_child_cwd() {
+        const CHILD_ENV: &str = "COMPME_TEST_BASENAME_PERSIST_CHILD";
+        if std::env::var_os(CHILD_ENV).is_some() {
+            let path = Path::new("config.env");
+            persist_setting(path, "COMPME_ENABLED", "false").expect("persist basename setting");
+            let map = load_file_map(path).expect("reload basename config");
+            assert_eq!(map.get("COMPME_ENABLED").map(String::as_str), Some("false"));
+            return;
+        }
+
+        let dir =
+            std::env::temp_dir().join(format!("compme-basename-persist-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir(&dir).expect("create isolated child cwd");
+        let output = std::process::Command::new(std::env::current_exe().expect("current test exe"))
+            .arg("--exact")
+            .arg("config::tests::basename_persist_setting_survives_reload_in_child_cwd")
+            .arg("--nocapture")
+            .current_dir(&dir)
+            .env(CHILD_ENV, "1")
+            .output()
+            .expect("launch isolated persistence child");
+        let _ = std::fs::remove_dir_all(&dir);
+
+        assert!(
+            output.status.success(),
+            "basename persistence child failed:\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
     }
 
     #[test]

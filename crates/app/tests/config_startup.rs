@@ -71,3 +71,36 @@ fn startup_fails_closed_and_names_an_unreadable_config_path() {
         "diagnostic omitted config path: {stderr}"
     );
 }
+
+// A successful macOS launch initializes AppKit, Accessibility, and Carbon;
+// that is a native acceptance test rather than a portable config regression.
+#[cfg(not(target_os = "macos"))]
+#[test]
+fn startup_accepts_a_basename_config_path() {
+    let temp = TempTree::new("basename-config-startup");
+    std::fs::write(temp.0.join("config.env"), "COMPME_ENABLED=false\n")
+        .expect("seed basename config");
+
+    let mut command = Command::new(env!("CARGO_BIN_EXE_compme"));
+    command
+        .current_dir(&temp.0)
+        .env_clear()
+        .env("COMPME_CONFIG", "config.env")
+        .env("COMPME_RUN_MS", "1");
+    for loader_var in [
+        "LD_LIBRARY_PATH",
+        "DYLD_LIBRARY_PATH",
+        "DYLD_FALLBACK_LIBRARY_PATH",
+    ] {
+        if let Ok(value) = std::env::var(loader_var) {
+            command.env(loader_var, value);
+        }
+    }
+    let output = command.output().expect("launch compme");
+
+    assert!(
+        output.status.success(),
+        "basename COMPME_CONFIG rejected at startup: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
