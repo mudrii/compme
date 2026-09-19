@@ -232,6 +232,8 @@ workspace commands do not validate it.
 
 Optional off-mac backends are selected with `cargo build --locked -p app
 --features vulkan` or `--features cuda`; install the corresponding SDK first.
+The CUDA CI lane pins CUDA 12.9: the pinned llama source's CCCL iterator branch
+does not compile with CUDA 13.4, while 12.9 uses its compatible fallback.
 The default remains CPU-only. The scheduled `gpu.yml` lanes compile Linux
 Vulkan, a bounded `sm_75` Linux CUDA target, and Windows Vulkan; they do not
 establish GPU runtime or latency acceptance. A Linux Vulkan SDK build passed

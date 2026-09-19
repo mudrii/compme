@@ -41,8 +41,10 @@ jobs:
     env:
       CARGO_BUILD_JOBS: "2"
       CMAKE_CUDA_ARCHITECTURES: "75"
-      CUDACXX: /usr/local/cuda-13.4/bin/nvcc
-      CUDA_PATH: /usr/local/cuda-13.4
+      # The pinned llama source's CCCL iterator branch does not compile with
+      # CUDA 13.4; CUDA 12.9 uses its compatible fallback implementation.
+      CUDACXX: /usr/local/cuda-12.9/bin/nvcc
+      CUDA_PATH: /usr/local/cuda-12.9
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -59,7 +61,7 @@ jobs:
             | sha256sum --check --strict
           sudo dpkg -i "$RUNNER_TEMP/cuda-keyring.deb"
           sudo apt-get update
-          sudo apt-get install -y cmake libclang-dev cuda-compiler-13-4 libcublas-dev-13-4
+          sudo apt-get install -y cmake libclang-dev cuda-compiler-12-9 libcublas-dev-12-9
       - name: Build with CUDA
         run: cargo build --locked -p app --features cuda
 
