@@ -2,10 +2,10 @@
 //!
 //! On Windows/Linux this module is glob-re-exported as the `shell` surface
 //! (`shell/mod.rs`: `pub use stub::*`), so every public item below is live.
-//! On macOS the module is compiled only in test builds, and solely to supply
-//! `stub::make_tray` for run-loop unit tests; the real shell comes from
-//! `macos::*` and the glob is disabled, so every other item here is unused on
-//! that one build. Each such item therefore carries `#[allow(dead_code)]` (the
+//! On macOS the module is compiled only in test builds to keep the portable
+//! facade type-checked; the real shell comes from `macos::*` and the glob is
+//! disabled, so its items are unused on that one build. Each such item therefore
+//! carries `#[allow(dead_code)]` (the
 //! cfg-shaped "live on Windows/Linux, dead on the macOS test build" fact the
 //! code can't otherwise express). Items left un-annotated stay dead-code checked.
 
@@ -75,6 +75,7 @@ pub fn make_tray(flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError>
 }
 
 #[cfg(not(target_os = "linux"))]
+#[cfg_attr(target_os = "macos", allow(dead_code))]
 pub fn make_tray(_flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError> {
     Err(PlatformError::UnsupportedField {
         reason: "tray not yet implemented (Tier 1.1 scaffold)".into(),
