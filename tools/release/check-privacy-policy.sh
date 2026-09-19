@@ -121,6 +121,12 @@ allowed_hosts = %w[
   www.w3.org
   x.com
 ]
+workflow_only_hosts = {
+  ".github/workflows/gpu.yml" => %w[
+    developer.download.nvidia.com
+    sdk.lunarg.com
+  ],
+}
 denied_host_patterns = [
   /(^|\.)amplitude\.com\z/i,
   /(^|\.)datadoghq\.com\z/i,
@@ -164,17 +170,17 @@ paths.each do |path|
   )
   text.scan(%r{https?://([^/`"'\s)<>{}*]+)}) do |match|
     host = match.first.downcase.sub(/:\d+\z/, "").gsub("\\.", ".").split("@").last.sub(/\.\z/, "")
+    rel = path.delete_prefix(root + "/")
     if denied_host_patterns.any? { |pattern| pattern.match?(host) }
-      rel = path.delete_prefix(root + "/")
       abort("privacy policy check failed: denied telemetry host #{host} in #{rel}")
     end
     next if allowed_hosts.include?(host) ||
+      workflow_only_hosts.fetch(rel, []).include?(host) ||
       host.match?(/\A(192\.0\.2|198\.51\.100|203\.0\.113)\.[0-9]+\z/) ||
       host.end_with?(".example") ||
       host.end_with?(".example.com") ||
       host.end_with?(".example.test") ||
       host.end_with?(".githubusercontent.com")
-    rel = path.delete_prefix(root + "/")
     abort("privacy policy check failed: unreviewed network host #{host} in #{rel}")
   end
 end
@@ -201,7 +207,24 @@ const MODEL_URL: &str = "https://huggingface.co/example/model.gguf";
 const UPDATE_URL: &str = "https://github.com/mudrii/compme/releases/latest";
 const ABSOLUTE_DNS_URL: &str = "https://example.test./absolute";
 RS
+  {
+    printf '%s' 'run: curl https:'
+    printf '%s\n' '//developer.download.nvidia.com/compute/cuda/keyring.deb'
+    printf '%s' 'run: curl https:'
+    printf '%s\n' '//sdk.lunarg.com/sdk/download/vulkan_sdk.exe'
+  } >"$tmp/good/.github/workflows/gpu.yml"
   check_repo "$tmp/good"
+
+  cp -R "$tmp/good" "$tmp/runtime-sdk-host"
+  {
+    printf '%s' 'const SDK_URL: &str = "https:'
+    printf '%s\n' '//developer.download.nvidia.com/compute/cuda/keyring.deb";'
+  } >"$tmp/runtime-sdk-host/crates/demo/src/lib.rs"
+  if check_repo "$tmp/runtime-sdk-host" >/dev/null 2>"$tmp/runtime-sdk-host.err"; then
+    echo "privacy policy self-test failed: build-only SDK host was accepted in runtime source" >&2
+    return 1
+  fi
+  grep -q 'unreviewed network host developer.download.nvidia.com in crates/demo/src/lib.rs' "$tmp/runtime-sdk-host.err"
 
   cp -R "$tmp/good" "$tmp/denied-package"
   cat >>"$tmp/denied-package/Cargo.lock" <<'LOCK'
