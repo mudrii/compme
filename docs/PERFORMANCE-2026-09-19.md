@@ -115,6 +115,38 @@ nix-shell -p cmake pkg-config clang libclang \
 '
 ```
 
+## Follow-up: decode phase attribution
+
+The follow-up review reran the unchanged strict test on this host: **1,844 ms**,
+again failing the 500 ms assertion. Temporary timing probes in
+`complete_on_worker` then measured the prompt `context.decode` call and the
+sum of generated-token `context.decode` calls separately from the whole worker
+call. They printed only timings and token counts, not prompt content. Model,
+context size, thread defaults, requested tokens and the test assertion were
+unchanged. Three fresh test processes produced:
+
+| Sample | Whole worker (ms) | Prompt decode (ms) | Generated-token decodes (ms) | Generated tokens |
+|---|---:|---:|---:|---:|
+| 1 | 1,796.293 | 945.406 | 845.505 | 12 |
+| 2 | 1,830.608 | 978.916 | 846.337 | 12 |
+| 3 | 1,807.944 | 959.866 | 842.739 | 12 |
+
+The existing end-to-end timer reported 1,796 / 1,830 / 1,808 ms; all failed.
+Compilation finished before each measurement, and no concurrent Rust builds
+were running. These are instrumented diagnostic samples, not a new backend or
+cross-platform baseline. The timing probes were removed afterward and
+`git diff -- crates/model_client/src/lib.rs` was empty.
+
+Prompt decoding accounts for about 53% and generated-token decoding about 47%
+of the measured worker time. The remaining work, including tokenization,
+sampling, text conversion and cache bookkeeping, was under 6 ms in each sample.
+This rejects sampling/text-conversion overhead as the dominant cause on this
+host. Prompt decoding alone exceeds the complete-request budget, so eliminating
+only generated-token work cannot bring this workload below 500 ms. Further
+investigation should measure the prompt-decode backend/model path and calibrated
+GPU execution; these results do not justify relaxing the budget or changing
+portable thread/SIMD defaults.
+
 ## Conclusion
 
 The Linux CPU failure is reproducible and is not explained by the earlier
