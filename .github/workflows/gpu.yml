@@ -62,3 +62,61 @@ jobs:
           sudo apt-get install -y cmake libclang-dev cuda-compiler-13-4 libcublas-dev-13-4
       - name: Build with CUDA
         run: cargo build --locked -p app --features cuda
+
+  vulkan-windows:
+    name: Windows Vulkan SDK build
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      CARGO_BUILD_JOBS: "2"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: optional-vulkan-windows
+      - name: Install Vulkan SDK build dependencies
+        shell: pwsh
+        run: |
+          $sdkVersion = "1.4.357.0"
+          $sdkRoot = Join-Path $env:RUNNER_TEMP "VulkanSDK\$sdkVersion"
+          $installer = Join-Path $env:RUNNER_TEMP "vulkan-sdk.exe"
+          $sdkUrl = "https://sdk.lunarg.com/sdk/download/$sdkVersion/windows/vulkan_sdk.exe"
+          $expectedSha256 = "81f474711e9042f4cd22b31b2f7a8870db2e428b21586fb43dd80150be97310d"
+
+          Invoke-WebRequest -Uri $sdkUrl -OutFile $installer
+          $actualSha256 = (Get-FileHash -Algorithm SHA256 $installer).Hash.ToLowerInvariant()
+          if ($actualSha256 -ne $expectedSha256) {
+            throw "Vulkan SDK checksum mismatch: expected $expectedSha256, got $actualSha256"
+          }
+
+          $arguments = @(
+            "--root"
+            $sdkRoot
+            "--accept-licenses"
+            "--default-answer"
+            "--confirm-command"
+            "install"
+            "copy_only=1"
+          )
+          $process = Start-Process -FilePath $installer -ArgumentList $arguments -Wait -PassThru
+          if ($process.ExitCode -ne 0) {
+            throw "Vulkan SDK installer failed with exit code $($process.ExitCode)"
+          }
+
+          @(
+            (Join-Path $sdkRoot "Include\vulkan\vulkan.h")
+            (Join-Path $sdkRoot "Lib\vulkan-1.lib")
+            (Join-Path $sdkRoot "Bin\glslc.exe")
+          ) | ForEach-Object {
+            if (-not (Test-Path -LiteralPath $_ -PathType Leaf)) {
+              throw "Vulkan SDK is missing required file: $_"
+            }
+          }
+
+          "VULKAN_SDK=$sdkRoot" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+          (Join-Path $sdkRoot "Bin") | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+      - name: Build with Vulkan
+        run: cargo build --locked -p app --features vulkan

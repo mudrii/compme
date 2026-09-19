@@ -233,10 +233,10 @@ workspace commands do not validate it.
 Optional off-mac backends are selected with `cargo build --locked -p app
 --features vulkan` or `--features cuda`; install the corresponding SDK first.
 The default remains CPU-only. The scheduled `gpu.yml` lanes compile Linux
-Vulkan and a bounded `sm_75` Linux CUDA target; they do not establish GPU
-runtime or latency acceptance. A Linux Vulkan SDK build passed locally on
-2026-09-19. The first Linux CUDA CI result and Windows SDK builds remain
-unverified.
+Vulkan, a bounded `sm_75` Linux CUDA target, and Windows Vulkan; they do not
+establish GPU runtime or latency acceptance. A Linux Vulkan SDK build passed
+locally on 2026-09-19. The first Linux CUDA and Windows Vulkan CI results
+remain unverified.
 
 Experimental Linux packaging uses `tools/bundle/make-appimage.sh --help`.
 Build the release binary on the oldest supported distribution, then supply
