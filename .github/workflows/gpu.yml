@@ -71,6 +71,8 @@ jobs:
     timeout-minutes: 60
     env:
       CARGO_BUILD_JOBS: "2"
+      # Avoid the pinned llama source's CMP0147 Visual Studio custom-step race.
+      CMAKE_GENERATOR: Ninja
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
