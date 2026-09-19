@@ -483,8 +483,9 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
 - `LocalModelError`: structured failure stage plus message.
 - `LlamaModel`: `llama-cpp-2` implementation. macOS builds enable Metal via
   `with_n_gpu_layers(999)`; non-macOS builds default to CPU with opt-in
-  `vulkan` and `cuda` features. Linux Vulkan has SDK-build and hardware
-  execution evidence; CUDA/Windows verification remains open. Overrides `warm_up` (a
+  `vulkan` and `cuda` features. Linux Vulkan, Linux CUDA 12.9 and Windows
+  Vulkan have SDK-build evidence, and Linux Vulkan has prior hardware execution
+  evidence. Further GPU runtime and latency acceptance remain open. Overrides `warm_up` (a
   throwaway decode that triggers first-backend
   setup up front) and terminal cancellation through a safe, lifetime-owning
   vendored abort-callback extension. `shutdown` drops context before model in
@@ -808,7 +809,7 @@ in libxcb, and a C library in the link line would make the binary refuse to
 Any reported X11 error fails the operation: flushing alone would not prove
 that the server accepted a `CreateWindow` or displayed anything.
 
-The current working tree adds a StatusNotifierItem/DBusMenu tray (`ksni`) and
+The Linux shell provides a StatusNotifierItem/DBusMenu tray (`ksni`) and
 always-on X11 shortcuts. Missing tray hosts and reserved shortcut chords degrade
 without disabling a working accept tap. Wayland overlays and global shortcuts
 remain pending. Optional Vulkan/CUDA feature forwarding and an experimental

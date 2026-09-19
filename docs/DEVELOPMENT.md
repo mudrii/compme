@@ -236,9 +236,9 @@ The CUDA CI lane pins CUDA 12.9: the pinned llama source's CCCL iterator branch
 does not compile with CUDA 13.4, while 12.9 uses its compatible fallback.
 The default remains CPU-only. The scheduled `gpu.yml` lanes compile Linux
 Vulkan, a bounded `sm_75` Linux CUDA target, and Windows Vulkan; they do not
-establish GPU runtime or latency acceptance. A Linux Vulkan SDK build passed
-locally on 2026-09-19. The first Linux CUDA and Windows Vulkan CI results
-remain unverified.
+establish GPU runtime or latency acceptance. Linux Vulkan, Linux CUDA 12.9
+and Windows Vulkan SDK builds passed on hosted runners on 2026-09-19.
+Windows CUDA is not covered by these lanes.
 
 Manual GPU workflow runs can select one `backend` (or the default `all`);
 scheduled runs always select all three. Each backend has its own concurrency

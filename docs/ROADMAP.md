@@ -199,12 +199,12 @@ existing evidence requirements.
 | 26 | Linux shortcut services | Implemented and Astra-reviewed: four X11 actions, collision/unmapped-key refusal and socket-interrupted bounded teardown; native Xvfb test passes; real desktop reservations/Wayland remain open |
 | 27 | Wayland strategy spike | Needs GNOME, KDE and sway sessions for comparative measurements |
 | 28 | Selected Wayland implementation | Depends on item 27; no compositor support inferred from Xvfb |
-| 29 | Optional off-mac GPU backends | Vulkan/CUDA feature forwarding implemented; Linux Vulkan SDK build and Quadro RTX 4000 execution verified; scheduled Linux Vulkan, bounded `sm_75` CUDA, and Windows Vulkan builds added; first CUDA/Windows CI results pending |
-| 30 | Per-platform performance baselines | Linux diagnostics: CPU 1,778 ms, Vulkan 2,075 ms; both fail the existing 500 ms limit. Calibrated per-target runs remain open; budgets unchanged |
+| 29 | Optional off-mac GPU backends | Linux Vulkan, bounded `sm_75` Linux CUDA 12.9 and Windows Vulkan SDK builds verified; independent backend dispatch and regression policy implemented. Prior Quadro RTX 4000 Vulkan execution recorded. Windows CUDA coverage and further runtime/latency acceptance remain open |
+| 30 | Per-platform performance baselines | Fresh idle Linux CPU median 1,777 ms (five samples); thread/SIMD/release probes also miss 500 ms. [Measured evidence](PERFORMANCE-2026-09-19.md) separates historical Vulkan 2,075 ms from fresh CPU runs. Other target baselines remain open; budgets unchanged |
 | 31 | Windows packaging | Depends on a usable Windows adapter (items 7–18 remain outside this batch) and signing environment |
 | 32 | Linux packaging | Experimental assembler, desktop/AppStream metadata and self-test implemented; Ubuntu 24.04 release build, AppImage creation and extracted startup smoke pass; desktop distribution acceptance pending; Flathub later |
 | 33 | Cross-platform release workflows | Depends on validated packages; publishing requires a real release flow |
-| 34 | Remaining release/CI hardening | G19 workflow/checker changes and Windows doc/audit coverage implemented; checker self-test passes; macOS doc-count gate and real-tag execution pending |
+| 34 | Remaining release/CI hardening | Repaired native CI passes on `baa89c9`, including the macOS 2,222-test count policy and Windows doc/audit coverage. GPU workflow regression guards and workflow-scoped SDK host policy are implemented and Astra-reviewed; self-tests pass. Real-tag execution remains pending |
 | 35 | Retire vendored llama extension | Reviewed published 0.1.156; equivalent lifetime/cancellation API absent; retain vendor and all exact pins |
 
 The 2026-09-18 review reproduced late side effects after the Linux timeout

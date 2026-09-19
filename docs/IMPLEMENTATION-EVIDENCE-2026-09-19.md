@@ -154,3 +154,58 @@ The existing Linux Vulkan SDK workflow passed on `cc1d161`
 ([run 35431748221](https://github.com/mudrii/compme/actions/runs/35431748221)).
 It built `app --features vulkan` on the hosted runner; this is compilation
 evidence, not GPU runtime or latency acceptance.
+
+All five jobs in the repaired CI run passed on `baa89c9`
+([run 35431979276](https://github.com/mudrii/compme/actions/runs/35431979276)):
+macOS workspace, Windows portable workspace, Linux portable/live workspace,
+the separate macOS spike workspace, and workflow linting. This includes the
+formerly failing macOS clippy and Windows memory test, Windows doctests and
+dependency audit, macOS model smoke/quality gates, and the macOS policy gate
+that enumerates workspace tests and checks the **2,222** documentation anchor.
+It does not establish the physical-key baseline, GUI acceptance, strict
+hardware latency budget, or real-tag release evidence.
+
+The fresh CPU distribution and bounded thread/SIMD/profile investigation are
+recorded in [PERFORMANCE-2026-09-19.md](PERFORMANCE-2026-09-19.md). Temporary
+model-client diagnostics were removed; no production defaults or 500 ms
+budget were changed.
+
+### Additional SDK lanes and policy checks
+
+`4f9ef11` added the Linux CUDA SDK lane and `a4520d9` added Windows Vulkan.
+Both were independently reviewed by Astra before commit/push. The first CUDA
+13.4 run failed in the pinned llama source's CCCL iterator branch. `b6040bd`
+selected CUDA 12.9, which uses the existing sorting fallback without source,
+vendor or ABI changes. Its Linux CUDA job then passed on `b6040bd`
+([job 105870127421](https://github.com/mudrii/compme/actions/runs/35432752414/job/105870127421));
+the exact `app --features cuda` build took 17 minutes 55 seconds. Linux Vulkan
+also passed in that run. The parent workflow remained failed because its
+original Windows job failed; the successful CUDA job is not represented as
+a green whole-workflow result.
+
+The Windows SDK installer and Vulkan discovery succeeded, but Visual Studio
+started the external shader-generator install before its configure step
+completed. `297ba01` selected Ninja for that job while preserving the MSVC
+compiler and ABI. `b66b9b7` added manual backend selection and separate job
+concurrency groups: a selected Windows rerun started while the earlier Linux
+CUDA compilation was still running, with both unselected jobs skipped. All
+three implementations received separate Astra reviews before commit/push.
+
+The selected Windows Vulkan workflow then passed on `b66b9b7`
+([run 35433337134](https://github.com/mudrii/compme/actions/runs/35433337134)).
+Its SDK installer and `app --features vulkan` build succeeded with Ninja and
+the pinned Vulkan 1.4.357.0 SDK; compilation took 10 minutes 18 seconds. The
+two Linux jobs were intentionally skipped by the selected backend input.
+The build emitted an LNK4098 CRT-library conflict warning but linked
+successfully; Windows GPU runtime acceptance remains unverified. These SDK
+results do not cover Windows CUDA or close hardware latency gates.
+
+`99a0f24` added GPU workflow policy and negative fixtures to the existing
+release checker. Astra identified and reproduced a false-green gap for
+disabled build steps and ignored failures; the final reviewed checker rejects
+those cases at the required step and job levels. Its expanded self-test passed.
+
+The next native CI run caught the newly introduced SDK hosts in the privacy
+inventory. `edf4c19` permits the two reviewed SDK hosts only in `gpu.yml`.
+The actual checker and self-test passed, and Astra independently verified that
+both hosts remain rejected in runtime source and other workflows.
