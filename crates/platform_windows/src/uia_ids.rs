@@ -37,10 +37,7 @@ pub fn encode_element_id(pid: u32, runtime_id: &[i32]) -> String {
 pub fn decode_element_id(id: &str) -> Option<(u32, Vec<i32>)> {
     let rest = id.strip_prefix(UIA_ID_PREFIX)?;
     let (pid_part, rid_part) = rest.split_once(":rid=")?;
-    if pid_part.len() <= "pid=".len() {
-        return None;
-    }
-    let pid = pid_part["pid=".len()..].parse::<u32>().ok()?;
+    let pid = pid_part.strip_prefix("pid=")?.parse::<u32>().ok()?;
     if rid_part.is_empty() {
         return None;
     }
@@ -93,6 +90,13 @@ mod tests {
         assert_eq!(decode_element_id("uia:pid=1:rid=.1"), None);
         assert_eq!(decode_element_id("uia:pid=1:rid=1."), None);
         assert_eq!(decode_element_id("uia:pid=1:rid=1;2"), None);
+    }
+
+    #[test]
+    fn refuses_arbitrary_pid_labels_and_malformed_unicode_without_panicking() {
+        assert_eq!(decode_element_id("uia:xxx=1:rid=2"), None);
+        assert_eq!(decode_element_id("uia:abcé:rid=2"), None);
+        assert_eq!(decode_element_id("uia:😀:rid=2"), None);
     }
 
     #[test]

@@ -99,6 +99,19 @@ pub trait ShellHost: Send + Sync {
     /// 32-byte memory-store encryption key from the OS key store, created on
     /// first use.
     fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError>;
+
+    /// Load the memory-store encryption key only when it already exists.
+    ///
+    /// This path must never create a key or prompt to create one. It lets the
+    /// app reopen an existing store for deletion after collection is disabled
+    /// without turning a stale database path into a new OS-key-store entry.
+    /// `Ok(None)` means there is no existing key. Platforms that have not yet
+    /// implemented key storage fail closed.
+    fn load_existing_memory_key(&self) -> Result<Option<[u8; 32]>, PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "load_existing_memory_key is not implemented on this platform".into(),
+        })
+    }
 }
 
 /// Status-area handle. Owned by the main loop; implementors may be UI-thread
@@ -172,6 +185,7 @@ mod tests {
         assert_eq!(h.read_clipboard_text(), None);
         assert_eq!(h.screen_context_text(None, 100), None);
         assert!(h.display_scales().is_empty());
+        assert!(h.load_existing_memory_key().is_err());
     }
 
     #[test]

@@ -22,7 +22,6 @@ use std::os::raw::c_void;
 use std::sync::mpsc::{self, Receiver, Sender};
 use std::time::Duration;
 
-use windows::core::Interface;
 use windows::Win32::System::Com::{
     CoCreateInstance, CoInitializeEx, CoUninitialize, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED,
     SAFEARRAY,
@@ -30,12 +29,17 @@ use windows::Win32::System::Com::{
 use windows::Win32::System::Ole::{SafeArrayDestroy, SafeArrayGetElement};
 use windows::Win32::UI::Accessibility::{
     CUIAutomation, IUIAutomation, IUIAutomationElement, IUIAutomationTextPattern,
-    TextPatternRangeEndpoint_End, TextPatternRangeEndpoint_Start, UIA_TextPatternId,
-    UIA_ValuePatternId, UIA_E_ELEMENTNOTAVAILABLE,
+    IUIAutomationTextRange, TextPatternRangeEndpoint, TextPatternRangeEndpoint_End,
+    TextPatternRangeEndpoint_Start, UIA_IsTextPatternAvailablePropertyId,
+    UIA_IsValuePatternAvailablePropertyId, UIA_TextPatternId, UIA_E_ELEMENTNOTAVAILABLE,
 };
 
-use crate::uia_caps::UiaFieldFacts;
+use crate::uia_caps::{collect_field_facts, UiaElementFactsSource, UiaFieldFacts, UiaPattern};
 use crate::uia_ids::encode_element_id;
+use crate::uia_lifecycle::with_apartment;
+use crate::uia_text::{
+    materialize_document_selection, require_single_selection, RangeEndpoint, UiaTextRangeOps,
+};
 use platform::PlatformError;
 
 /// Deadline for one UIA round trip. UIA calls are cross-process COM against
@@ -166,34 +170,40 @@ fn run_worker(rx: Receiver<UiaRequest>, ready: Sender<Result<(), PlatformError>>
     // this thread in another apartment) is reported at startup, and every
     // successful init — `S_OK` or `S_FALSE` alike — is balanced by exactly
     // one `CoUninitialize` on the same thread before it exits.
-    let init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
-    if init.is_err() {
-        let _ = ready.send(Err(PlatformError::CannotComplete {
-            reason: format!("CoInitializeEx(MTA) failed: {init:?}"),
-        }));
-        return;
-    }
-    // SAFETY: standard coclass creation of the UIA client object, in-process;
-    // the returned interface lives on this MTA thread for the worker's life.
-    let factory: windows::core::Result<IUIAutomation> =
-        unsafe { CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER) };
-    match factory {
-        Ok(factory) => {
+    let startup = with_apartment(
+        || {
+            let init = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) };
+            init.ok().map_err(|err| PlatformError::CannotComplete {
+                reason: format!("CoInitializeEx(MTA) failed: {err}"),
+            })
+        },
+        || {
+            // SAFETY: standard coclass creation of the UIA client object,
+            // in-process; the returned interface stays inside this scope and
+            // therefore drops before the apartment guard uninitializes COM.
+            let factory: IUIAutomation = unsafe {
+                CoCreateInstance(&CUIAutomation, None, CLSCTX_INPROC_SERVER).map_err(|err| {
+                    PlatformError::CannotComplete {
+                        reason: format!("CoCreateInstance(CUIAutomation) failed: {err}"),
+                    }
+                })?
+            };
             let _ = ready.send(Ok(()));
             // recv() returns Err only when the adapter (and every caller) is
             // gone — the orderly shutdown path.
             while let Ok(request) = rx.recv() {
                 handle_request(&factory, request);
             }
+            Ok(())
+        },
+        || {
             // SAFETY: balances the successful `CoInitializeEx` above, on the
-            // same thread, after the last COM use.
+            // same thread, after the body dropped every COM interface.
             unsafe { CoUninitialize() };
-        }
-        Err(err) => {
-            let _ = ready.send(Err(PlatformError::CannotComplete {
-                reason: format!("CoCreateInstance(CUIAutomation) failed: {err}"),
-            }));
-        }
+        },
+    );
+    if let Err(err) = startup {
+        let _ = ready.send(Err(err));
     }
 }
 
@@ -289,9 +299,12 @@ fn runtime_id_from_safearray(safearray: &SAFEARRAY) -> Result<Vec<i32>, Platform
     Ok(components)
 }
 
-fn bstr_to_string(value: windows::core::BSTR) -> String {
-    // BSTR derefs to its UTF-16 code units.
-    String::from_utf16_lossy(&value)
+fn bstr_to_string(api: &str, value: windows::core::BSTR) -> Result<String, PlatformError> {
+    // BSTR derefs to its UTF-16 code units. Invalid UTF-16 is rejected because
+    // replacement characters would change the offsets derived from range text.
+    String::from_utf16(&value).map_err(|err| PlatformError::CannotComplete {
+        reason: format!("UIA {api} returned invalid UTF-16: {err}"),
+    })
 }
 
 /// The focused element's identity, or `None` when focus is mid-transition
@@ -308,25 +321,105 @@ fn focused_identity(factory: &IUIAutomation) -> Result<Option<(u32, String)>, Pl
 
 fn field_facts(factory: &IUIAutomation, element_id: &str) -> Result<UiaFieldFacts, PlatformError> {
     let element = focused_element_matching(factory, element_id)?;
-    // SAFETY: pattern probes on the element read on this same thread.
-    // `GetCurrentPattern` answers S_OK with a null interface when the
-    // pattern is unavailable, so availability is a null check — the
-    // generated element type has no `CurrentIs*PatternAvailable` helpers.
-    let text_pattern = unsafe { element.GetCurrentPattern(UIA_TextPatternId) }
-        .map_err(|err| com_error("GetCurrentPattern(Text)", err))?;
-    let value_pattern = unsafe { element.GetCurrentPattern(UIA_ValuePatternId) }
-        .map_err(|err| com_error("GetCurrentPattern(Value)", err))?;
-    Ok(UiaFieldFacts {
-        has_text_pattern: !text_pattern.as_raw().is_null(),
-        has_value_pattern: !value_pattern.as_raw().is_null(),
-        is_password: unsafe { element.CurrentIsPassword() }
+    collect_field_facts(&LiveElementFacts(&element))
+}
+
+struct LiveElementFacts<'a>(&'a IUIAutomationElement);
+
+impl UiaElementFactsSource for LiveElementFacts<'_> {
+    fn pattern_available(&self, pattern: UiaPattern) -> Result<bool, PlatformError> {
+        let (property, name) = match pattern {
+            UiaPattern::Text => (
+                UIA_IsTextPatternAvailablePropertyId,
+                "IsTextPatternAvailable",
+            ),
+            UiaPattern::Value => (
+                UIA_IsValuePatternAvailablePropertyId,
+                "IsValuePatternAvailable",
+            ),
+        };
+        // SAFETY: property read on the element's owning worker thread.
+        let value = unsafe { self.0.GetCurrentPropertyValue(property) }
+            .map_err(|err| com_error(&format!("GetCurrentPropertyValue({name})"), err))?;
+        bool::try_from(&value)
+            .map_err(|err| com_error(&format!("GetCurrentPropertyValue({name}) boolean"), err))
+    }
+
+    fn is_password(&self) -> Result<bool, PlatformError> {
+        // SAFETY: property read on the element's owning worker thread.
+        Ok(unsafe { self.0.CurrentIsPassword() }
             .map_err(|err| com_error("CurrentIsPassword", err))?
-            .as_bool(),
-        framework: bstr_to_string(
-            unsafe { element.CurrentFrameworkId() }
-                .map_err(|err| com_error("CurrentFrameworkId", err))?,
-        ),
-    })
+            .as_bool())
+    }
+
+    fn framework_id(&self) -> Result<String, PlatformError> {
+        // SAFETY: property read on the element's owning worker thread.
+        let value = unsafe { self.0.CurrentFrameworkId() }
+            .map_err(|err| com_error("CurrentFrameworkId", err))?;
+        bstr_to_string("CurrentFrameworkId", value)
+    }
+}
+
+struct LiveTextRange(IUIAutomationTextRange);
+
+impl LiveTextRange {
+    fn endpoint(endpoint: RangeEndpoint) -> TextPatternRangeEndpoint {
+        match endpoint {
+            RangeEndpoint::Start => TextPatternRangeEndpoint_Start,
+            RangeEndpoint::End => TextPatternRangeEndpoint_End,
+        }
+    }
+}
+
+impl UiaTextRangeOps for LiveTextRange {
+    fn clone_range(&self) -> Result<Self, PlatformError> {
+        // SAFETY: range call on the owning UIA worker thread.
+        Ok(Self(
+            unsafe { self.0.Clone() }.map_err(|err| com_error("TextRange.Clone", err))?,
+        ))
+    }
+
+    fn compare_endpoints(
+        &self,
+        endpoint: RangeEndpoint,
+        other: &Self,
+        other_endpoint: RangeEndpoint,
+    ) -> Result<i32, PlatformError> {
+        // SAFETY: both ranges belong to the worker's UIA apartment.
+        unsafe {
+            self.0.CompareEndpoints(
+                Self::endpoint(endpoint),
+                &other.0,
+                Self::endpoint(other_endpoint),
+            )
+        }
+        .map_err(|err| com_error("TextRange.CompareEndpoints", err))
+    }
+
+    fn move_endpoint_by_range(
+        &mut self,
+        endpoint: RangeEndpoint,
+        other: &Self,
+        other_endpoint: RangeEndpoint,
+    ) -> Result<(), PlatformError> {
+        // SAFETY: both ranges belong to the worker's UIA apartment.
+        unsafe {
+            self.0.MoveEndpointByRange(
+                Self::endpoint(endpoint),
+                &other.0,
+                Self::endpoint(other_endpoint),
+            )
+        }
+        .map_err(|err| com_error("TextRange.MoveEndpointByRange", err))
+    }
+
+    fn get_text(&self, max_units: i32) -> Result<String, PlatformError> {
+        // SAFETY: range call on the owning UIA worker thread; `max_units` is a
+        // finite positive bound supplied by the pure materializer.
+        let value = unsafe { self.0.GetText(max_units) }
+            .map_err(|err| com_error("TextRange.GetText", err))?;
+        bstr_to_string("TextRange.GetText", value)
+    }
 }
 
 fn read_document(
@@ -334,53 +427,39 @@ fn read_document(
     element_id: &str,
 ) -> Result<(String, i64, i64), PlatformError> {
     let element = focused_element_matching(factory, element_id)?;
+    if !LiveElementFacts(&element).pattern_available(UiaPattern::Text)? {
+        return Err(PlatformError::UnsupportedField {
+            reason: "focused element exposes no UIA TextPattern".into(),
+        });
+    }
     // SAFETY: pattern fetch and range reads on the element read on this same
-    // thread; every interface created here stays on the worker. The pattern
-    // comes back as a null interface when the element has no TextPattern —
-    // the generated element type has no `CurrentIsTextPatternAvailable`.
+    // thread; every interface created here stays on the worker. Availability
+    // was checked through the UIA property above, so a fetch error here is a
+    // provider/transport failure rather than ordinary pattern absence.
     let pattern: IUIAutomationTextPattern = unsafe {
         element
             .GetCurrentPatternAs(UIA_TextPatternId)
             .map_err(|err| com_error("GetCurrentPatternAs(Text)", err))
     }?;
-    if pattern.as_raw().is_null() {
-        return Err(PlatformError::UnsupportedField {
-            reason: "focused element exposes no UIA TextPattern".into(),
-        });
-    }
-    let document =
-        unsafe { pattern.DocumentRange() }.map_err(|err| com_error("DocumentRange", err))?;
-    let text =
-        bstr_to_string(unsafe { document.GetText(-1) }.map_err(|err| com_error("GetText", err))?);
+    let document = LiveTextRange(
+        unsafe { pattern.DocumentRange() }.map_err(|err| com_error("DocumentRange", err))?,
+    );
     let selection =
         unsafe { pattern.GetSelection() }.map_err(|err| com_error("GetSelection", err))?;
     // SAFETY: interface calls on the selection array read on this same
     // thread; `Length` bounds the indexed `GetElement` below.
     let length =
         unsafe { selection.Length() }.map_err(|err| com_error("GetSelection(Length)", err))?;
-    if length == 0 {
-        // A text field with no selection range: treat as collapsed at 0.
-        return Ok((text, 0, 0));
-    }
-    let range =
-        unsafe { selection.GetElement(0) }.map_err(|err| com_error("GetSelection(0)", err))?;
-    let start = unsafe {
-        range.CompareEndpoints(
-            TextPatternRangeEndpoint_Start,
-            &document,
-            TextPatternRangeEndpoint_Start,
-        )
-    }
-    .map_err(|err| com_error("CompareEndpoints(Start)", err))?;
-    let end = unsafe {
-        range.CompareEndpoints(
-            TextPatternRangeEndpoint_End,
-            &document,
-            TextPatternRangeEndpoint_Start,
-        )
-    }
-    .map_err(|err| com_error("CompareEndpoints(End)", err))?;
-    Ok((text, start as i64, end as i64))
+    require_single_selection(length)?;
+    let range = LiveTextRange(
+        unsafe { selection.GetElement(0) }.map_err(|err| com_error("GetSelection(0)", err))?,
+    );
+    let snapshot = materialize_document_selection(&document, &range)?;
+    Ok((
+        snapshot.document,
+        snapshot.selection_start_utf16,
+        snapshot.selection_end_utf16,
+    ))
 }
 
 #[cfg(test)]

@@ -233,8 +233,15 @@ pub(crate) struct PendingMonitoredText {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum MonitoredBuffer {
-    Collecting(String),
-    DroppedUntilBoundary,
+    Collecting {
+        text: String,
+        app_key: Option<String>,
+        domain: Option<String>,
+    },
+    DroppedUntilBoundary {
+        app_key: Option<String>,
+        domain: Option<String>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -455,8 +462,9 @@ pub(crate) struct Config {
 /// Encrypted-memory settings (A2 §6/§16). Off by default. `mode` selects what is
 /// recorded; `path` is the on-disk SQLite database; `key` is the optional
 /// explicit 32-byte AES key from `COMPME_MEMORY_KEY` (64 hex chars) — when
-/// absent, `open_memory_store` falls back to the Keychain-backed key (generated
-/// on first use). Without a path the store stays disabled even if a mode is set.
+/// absent, `open_memory_store` falls back to the OS-keystore key (generated on
+/// first use only while collection is enabled). Without a path the store stays
+/// unavailable even if a mode is set.
 struct MemoryConfig {
     mode: memory::StorageMode,
     path: Option<PathBuf>,
@@ -1191,6 +1199,30 @@ fn parse_storage_mode(raw: Option<String>) -> memory::StorageMode {
     }
 }
 
+fn memory_mode_index(mode: memory::StorageMode) -> usize {
+    match mode {
+        memory::StorageMode::Off => 0,
+        memory::StorageMode::AcceptedOnly => 1,
+        memory::StorageMode::AllMonitored => 2,
+    }
+}
+
+fn memory_mode_from_index(index: usize) -> memory::StorageMode {
+    match index {
+        1 => memory::StorageMode::AcceptedOnly,
+        2 => memory::StorageMode::AllMonitored,
+        _ => memory::StorageMode::Off,
+    }
+}
+
+fn memory_mode_value(mode: memory::StorageMode) -> &'static str {
+    match mode {
+        memory::StorageMode::Off => "off",
+        memory::StorageMode::AcceptedOnly => "accepted",
+        memory::StorageMode::AllMonitored => "all",
+    }
+}
+
 /// Decode a 64-char hex string into a 32-byte key. Returns `None` on wrong length
 /// or a non-hex digit (the store then stays disabled — fail-closed).
 fn parse_hex_key(raw: &str) -> Option<[u8; 32]> {
@@ -1258,46 +1290,62 @@ fn ensure_memory_parent_posture_with(
     result
 }
 
-/// Open the encrypted memory store when enabled and fully configured. Returns
-/// `None` (disabled, logged) when the mode is `Off`, the path is missing, no key
-/// is available, or the open fails — never fatal, mirroring the tray-unavailable
-/// fallback.
+/// Open the encrypted memory store when configured. Collection modes may create
+/// the store and key on first use; `Off` opens only an existing database with
+/// an existing key, keeping deletion available without creating either one.
+/// Returns `None` on a missing path/key or open failure — never fatal, mirroring
+/// the tray-unavailable fallback.
 ///
 /// Key precedence: an explicit `COMPME_MEMORY_KEY` wins (the operator
 /// override, and the fail-closed path when the keychain is unavailable);
-/// otherwise `keychain_key` supplies the OS-keystore key (§16 "key in OS
-/// keystore"). The keychain is consulted only when the store would actually
-/// open (mode on, path present) — never as a side effect.
+/// otherwise the matching OS-keystore loader supplies the key (§16 "key in OS
+/// keystore"). `load_existing_key` must not create. Neither loader is consulted
+/// until the matching database-open path is viable.
 fn open_memory_store(
     config: &MemoryConfig,
-    keychain_key: impl Fn() -> Option<[u8; 32]>,
+    load_existing_key: impl FnOnce() -> Option<[u8; 32]>,
+    load_or_create_key: impl FnOnce() -> Option<[u8; 32]>,
 ) -> Option<memory::MemoryStore> {
     use memory::{MemoryStore, StaticKey, StorageMode};
-    // `Off` refuses a handle entirely, which also means the Apps pane cannot
-    // list or erase what an EARLIER session recorded: switching collection off
-    // currently hides the deletion UI along with the collection. Opening the
-    // store read/delete-only under `Off` was tried and reverted — it needs a
-    // load-WITHOUT-create key API first, because `load_or_create_memory_key`
-    // mints a fresh OS key-store entry on first use, so merely having a
-    // leftover database path would make a launch with memory switched off
-    // create a keychain item and prompt for access. Closing that gap is a
-    // `ShellHost` trait change across all three adapters; until then the honest
-    // instruction is "erase before you disable". Tracked as the residual half
-    // of the §6/§16 "disable and erase" requirement.
-    if config.mode == StorageMode::Off {
-        return None;
-    }
     let Some(path) = config.path.as_ref() else {
-        eprintln!(
-            "compme: COMPME_MEMORY set but COMPME_MEMORY_PATH missing — \
-             memory disabled"
-        );
+        if config.mode != StorageMode::Off {
+            eprintln!(
+                "compme: COMPME_MEMORY set but COMPME_MEMORY_PATH missing — \
+                 memory disabled"
+            );
+        }
         return None;
     };
-    let Some(mut key) = config.key.or_else(&keychain_key) else {
+
+    // Disabled mode is cleanup-only. Check before touching the OS key store so
+    // a stale/absent path cannot prompt for a key or create an entry. The
+    // subsequent `MemoryStore::open_existing` also omits SQLITE_OPEN_CREATE,
+    // closing the check/open race without materializing a database.
+    if config.mode == StorageMode::Off {
+        match std::fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.file_type().is_file() => {}
+            Ok(_) => return None,
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return None,
+            Err(err) => {
+                eprintln!(
+                    "compme: cannot inspect disabled memory store {}: {err}",
+                    path.display()
+                );
+                return None;
+            }
+        }
+    }
+
+    let Some(mut key) = config.key.or_else(|| {
+        if config.mode == StorageMode::Off {
+            load_existing_key()
+        } else {
+            load_or_create_key()
+        }
+    }) else {
         eprintln!(
-            "compme: COMPME_MEMORY set but no key available (no \
-             COMPME_MEMORY_KEY and the keychain provided none) — memory disabled"
+            "compme: memory database exists but no matching key is available — \
+             memory unavailable"
         );
         return None;
     };
@@ -1326,7 +1374,11 @@ fn open_memory_store(
     }
     // StaticKey scrubs its own copy on drop; scrub this transient copy too so
     // no un-zeroized key byte is left on the stack after the store is opened.
-    let opened = MemoryStore::open(path, &StaticKey(key), config.mode);
+    let opened = if config.mode == StorageMode::Off {
+        MemoryStore::open_existing(path, &StaticKey(key), config.mode)
+    } else {
+        MemoryStore::open(path, &StaticKey(key), config.mode)
+    };
     // Windows analog of the store's unix per-file 0600 belt-and-suspenders:
     // owner-only DACL on the db and any sidecar, regardless of dir state —
     // covers a pre-existing unhardened dir and a bare-filename path. Any
@@ -1344,7 +1396,11 @@ fn open_memory_store(
     key.zeroize();
     match opened {
         Ok(store) => {
-            eprintln!("compme: encrypted memory enabled (mode={:?})", config.mode);
+            if config.mode == StorageMode::Off {
+                eprintln!("compme: encrypted memory available for deletion (collection off)");
+            } else {
+                eprintln!("compme: encrypted memory enabled (mode={:?})", config.mode);
+            }
             Some(store)
         }
         Err(err) => {
@@ -2049,6 +2105,7 @@ struct AcceptRecording<'a> {
     cross_app_previous_inputs: bool,
     previous_inputs: &'a PreviousInputs,
     memory: Option<&'a memory::MemoryStore>,
+    domain: Option<&'a str>,
     collection_allowed: bool,
 }
 
@@ -2076,7 +2133,7 @@ fn record_full_accept(
     if let Some(store) = recording.memory {
         // The store redacts + encrypts before persisting; a no-op when its mode
         // is Off.
-        if let Err(err) = store.remember(&field.app, text) {
+        if let Err(err) = store.remember_for_domain(&field.app, recording.domain, text) {
             eprintln!("compme: memory remember failed: {err}");
         }
     }
@@ -2163,6 +2220,11 @@ fn hydrate_focus_previous_inputs(
     let Some(store) = memory.as_ref() else {
         return false;
     };
+    // An Off handle exists solely so deletion stays available. Replaying its
+    // rows would make disabling collection continue steering prompts.
+    if store.mode() == memory::StorageMode::Off {
+        return false;
+    }
     hydrate_previous_inputs(
         &field.app,
         context_max_chars,
@@ -2191,6 +2253,7 @@ struct AcceptSideEffects<'a> {
     cross_app_previous_inputs: bool,
     previous_inputs: &'a PreviousInputs,
     memory: Option<&'a memory::MemoryStore>,
+    domain: Option<&'a str>,
     prefs: &'a Prefs,
     tracker: &'a mut FieldTracker,
     usage: &'a mut stats::Stats,
@@ -2238,6 +2301,7 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
             cross_app_previous_inputs: side_effects.cross_app_previous_inputs,
             previous_inputs: side_effects.previous_inputs,
             memory: side_effects.memory,
+            domain: side_effects.domain,
             collection_allowed: side_effects.prefs.collection_allowed(Some(&field.app)),
         },
     );
@@ -2269,14 +2333,20 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
 /// loop's privacy gates shared with accept recording.
 fn record_monitored_text_with_monitor(
     field: &FieldHandle,
+    app_key: Option<&str>,
+    domain: Option<&str>,
     text: &str,
     collection_allowed: bool,
-    monitor: &mut impl FnMut(&FieldHandle, &str) -> std::result::Result<(), memory::MemoryError>,
+    monitor: &mut impl FnMut(&str, Option<&str>, &str) -> std::result::Result<(), memory::MemoryError>,
 ) {
-    if !collection_allowed || field.app.starts_with("pid:") || text.is_empty() {
+    let Some(app) = app_key.or_else(|| (!field.app.starts_with("pid:")).then_some(&*field.app))
+    else {
+        return;
+    };
+    if app.starts_with("pid:") || !collection_allowed || text.is_empty() {
         return;
     }
-    if let Err(err) = monitor(field, text) {
+    if let Err(err) = monitor(app, domain, text) {
         eprintln!("compme: memory monitor failed: {err}");
     }
 }
@@ -2326,6 +2396,8 @@ fn monitored_boundary(text: &str) -> bool {
 fn buffered_monitored_text(
     buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
     field: &FieldHandle,
+    app_key: Option<&str>,
+    domain: Option<&str>,
     inserted: &str,
 ) -> Option<String> {
     if !buffers.contains_key(field) {
@@ -2341,22 +2413,50 @@ fn buffered_monitored_text(
             !(k.app == field.app && k.pid == field.pid && k.element_id == field.element_id)
         });
     }
+    let same_scope = |buffered_app: &Option<String>, buffered_domain: &Option<String>| {
+        buffered_app.as_deref() == app_key && buffered_domain.as_deref() == domain
+    };
+    if buffers.get(field).is_some_and(|buffer| match buffer {
+        MonitoredBuffer::Collecting {
+            app_key: buffered_app,
+            domain: buffered_domain,
+            ..
+        }
+        | MonitoredBuffer::DroppedUntilBoundary {
+            app_key: buffered_app,
+            domain: buffered_domain,
+        } => !same_scope(buffered_app, buffered_domain),
+    }) {
+        // Same-field browser navigation starts a new privacy scope. Discard a
+        // partial/dropped buffer rather than attributing either state to the
+        // new page when its next boundary arrives.
+        buffers.remove(field);
+    }
     match buffers
         .entry(field.clone())
-        .or_insert_with(|| MonitoredBuffer::Collecting(String::new()))
-    {
-        MonitoredBuffer::Collecting(buffer) => {
-            buffer.push_str(inserted);
-            if buffer.chars().count() > MAX_MONITORED_BUFFER_CHARS {
+        .or_insert_with(|| MonitoredBuffer::Collecting {
+            text: String::new(),
+            app_key: app_key.map(str::to_owned),
+            domain: domain.map(str::to_owned),
+        }) {
+        MonitoredBuffer::Collecting { text, .. } => {
+            text.push_str(inserted);
+            if text.chars().count() > MAX_MONITORED_BUFFER_CHARS {
                 if monitored_boundary(inserted) {
                     buffers.remove(field);
                 } else {
-                    buffers.insert(field.clone(), MonitoredBuffer::DroppedUntilBoundary);
+                    buffers.insert(
+                        field.clone(),
+                        MonitoredBuffer::DroppedUntilBoundary {
+                            app_key: app_key.map(str::to_owned),
+                            domain: domain.map(str::to_owned),
+                        },
+                    );
                 }
                 return None;
             }
         }
-        MonitoredBuffer::DroppedUntilBoundary => {
+        MonitoredBuffer::DroppedUntilBoundary { .. } => {
             if monitored_boundary(inserted) {
                 buffers.remove(field);
             }
@@ -2367,8 +2467,8 @@ fn buffered_monitored_text(
         return None;
     }
     match buffers.remove(field) {
-        Some(MonitoredBuffer::Collecting(text)) => Some(text),
-        Some(MonitoredBuffer::DroppedUntilBoundary) | None => None,
+        Some(MonitoredBuffer::Collecting { text, .. }) => Some(text),
+        Some(MonitoredBuffer::DroppedUntilBoundary { .. }) | None => None,
     }
 }
 
@@ -2387,9 +2487,9 @@ fn flush_monitored_changes(
     prefs: &Prefs,
     policy: MonitoredPolicy,
 ) {
-    flush_monitored_changes_with_monitor(pending, buffers, prefs, policy, |field, text| {
+    flush_monitored_changes_with_monitor(pending, buffers, prefs, policy, |app, domain, text| {
         if let Some(store) = memory {
-            store.monitor(&field.app, text)?;
+            store.monitor_for_domain(app, domain, text)?;
         }
         Ok(())
     });
@@ -2400,7 +2500,7 @@ fn flush_monitored_changes_with_monitor(
     buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
     prefs: &Prefs,
     policy: MonitoredPolicy,
-    mut monitor: impl FnMut(&FieldHandle, &str) -> std::result::Result<(), memory::MemoryError>,
+    mut monitor: impl FnMut(&str, Option<&str>, &str) -> std::result::Result<(), memory::MemoryError>,
 ) {
     if policy.secure {
         pending.clear();
@@ -2428,14 +2528,33 @@ fn flush_monitored_changes_with_monitor(
             if monitored_boundary(&item.inserted) {
                 buffers.remove(&item.field);
             } else {
-                buffers.insert(item.field.clone(), MonitoredBuffer::DroppedUntilBoundary);
+                buffers.insert(
+                    item.field.clone(),
+                    MonitoredBuffer::DroppedUntilBoundary {
+                        app_key: item.app_key.clone(),
+                        domain: item.domain.clone(),
+                    },
+                );
             }
             continue;
         }
-        let Some(text) = buffered_monitored_text(buffers, &item.field, &item.inserted) else {
+        let Some(text) = buffered_monitored_text(
+            buffers,
+            &item.field,
+            item.app_key.as_deref(),
+            item.domain.as_deref(),
+            &item.inserted,
+        ) else {
             continue;
         };
-        record_monitored_text_with_monitor(&item.field, &text, collection_allowed, &mut monitor);
+        record_monitored_text_with_monitor(
+            &item.field,
+            item.app_key.as_deref(),
+            item.domain.as_deref(),
+            &text,
+            collection_allowed,
+            &mut monitor,
+        );
     }
 }
 
@@ -3091,6 +3210,13 @@ fn build_settings_flags(
         apps_lines: Arc::new(Mutex::new(Vec::new())),
         apps_policy_bits: Arc::new(Mutex::new(Vec::new())),
         apps_delete_row: Arc::new(Mutex::new(None)),
+        apps_memory_mode_index: Arc::new(AtomicUsize::new(memory_mode_index(config.memory.mode))),
+        apps_memory_mode_titles: vec![
+            "Off".into(),
+            "Accepted completions".into(),
+            "All monitored typing".into(),
+        ],
+        apps_delete_domain: Arc::new(Mutex::new(None)),
         apps_erase_all: Arc::new(AtomicBool::new(false)),
         apps_edit: Arc::new(Mutex::new(None)),
         shortcuts_text: {
@@ -3800,6 +3926,36 @@ fn compose_apps_rows(store: Option<&memory::MemoryStore>) -> (Vec<String>, Vec<S
     }
 }
 
+fn transition_memory_mode(
+    store: &mut Option<memory::MemoryStore>,
+    current: &mut memory::StorageMode,
+    desired: memory::StorageMode,
+    open: impl FnOnce(memory::StorageMode) -> Option<memory::MemoryStore>,
+    persist: impl FnOnce(&str) -> std::result::Result<(), String>,
+) -> std::result::Result<bool, String> {
+    if desired == *current {
+        return Ok(false);
+    }
+    let old = *current;
+    if store.is_none() && desired != memory::StorageMode::Off {
+        *store = open(desired);
+        if store.is_none() {
+            return Err("encrypted memory store could not be opened".into());
+        }
+    }
+    if let Some(store) = store.as_mut() {
+        store.set_mode(desired);
+    }
+    if let Err(err) = persist(memory_mode_value(desired)) {
+        if let Some(store) = store.as_mut() {
+            store.set_mode(old);
+        }
+        return Err(err);
+    }
+    *current = desired;
+    Ok(true)
+}
+
 /// Resolve a clicked Apps-row index against the ids rendered with the SAME
 /// cap/order, delete that app's history, and return the recomposed rows.
 /// `None` = out-of-range row (stale click) — nothing deleted. The confirm
@@ -4184,6 +4340,7 @@ struct RunContext<A: PlatformAdapter, O: OverlayPresenter> {
     launch_at_login_enabled: bool,
     previous_inputs: PreviousInputs,
     memory: Option<memory::MemoryStore>,
+    memory_collection_active: bool,
     monitored_memory_active: bool,
     clipboard_cell: Arc<Mutex<Option<String>>>,
     screen_cell: Arc<Mutex<Option<ScreenContext>>>,
@@ -4468,13 +4625,25 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
     // Keychain, generated on first use. Lives on this thread (the rusqlite
     // handle is not Send). AcceptedOnly records Full accepts; AllMonitored also
     // records established non-secure insertion deltas.
-    let memory = open_memory_store(&config.memory, || match shell.load_or_create_memory_key() {
-        Ok(key) => Some(key),
-        Err(err) => {
-            eprintln!("compme: OS key store memory key unavailable: {err}");
-            None
-        }
-    });
+    let memory = open_memory_store(
+        &config.memory,
+        || match shell.load_existing_memory_key() {
+            Ok(key) => key,
+            Err(err) => {
+                eprintln!("compme: existing OS key store memory key unavailable: {err}");
+                None
+            }
+        },
+        || match shell.load_or_create_memory_key() {
+            Ok(key) => Some(key),
+            Err(err) => {
+                eprintln!("compme: OS key store memory key unavailable: {err}");
+                None
+            }
+        },
+    );
+    let memory_collection_active =
+        config.memory.mode != memory::StorageMode::Off && memory.is_some();
     let monitored_memory_active =
         config.memory.mode == memory::StorageMode::AllMonitored && memory.is_some();
     let clipboard_cell: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
@@ -4578,6 +4747,7 @@ fn startup<A: PlatformAdapter, O: OverlayPresenter>(
         launch_at_login_enabled,
         previous_inputs,
         memory,
+        memory_collection_active,
         monitored_memory_active,
         clipboard_cell,
         screen_cell,
@@ -4934,6 +5104,95 @@ struct AppsPaneCtx<'a> {
     previous_inputs: &'a PreviousInputs,
 }
 
+struct MemoryModeCtx<'a> {
+    settings_flags: &'a crate::shell::SettingsFlags,
+    settings_window: &'a crate::shell::SettingsWindow,
+    shell: &'a Arc<dyn ShellHost>,
+    config: &'a mut Config,
+    memory: &'a mut Option<memory::MemoryStore>,
+    prefs: &'a Prefs,
+    previous_inputs: &'a PreviousInputs,
+    monitored: &'a mut MonitoredInput,
+    settings: &'a mut SettingsState,
+}
+
+fn memory_mode_phase(ctx: MemoryModeCtx<'_>) {
+    let desired_index = ctx
+        .settings_flags
+        .apps_memory_mode_index
+        .load(Ordering::Relaxed);
+    let desired = memory_mode_from_index(desired_index);
+    let old = ctx.config.memory.mode;
+    if desired == old {
+        return;
+    }
+
+    let path = ctx.config.memory.path.clone();
+    let mut explicit_key = ctx.config.memory.key;
+    let shell = Arc::clone(ctx.shell);
+    let changed = transition_memory_mode(
+        ctx.memory,
+        &mut ctx.config.memory.mode,
+        desired,
+        |mode| {
+            let open_config = MemoryConfig {
+                mode,
+                path,
+                key: explicit_key,
+            };
+            open_memory_store(
+                &open_config,
+                || shell.load_existing_memory_key().ok().flatten(),
+                || shell.load_or_create_memory_key().ok(),
+            )
+        },
+        |value| {
+            let path = config::config_file_path().ok_or_else(|| {
+                "config path unavailable; memory mode was not changed".to_string()
+            })?;
+            config::persist_setting(&path, "COMPME_MEMORY", value).map_err(|err| err.to_string())
+        },
+    );
+    if let Some(key) = explicit_key.as_mut() {
+        key.zeroize();
+    }
+    match changed {
+        Ok(true) => {
+            clear_monitored_state_for_policy_transition(
+                &mut ctx.monitored.pending_monitored,
+                &mut ctx.monitored.monitored_buffers,
+            );
+            ctx.previous_inputs.clear_all();
+            let (lines, ids) = compose_apps_rows(ctx.memory.as_ref());
+            *ctx.settings_flags
+                .apps_lines
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = lines;
+            ctx.settings.apps_ids = ids;
+            *ctx.settings_flags
+                .apps_policy_bits
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+                ctx.prefs,
+                &ctx.settings.apps_ids,
+                ctx.settings.global_mid_word,
+                ctx.config.autocorrect,
+                ctx.config.grammar_fix,
+            );
+            ctx.settings_window.refresh_apps_labels();
+            eprintln!("compme: memory mode set to {desired:?}");
+        }
+        Ok(false) => {}
+        Err(err) => {
+            ctx.settings_flags
+                .apps_memory_mode_index
+                .store(memory_mode_index(old), Ordering::Relaxed);
+            ctx.settings_window.refresh_apps_labels();
+            eprintln!("compme: memory mode change failed: {err}");
+        }
+    }
+}
+
 /// Heartbeat phase: the Apps pane's Delete-row edge (confirm, secure
 /// delete, recompose, re-render). Split out of `run()` verbatim (F16).
 fn apps_row_delete_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
@@ -5070,6 +5329,75 @@ fn apps_erase_all_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
         config.grammar_fix,
     );
     settings_window.refresh_apps_labels();
+}
+
+fn apps_domain_delete_phase(
+    ctx: AppsPaneCtx<'_>,
+    settings: &mut SettingsState,
+    monitored: &mut MonitoredInput,
+) {
+    let requested = ctx
+        .settings_flags
+        .apps_delete_domain
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .take();
+    let Some(requested) = requested else { return };
+    let domain = webconfig::normalize_domain(requested.trim());
+    if domain.is_empty() {
+        eprintln!("compme: domain erase ignored — enter a domain");
+        return;
+    }
+    let Some(store) = ctx.memory else {
+        eprintln!("compme: domain erase skipped — no memory store open");
+        return;
+    };
+    let confirmed = ctx
+        .shell
+        .confirm(&shell_flags::ConfirmPrompt {
+            title: "Delete recorded domain inputs?",
+            message: &format!(
+                "All recorded inputs for {domain}, across every browser, will be permanently erased."
+            ),
+            confirm_label: "Delete Domain",
+        })
+        .unwrap_or(false);
+    if !confirmed {
+        eprintln!("compme: domain delete for {domain} cancelled");
+        return;
+    }
+    match store.delete_domain(&domain) {
+        Ok(removed) => eprintln!("compme: deleted {removed} recorded inputs for {domain}"),
+        Err(err) => {
+            eprintln!("compme: domain delete for {domain} failed: {err}");
+            return;
+        }
+    }
+    // Previous-input rings are app-scoped, so conservatively clear every ring;
+    // pending monitored buffers are also cleared to ensure text queued before
+    // the erase cannot recreate the just-deleted domain on the next boundary.
+    ctx.previous_inputs.clear_all();
+    clear_monitored_state_for_policy_transition(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+    );
+    let (lines, ids) = compose_apps_rows(Some(store));
+    *ctx.settings_flags
+        .apps_lines
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = lines;
+    settings.apps_ids = ids;
+    *ctx.settings_flags
+        .apps_policy_bits
+        .lock()
+        .unwrap_or_else(|e| e.into_inner()) = compose_apps_policy_bits(
+        ctx.prefs,
+        &settings.apps_ids,
+        settings.global_mid_word,
+        ctx.config.autocorrect,
+        ctx.config.grammar_fix,
+    );
+    ctx.settings_window.refresh_apps_labels();
 }
 
 /// Heartbeat phase: the Apps pane's per-app policy checkbox edge, including
@@ -5337,8 +5665,9 @@ pub fn run() -> Result<(), String> {
         url_handler: _url_handler,
         launch_at_login_enabled,
         previous_inputs,
-        memory,
-        monitored_memory_active,
+        mut memory,
+        mut memory_collection_active,
+        mut monitored_memory_active,
         clipboard_cell,
         screen_cell,
         context_bound,
@@ -5551,8 +5880,11 @@ pub fn run() -> Result<(), String> {
                             let caps = engine.current_capabilities();
                             match observation {
                                 Observation::Typed(change) => {
-                                    let observe_domain =
-                                        domain_observation_enabled(&prefs, &config.personalization);
+                                    let observe_domain = memory_collection_active
+                                        || domain_observation_enabled(
+                                            &prefs,
+                                            &config.personalization,
+                                        );
                                     // Deliberately pay one AX URL read for each
                                     // monitored browser edit so a same-field
                                     // navigation cannot reuse the wrong domain.
@@ -5757,6 +6089,9 @@ pub fn run() -> Result<(), String> {
                             cross_app_previous_inputs: config.cross_app_previous_inputs,
                             previous_inputs: &previous_inputs,
                             memory: memory.as_ref(),
+                            domain: preview.as_ref().and_then(|(field, _, _)| {
+                                cached_domain(&focus.last_domain, Some(&field.app))
+                            }),
                             prefs: &prefs,
                             tracker: &mut focus.tracker,
                             usage: &mut usage_stats.usage,
@@ -6124,6 +6459,21 @@ pub fn run() -> Result<(), String> {
                 Err(err) => eprintln!("compme: accept-key rebind failed: {err}"),
             }
         }
+        memory_mode_phase(MemoryModeCtx {
+            settings_flags: &settings_flags,
+            settings_window: &settings_window,
+            shell: &shell,
+            config: &mut config,
+            memory: &mut memory,
+            prefs: &prefs,
+            previous_inputs: &previous_inputs,
+            monitored: &mut monitored,
+            settings: &mut settings,
+        });
+        memory_collection_active =
+            config.memory.mode != memory::StorageMode::Off && memory.is_some();
+        monitored_memory_active =
+            config.memory.mode == memory::StorageMode::AllMonitored && memory.is_some();
         let apps_pane_ctx = || AppsPaneCtx {
             settings_flags: &settings_flags,
             shell: &shell,
@@ -6135,6 +6485,7 @@ pub fn run() -> Result<(), String> {
         };
         apps_row_delete_phase(apps_pane_ctx(), &mut settings);
         apps_erase_all_phase(apps_pane_ctx(), &mut settings);
+        apps_domain_delete_phase(apps_pane_ctx(), &mut settings, &mut monitored);
         apps_row_policy_edit_phase(
             &settings_flags,
             &settings,

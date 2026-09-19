@@ -244,6 +244,13 @@ abort("missing release gate: CI actionlint runs the checksum-db pinned linter") 
 audit_step = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
 abort("missing release gate: CI dependency audit installs and runs pinned cargo-audit") unless
   audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
+windows_steps = jobs.fetch("windows").fetch("steps")
+abort("missing release gate: CI Windows doc tests") unless windows_steps.any? { |step|
+  step["name"] == "Doc tests (portable workspace)" && step["run"] == "cargo test --locked --workspace --exclude platform_macos --doc"
+}
+abort("missing release gate: CI Windows pinned dependency audit") unless windows_steps.any? { |step|
+  step["name"] == "Rust dependency audit" && step["run"] == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
+}
 icon_step = jobs.fetch("check").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: CI runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
@@ -476,13 +483,13 @@ upload = "actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a"
 download = "actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c"
 attest = "actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8"
 expected_action_topology = {
-  "preflight" => [[checkout, {"fetch-depth" => 0}]],
+  "preflight" => [[checkout, {"fetch-depth" => 0, "persist-credentials" => false}]],
   "validate" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"}]],
   "windows" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}"}]],
   "linux" => [[checkout, {"persist-credentials" => false}], [toolchain, {"components" => "rustfmt, clippy"}], [cache, {"key" => "${{ steps.img.outputs.image }}"}]],
-  "prebuild" => [[checkout, {"fetch-depth" => 0}], [toolchain, {}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
+  "prebuild" => [[checkout, {"fetch-depth" => 0, "persist-credentials" => false}], [toolchain, {}], [upload, {"name" => "compme-prebuilt-binary", "if-no-files-found" => "error", "retention-days" => 3, "path" => "target/release/compme"}]],
   "build_release" => [[checkout, {"persist-credentials" => false}], [download, {"name" => "compme-prebuilt-binary", "path" => "target/release"}], [attest, {"subject-path" => "${{ steps.pkg.outputs.zip }}"}], [upload, {"name" => "compme-release-artifacts", "if-no-files-found" => "error", "retention-days" => 7, "path" => "${{ steps.pkg.outputs.zip }}\n${{ steps.pkg.outputs.zip }}.sha256\n"}]],
-  "publish_release" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
+  "publish_release" => [[checkout, {"fetch-depth" => 0, "persist-credentials" => false}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
   "finalize_cask" => [[checkout, {"fetch-depth" => 0}], [download, {"name" => "compme-release-artifacts", "path" => "release-artifacts"}]],
   "post_verify" => [],
 }
@@ -535,6 +542,13 @@ abort("missing release gate: release validation inherits read-only workflow perm
 audit_step = jobs.fetch("validate").fetch("steps").find { |step| step["name"] == "Rust dependency audit" }
 abort("missing release gate: release dependency audit installs and runs pinned cargo-audit") unless
   audit_step && audit_step.fetch("run") == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
+windows_steps = jobs.fetch("windows").fetch("steps")
+abort("missing release gate: release Windows doc tests") unless windows_steps.any? { |step|
+  step["name"] == "Doc tests (portable workspace)" && step["run"] == "cargo test --locked --workspace --exclude platform_macos --doc"
+}
+abort("missing release gate: release Windows pinned dependency audit") unless windows_steps.any? { |step|
+  step["name"] == "Rust dependency audit" && step["run"] == "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n"
+}
 icon_step = jobs.fetch("validate").fetch("steps").find { |step| step["name"] == "Bundle icon generator self-test" }
 abort("missing release gate: release validation runs the bundle icon generator self-test") unless
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
@@ -3089,6 +3103,24 @@ YAML
     return 1
   fi
 
+  # G19: neither Windows lane may silently lose its doctest/audit coverage.
+  for windows_workflow in ci release; do
+    for windows_gate in 'Doc tests (portable workspace)' 'Rust dependency audit'; do
+      cp "$repo_root/.github/workflows/$windows_workflow.yml" "$integrity_fixture"
+      ruby -ryaml -e '
+        path, name = ARGV
+        workflow = YAML.load_file(path)
+        workflow.fetch("jobs").fetch("windows").fetch("steps").reject! { |step| step["name"] == name }
+        File.write(path, YAML.dump(workflow))
+      ' "$integrity_fixture" "$windows_gate"
+      if "check_${windows_workflow}_integrity_controls" "$integrity_fixture" >/dev/null 2>&1; then
+        echo "release gate self-test failed: $windows_workflow Windows without $windows_gate was accepted" >&2
+        cleanup
+        return 1
+      fi
+    done
+  done
+
   cp "$canonical_release_workflow" "$integrity_fixture"
   ruby -ryaml -e '
     path = ARGV.fetch(0)
@@ -3751,7 +3783,7 @@ ruby -ryaml -e '
     actual = step.fetch("with", {})
     approved = case uses.split("@", 2).first
                when "actions/checkout"
-                 [{}, {"fetch-depth" => 0}, {"persist-credentials" => false}]
+                 [{}, {"fetch-depth" => 0}, {"persist-credentials" => false}, {"fetch-depth" => 0, "persist-credentials" => false}]
                when "dtolnay/rust-toolchain"
                  [
                    {},
@@ -3910,6 +3942,8 @@ ruby -ryaml -e '
   require_step!(jobs, "windows", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "platform_windows clippy job")
   require_step!(jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "platform_windows test job")
   require_step!(jobs, "windows", "Build app binary", "cargo build --locked -p app", "platform_windows build job")
+  require_step!(jobs, "windows", "Doc tests (portable workspace)", "cargo test --locked --workspace --exclude platform_macos --doc", "platform_windows doc tests")
+  require_step!(jobs, "windows", "Rust dependency audit", "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n", "platform_windows dependency audit")
 
   linux = jobs.fetch("linux")
   abort("missing release gate: platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
@@ -3962,6 +3996,8 @@ ruby -ryaml -e '
   require_step!(release_jobs, "windows", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "release platform_windows clippy job")
   require_step!(release_jobs, "windows", "Test portable workspace", "cargo test --locked --workspace --exclude platform_macos --all-targets", "release platform_windows test job")
   require_step!(release_jobs, "windows", "Build app binary", "cargo build --locked -p app", "release platform_windows build job")
+  require_step!(release_jobs, "windows", "Doc tests (portable workspace)", "cargo test --locked --workspace --exclude platform_macos --doc", "release platform_windows doc tests")
+  require_step!(release_jobs, "windows", "Rust dependency audit", "cargo install cargo-audit --version 0.22.2 --locked\ncargo audit --deny unsound --deny yanked\n", "release platform_windows dependency audit")
   linux = release_jobs.fetch("linux")
   abort("missing release gate: release platform_linux runs on Linux") unless linux.fetch("runs-on") == "ubuntu-latest"
   require_step!(release_jobs, "linux", "Clippy portable workspace (deny warnings)", "cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings", "release platform_linux clippy job")

@@ -5,24 +5,30 @@ rust-version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+# Opt-in static backends: SDKs are build prerequisites. CPU remains the
+# off-mac default; no dynamic backend loader or ABI change is introduced.
+vulkan = ["llama-cpp-2/vulkan"]
+cuda = ["llama-cpp-2/cuda"]
+
 [dependencies]
 # Required by llama-cpp-2's `token_to_piece` signature (it takes an
 # encoding_rs UTF-8 decoder) — not an independent choice.
 encoding_rs = "0.8"
 # ABI-sensitive FFI bindings to llama.cpp — pinned exact because even patch
 # bumps can change the vendored C ABI/behavior. Backend features are target
-# scoped: Metal on macOS; off-mac builds are CPU-only with optional backends
-# disabled for the SDK/build-script reasons below.
+# scoped: Metal on macOS; off-mac builds default to CPU. Explicit features
+# above require their SDK at build time.
 
 [target.'cfg(target_os = "macos")'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false, features = ["metal"] }
 
-# ponytail: static CPU-only llama off macOS until the real Windows/Linux
-# adapters land (ROADMAP 1.1). "vulkan" needs the Vulkan SDK at build time
-# (CI runners lack it); "dynamic-backends" hard-links shared backend libs in
+# Static CPU-only by default off macOS. Opt-in Vulkan/CUDA need their SDKs;
+# "dynamic-backends" remains disabled because it hard-links shared libs in
 # its build script with a racy !exists()→hard_link().unwrap() that panics
 # AlreadyExists under CI (llama-cpp-sys-2 0.1.146 build.rs:1110). Re-add
-# GPU/dynamic backends together with the adapters and CI SDK install steps.
+# dynamic backends only after that upstream race is repaired.
 [target.'cfg(not(target_os = "macos"))'.dependencies]
 llama-cpp-2 = { version = "=0.1.146", default-features = false }
 

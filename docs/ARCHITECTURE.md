@@ -318,14 +318,19 @@ through it before encryption.
 `memory` is the encrypted local log for accepted completions or all monitored
 typing (§6 / §16). Text is **redacted** (`redaction`) then **encrypted**
 (AES-256-GCM, a random nonce per record); only text ciphertext reaches the
-SQLite database — text plaintext never touches disk. The app identifier remains
-plaintext metadata for per-app counts/delete and is also bound into the AEAD as
-AAD, so rows cannot be relabeled and decrypted under another app. The 32-byte
+SQLite database — text plaintext never touches disk. The app identifier and
+optional canonical browser domain remain plaintext metadata for scoped
+counts/delete and are bound into the AEAD as AAD. Schema version 2 adds the
+nullable domain column transactionally. Version-1 rows retain their original
+app-only AAD and a NULL domain; they remain readable and app-deletable, but
+cannot be retrospectively attributed to a website. The 32-byte
 key is a `StaticKey` the host fills: production reads it from the macOS
 Keychain (A3 live integration), tests use a fixed key. Storage is opt-in —
 `StorageMode::Off` is the default and records nothing; `AcceptedOnly` stores
 accepted completions, `AllMonitored` is the broader opt-in. Records are
-inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app`).
+inspectable (`count` / `recent`) and deletable (`delete_all` / `delete_app` /
+`delete_domain`). Domain counts/deletion span browser apps; legacy rows with
+unknown domains remain reachable through app/global erase.
 Both halves are reachable from the product. On the first focus of an app the run
 loop replays that app's stored records into the volatile previous-input ring
 (`hydrate_previous_inputs`), so an accept collected in an earlier session can
@@ -335,7 +340,8 @@ raw `context_bound`, which is floored to a positive default so a clipboard or
 screen source enabled after launch still has a budget, and so is nonzero even
 when previous-input context is off. Retrieval additionally honours the per-app
 collection policy and skips volatile `pid:N` keys, matching the write path. It is
-per-app only: the cross-app ring is a live opt-in that `clear_cross_app` empties
+scoped to the app and current domain: navigation discards queued monitored
+text and stale hydrated context. The cross-app ring is a live opt-in that `clear_cross_app` empties
 when the user turns sharing off, and seeding it from disk would defeat that.
 
 The Apps pane's "Erase All Recorded Inputs" button drives `delete_all` behind a
@@ -344,14 +350,20 @@ the eight rendered rows. Both deletion paths also clear the matching in-process
 rings (`PreviousInputs::clear_all` / `clear_app`) — without that, records the
 user just erased would keep steering completions until the next launch, and the
 "already hydrated" check would stop any later read from refreshing them.
+Confirmed domain erase conservatively clears all live previous-input rings and
+pending monitored text. The Apps pane also controls Off, Accepted completions,
+and All monitored typing; successful changes persist `COMPME_MEMORY` and clear
+pending/live context. Failed store creation or persistence restores the old
+store, runtime mode and picker state.
+The existing `COMPME_MEMORY_PATH` prerequisite remains: the mode picker does
+not invent a storage location, and enabling without a configured path fails
+closed and restores the previous selection.
 
-**Known gap:** `StorageMode::Off` drops the store handle, so switching collection
-off also hides the deletion UI — a user must erase *before* disabling. Opening
-the store read/delete-only under `Off` was implemented and reverted: it requires
-a load-*without*-create key API first, because `load_or_create_memory_key` mints
-a fresh OS key-store entry on first use, so a leftover database path would make a
-launch with memory disabled create a keychain item and prompt for access. Closing
-it is a `ShellHost` trait change across all three adapters.
+`StorageMode::Off` can open an existing regular database for cleanup through
+`load_existing_memory_key`; it creates neither a database nor an OS key-store
+entry. Missing keys and unsupported key stores fail closed. Cleanup-only
+handles must never hydrate persisted prompt context. macOS and Linux implement
+the existing-key lookup; the Windows scaffold retains the unsupported default.
 `AllMonitored` records only established inserted-text deltas after a baseline;
 it does not scrape pre-existing field text. The run loop blocks collection for
 secure input, disabled/snoozed/excluded policy, stale browser-domain state when
@@ -470,8 +482,9 @@ below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
 - `LocalModel`: synchronous local completion trait.
 - `LocalModelError`: structured failure stage plus message.
 - `LlamaModel`: `llama-cpp-2` implementation. macOS builds enable Metal via
-  `with_n_gpu_layers(999)`; current non-macOS builds are CPU-only until the
-  planned Vulkan/CUDA features and CI SDKs land. Overrides `warm_up` (a
+  `with_n_gpu_layers(999)`; non-macOS builds default to CPU with opt-in
+  `vulkan` and `cuda` features. Linux Vulkan has SDK-build and hardware
+  execution evidence; CUDA/Windows verification remains open. Overrides `warm_up` (a
   throwaway decode that triggers first-backend
   setup up front) and terminal cancellation through a safe, lifetime-owning
   vendored abort-callback extension. `shutdown` drops context before model in
@@ -790,13 +803,17 @@ window's background pixmap, which is what keeps the content correct across expos
 events with no event loop. Both `x11rb` and `fontdue` are Linux-target-gated, and
 `x11rb`'s `allow-unsafe-code` feature is deliberately off: it is what would pull
 in libxcb, and a C library in the link line would make the binary refuse to
-*start* on a host without it. Every void X11 request is `check()`ed, because X11
-reports errors for reply-less requests asynchronously and an unchecked
-`CreateWindow` made `show_ghost` return `Ok` with nothing on screen.
+*start* on a host without it. Void requests are batched, followed by one
+`sync` round trip and an event-queue drain in `flush_and_collect_errors`.
+Any reported X11 error fails the operation: flushing alone would not prove
+that the server accepted a `CreateWindow` or displayed anything.
 
-Wayland overlays (`LayerShell`), trays, always-on shortcut registration,
-packaging, and GPU backends remain roadmap work; event paths, the accept tap,
-native insertion, key stores, dialogs, and file-manager reveal are built.
+The current working tree adds a StatusNotifierItem/DBusMenu tray (`ksni`) and
+always-on X11 shortcuts. Missing tray hosts and reserved shortcut chords degrade
+without disabling a working accept tap. Wayland overlays and global shortcuts
+remain pending. Optional Vulkan/CUDA feature forwarding and an experimental
+AppImage assembler exist; platform runtime and clean-machine release evidence
+remain separate gates.
 
 The Linux **X11 accept tap** is implemented (ROADMAP Phase 2.3) as a *passive*
 `XGrabKey` on the accept keys with the keyboard in `GrabModeSync`, resolving each
@@ -823,8 +840,11 @@ failing the session. `x11rb` is used rather than Xlib for the same reason AT-SPI
 goes over D-Bus: a C library at link time would make the binary refuse to *start*
 without it.
 
-Wayland overlays, trays, always-on shortcut registration, packaging, and GPU
-backends remain roadmap work.
+`x11_shortcuts` owns separate asynchronous passive grabs for the four shortcut
+actions, with callback isolation, mapping refresh, accept-chord collision
+checks and bounded teardown. The native Xvfb test verifies dispatch and release;
+real window-manager reservations and desktop tray rendering need desktop
+acceptance. These services do not imply Wayland support.
 
 ## macOS Runtime Model
 

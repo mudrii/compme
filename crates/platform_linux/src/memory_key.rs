@@ -107,27 +107,37 @@ impl MemoryKeyStore {
         }
     }
 
+    /// Return the stored key without ever creating one.
+    ///
+    /// `Ok(None)` is a genuine first-use state. The disabled-memory cleanup
+    /// path uses this distinction so an old database path cannot cause a new
+    /// Secret Service item to be minted.
+    pub fn load_existing_memory_key(&self) -> Result<Option<[u8; KEY_LEN]>, PlatformError> {
+        let Some(mut secret) = (self.read_secret)()? else {
+            return Ok(None);
+        };
+        // Copy into the fixed array, then scrub the transport buffer so the
+        // AES key does not linger in a heap Vec after this returns (matching
+        // the macOS store and the `memory` crate).
+        let result = <[u8; KEY_LEN]>::try_from(secret.as_slice()).map_err(|_| {
+            PlatformError::CannotComplete {
+                reason: format!(
+                    "secret-service item {MEMORY_KEY_SERVICE}/{MEMORY_KEY_ACCOUNT} holds \
+                     {} bytes, expected {KEY_LEN} — refusing to overwrite a foreign or corrupt \
+                     secret",
+                    secret.len()
+                ),
+            }
+        });
+        secret.zeroize();
+        result.map(Some)
+    }
+
     /// The stored 32-byte key, or a generated-and-persisted one on first use.
     /// See the module docs for the fail-closed contract.
     pub fn load_or_create_memory_key(&self) -> Result<[u8; KEY_LEN], PlatformError> {
-        match (self.read_secret)()? {
-            Some(mut secret) => {
-                // Copy into the fixed array, then scrub the transport buffer so
-                // the AES key does not linger in a heap Vec after this returns
-                // (matching the macOS store and the `memory` crate).
-                let result = <[u8; KEY_LEN]>::try_from(secret.as_slice()).map_err(|_| {
-                    PlatformError::CannotComplete {
-                        reason: format!(
-                            "secret-service item {MEMORY_KEY_SERVICE}/{MEMORY_KEY_ACCOUNT} holds \
-                             {} bytes, expected {KEY_LEN} — refusing to overwrite a foreign or \
-                             corrupt secret",
-                            secret.len()
-                        ),
-                    }
-                });
-                secret.zeroize();
-                result
-            }
+        match self.load_existing_memory_key()? {
+            Some(key) => Ok(key),
             None => {
                 let key = (self.generate_key)()?;
                 (self.write_secret)(&key)?;
@@ -251,6 +261,30 @@ mod tests {
         assert!(
             writes.lock().unwrap().is_empty(),
             "an existing key must be returned as-is, never rewritten"
+        );
+    }
+
+    #[test]
+    fn load_existing_absence_never_generates_or_writes() {
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let in_write = Arc::clone(&touched);
+        let in_generate = Arc::clone(&touched);
+        let s = store(
+            Arc::new(|| Ok(None)),
+            Arc::new(move |_| {
+                in_write.lock().unwrap().push("write");
+                Ok(())
+            }),
+            Arc::new(move || {
+                in_generate.lock().unwrap().push("generate");
+                Ok([9u8; KEY_LEN])
+            }),
+        );
+
+        assert_eq!(s.load_existing_memory_key(), Ok(None));
+        assert!(
+            touched.lock().unwrap().is_empty(),
+            "load-existing must have no create-path side effects"
         );
     }
 

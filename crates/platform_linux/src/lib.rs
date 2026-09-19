@@ -13,9 +13,10 @@
 //! exist are per-desktop with no portable URL) and `insert_replacing`'s
 //! left-of-caret form (AT-SPI can express it only as delete-then-insert, which is
 //! not atomic, so a failure between the two would truncate the user's field).
-//! Not yet built: the tray (StatusNotifierItem) and always-on shortcut
-//! registration. A tray failure is non-fatal in the run loop, so the product
-//! runs without one.
+//! The StatusNotifierItem tray and X11 always-on shortcut registration are also
+//! real session services. A missing SNI host or X display is reported and the
+//! app keeps running without that surface; Wayland global shortcuts remain a
+//! separate portal/compositor implementation.
 //!
 //! Real today, because they need neither a display nor an accessibility bus and
 //! so are verifiable on a headless Linux host: `environment` (distro + kernel),
@@ -39,6 +40,8 @@ use platform::{
     PlatformError, ScreenRect, Subscription, TextContext,
 };
 use std::path::{Path, PathBuf};
+#[cfg(target_os = "linux")]
+use std::sync::Arc;
 
 pub mod atspi_caps;
 pub mod atspi_event_map;
@@ -72,6 +75,17 @@ pub mod overlay_geometry;
 /// File-manager reveal: `org.freedesktop.FileManager1` with an `xdg-open`
 /// fallback, over pure path arithmetic.
 pub mod reveal;
+/// StatusNotifierItem + DBusMenu tray service. Linux-only because it talks to
+/// the desktop session bus; a missing watcher/host is a normal constructor
+/// error and the app continues without a tray.
+#[cfg(target_os = "linux")]
+pub mod tray;
+#[cfg(target_os = "linux")]
+pub use tray::LinuxTray;
+/// Constrained XTEST plain-text insertion. Linux-only: it talks directly to the
+/// active X server and is available only when the XTEST extension probes live.
+#[cfg(target_os = "linux")]
+mod x11_insert;
 /// Pure accept-key translation and arm/disarm logic for the X11 accept tap. On
 /// every host, deliberately: the keycode/modifier translation and the
 /// consume-vs-pass-through decision are where the interesting bugs live, so they
@@ -80,6 +94,10 @@ pub mod x11_keys;
 /// Live override-redirect X11 overlay. Linux-only: `x11rb` is target-gated.
 #[cfg(target_os = "linux")]
 pub mod x11_overlay;
+/// Pure shortcut translation on every host plus live X11 passive grabs on
+/// Linux. These grabs are always active and asynchronous, unlike the
+/// suggestion-scoped synchronous accept tap.
+pub mod x11_shortcuts;
 /// The live X11 accept tap. Linux-only: it needs an X server, and the `x11rb`
 /// dependency is target-gated.
 #[cfg(target_os = "linux")]
@@ -128,6 +146,10 @@ pub struct LinuxAdapter {
     /// `subscribe_accept` and the reported `accept_intercept` fail-closed.
     #[cfg(target_os = "linux")]
     accept_tap_installable: bool,
+    /// Whether this X server exposes XTEST for constrained plain insertion.
+    /// This is independent of passive accept-key grab availability.
+    #[cfg(target_os = "linux")]
+    synthetic_insert_available: bool,
 }
 
 /// Subscription ids are only identity for the host's bookkeeping, so a plain
@@ -142,11 +164,9 @@ fn next_subscription_id() -> u64 {
     NEXT_SUBSCRIPTION_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Mint the accept tap's subscription. Every subscription this adapter hands
-/// out — event and accept alike — is built by one of these two constructors, so
-/// "one counter for all of them" is a property of two functions rather than of
-/// each call site remembering to use the shared allocator.
-#[cfg(target_os = "linux")]
+/// Test-only plain subscription used to pin that event and accept handles draw
+/// from the same id allocator. Production subscriptions all carry teardown.
+#[cfg(all(test, target_os = "linux"))]
 fn new_subscription() -> Subscription {
     Subscription::new(next_subscription_id())
 }
@@ -192,6 +212,7 @@ impl LinuxAdapter {
             // X11 in theory.
             accept_tap_installable: x11_tap::probe_accept_intercept()
                 == platform::KeyInterceptMode::XGrabKey,
+            synthetic_insert_available: x11_insert::probe(),
         }
     }
 
@@ -243,6 +264,16 @@ impl LinuxAdapter {
                      Wayland session, or accept keys already grabbed); accept keys stay with the \
                      application"
                 .to_string(),
+        }
+    }
+
+    #[cfg(target_os = "linux")]
+    fn control_taps_unavailable(shortcut_error: &PlatformError) -> PlatformError {
+        PlatformError::AccessibilityUnavailable {
+            reason: format!(
+                "platform_linux::subscribe_accept: neither the X11 accept tap nor configured \
+                 global shortcuts could be installed ({shortcut_error})"
+            ),
         }
     }
 
@@ -345,24 +376,52 @@ impl PlatformAdapter for LinuxAdapter {
     /// `AccessibilityUnavailable` as "no accept tap this session".
     #[cfg(target_os = "linux")]
     fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
-        if !self.accept_tap_installable {
+        let accept_tap = if self.accept_tap_installable {
+            Some(x11_tap::X11AcceptTap::install(Arc::clone(&cb))?)
+        } else {
+            None
+        };
+        let shortcut_tap = match x11_shortcuts::X11ShortcutTap::install(cb) {
+            Ok(tap) => tap,
+            Err(err) if accept_tap.is_some() => {
+                // Shortcut registration is independent from suggestion-scoped
+                // accept. A desktop-reserved shortcut must not take working
+                // Tab/grave interception down with it; report the missing
+                // surface and retain the accept path.
+                eprintln!("compme: Linux global shortcuts unavailable: {err}");
+                None
+            }
+            Err(err) => return Err(Self::control_taps_unavailable(&err)),
+        };
+        if accept_tap.is_none() && shortcut_tap.is_none() {
             return Err(Self::accept_tap_unavailable());
         }
-        let tap = x11_tap::X11AcceptTap::install(cb)?;
-        let for_visible = std::sync::Arc::clone(&tap);
-        let for_hide = std::sync::Arc::clone(&tap);
-        let for_action = std::sync::Arc::clone(&tap);
-        let for_rearm = std::sync::Arc::clone(&tap);
+        let for_visible = accept_tap.clone();
+        let for_hide = accept_tap.clone();
+        let for_action = accept_tap.clone();
+        let for_rearm = accept_tap.clone();
         Ok(AcceptSubscription::new(
-            // Teardown is the tap's `Drop`: it thaws the keyboard and releases
-            // every grab before joining its threads. Dropping the returned
-            // handle drops these closures, which hold the only references.
-            new_subscription(),
-            move |visible| for_visible.set_suggestion_visible(visible),
-            move |delay| for_hide.hide_suggestion_after(delay),
-            move |action| for_action.set_accept_action(action),
+            // The shortcut tap is process-lifetime for this subscription and
+            // is otherwise not referenced by the control closures. The cancel
+            // owns it so dropping the subscription releases its grabs.
+            new_cancelling_subscription(move || drop(shortcut_tap)),
+            move |visible| match &for_visible {
+                Some(tap) => tap.set_suggestion_visible(visible),
+                None => Ok(()),
+            },
+            move |delay| match &for_hide {
+                Some(tap) => tap.hide_suggestion_after(delay),
+                None => Ok(()),
+            },
+            move |action| match &for_action {
+                Some(tap) => tap.set_accept_action(action),
+                None => Ok(()),
+            },
         )
-        .with_rearm(move || for_rearm.rearm()))
+        .with_rearm(move || match &for_rearm {
+            Some(tap) => tap.rearm(),
+            None => Ok(()),
+        }))
     }
 
     /// Real impl: the X11 `XGrabKey` tap above; a compositor/IME path on Wayland.
@@ -404,7 +463,9 @@ impl PlatformAdapter for LinuxAdapter {
     fn capabilities(&self, field: &FieldHandle) -> Result<Capabilities, PlatformError> {
         let session = self.session("capabilities")?;
         let id = self.validate_field(field)?;
-        let mut capabilities = session.capabilities(&id)?;
+        let facts = session.field_facts(&id)?;
+        let mut capabilities = atspi_caps::capabilities_from(&facts);
+        apply_synthetic_insert_reality(&mut capabilities, &facts, self.synthetic_insert_available);
         // `accept_intercept` is a *session* fact (is there an X server, and is
         // Tab free?), not a property of the field, so the pure AT-SPI mapping
         // cannot know it and reports the fail-closed `None`. It is filled in here,
@@ -451,6 +512,20 @@ impl PlatformAdapter for LinuxAdapter {
         session.caret_rect(field)
     }
 
+    /// AT-SPI Text.GetRangeExtents in screen coordinates. The shared range and
+    /// AT-SPI offsets are both Unicode scalars; the session validates the range
+    /// against the provider's current character count before requesting bounds.
+    #[cfg(target_os = "linux")]
+    fn text_range_rect(
+        &self,
+        field: &FieldHandle,
+        range: platform::CorrectionRange,
+    ) -> Result<Option<ScreenRect>, PlatformError> {
+        let session = self.session("text_range_rect")?;
+        self.validate_field(field)?;
+        session.text_range_rect(field, range)
+    }
+
     /// AT-SPI Component screen bounds, used by the engine after character-level
     /// caret geometry returns no usable rectangle (for example, an empty entry).
     #[cfg(target_os = "linux")]
@@ -472,6 +547,17 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::accessibility_unavailable("caret_rect"))
     }
 
+    /// Real impl: AT-SPI Text.GetRangeExtents. Without this stub the trait
+    /// default would misreport the absent Linux session as a field limitation.
+    #[cfg(not(target_os = "linux"))]
+    fn text_range_rect(
+        &self,
+        _field: &FieldHandle,
+        _range: platform::CorrectionRange,
+    ) -> Result<Option<ScreenRect>, PlatformError> {
+        Err(Self::accessibility_unavailable("text_range_rect"))
+    }
+
     /// Real impl: AT-SPI Component screen bounds. Without this stub the trait
     /// default answers `Ok(None)`, which would *pretend* geometry was probed.
     #[cfg(not(target_os = "linux"))]
@@ -479,9 +565,9 @@ impl PlatformAdapter for LinuxAdapter {
         Err(Self::accessibility_unavailable("popup_anchor"))
     }
 
-    /// AT-SPI2 `EditableText.InsertText` at the caret. Only the atomic strategy is
-    /// honored: the synthetic-key fallback (XTEST) is not built, and accepting a
-    /// non-atomic request here would type into a field the engine believes it set.
+    /// Prefer AT-SPI2 `EditableText.InsertText`; use the constrained XTEST path
+    /// only when capabilities selected `SyntheticKeys` and the extension probed
+    /// live. Other non-atomic strategies remain fail-closed.
     #[cfg(target_os = "linux")]
     fn insert(
         &self,
@@ -489,12 +575,21 @@ impl PlatformAdapter for LinuxAdapter {
         text: &str,
         strategy: InsertStrategy,
     ) -> Result<Inserted, PlatformError> {
-        if !strategy.supports_atomic_range_replace() {
+        if strategy == InsertStrategy::SyntheticKeys && !self.synthetic_insert_available {
+            return Err(Self::unsupported(
+                "insert (XTEST unavailable for SyntheticKeys)",
+            ));
+        }
+        if strategy != InsertStrategy::SyntheticKeys && !strategy.supports_atomic_range_replace() {
             return Err(Self::unsupported("insert (non-atomic strategy)"));
         }
         let session = self.session("insert")?;
         self.validate_field(field)?;
-        session.insert(field, text)
+        match strategy {
+            InsertStrategy::SyntheticKeys => session.insert_synthetic(field, text),
+            strategy if strategy.supports_atomic_range_replace() => session.insert(field, text),
+            _ => unreachable!("non-atomic strategies were refused before session lookup"),
+        }
     }
 
     /// Real impl: AT-SPI2 EditableText insert, else XTEST / `wtype` synthetic typing.
@@ -724,8 +819,8 @@ fn desktop_exec_value(exec: &Path) -> String {
 
 /// The autostart desktop entry. `X-GNOME-Autostart-enabled` is the key the GNOME
 /// startup UIs toggle; other desktops ignore it. No `NoDisplay=true`: that key
-/// hides the entry from the desktop's startup-applications UI, and with no
-/// Linux tray yet that UI is the only place a user can see or disable it.
+/// hides the entry from the desktop's startup-applications UI, which remains
+/// the durable place to disable launch-at-login when no SNI host is installed.
 fn autostart_desktop_entry(exec: &Path) -> String {
     format!(
         "[Desktop Entry]\n\
@@ -980,12 +1075,27 @@ impl platform::shell::ShellHost for LinuxShellHost {
         memory_key::MemoryKeyStore::secret_service().load_or_create_memory_key()
     }
 
+    /// Load an existing Secret Service key without entering the create path.
+    #[cfg(target_os = "linux")]
+    fn load_existing_memory_key(&self) -> Result<Option<[u8; 32]>, PlatformError> {
+        memory_key::MemoryKeyStore::secret_service().load_existing_memory_key()
+    }
+
     /// Off Linux there is no `org.freedesktop.secrets` to talk to. The
     /// load-or-create contract in [`memory_key`] is compiled and tested here.
     #[cfg(not(target_os = "linux"))]
     fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
         Err(PlatformError::UnsupportedField {
             reason: "platform_linux::load_or_create_memory_key requires Linux (Secret Service \
+                     over D-Bus)"
+                .to_string(),
+        })
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn load_existing_memory_key(&self) -> Result<Option<[u8; 32]>, PlatformError> {
+        Err(PlatformError::UnsupportedField {
+            reason: "platform_linux::load_existing_memory_key requires Linux (Secret Service \
                      over D-Bus)"
                 .to_string(),
         })
@@ -1129,6 +1239,28 @@ fn apply_overlay_reality(capabilities: &mut Capabilities, wayland_only: bool) {
     }
 }
 
+/// Promote a readable, editable, nonsecure field without AT-SPI EditableText to
+/// the constrained XTEST plain-insert strategy only when the extension was
+/// actually probed. Atomic AT-SPI fields keep `NativeRangeSet`; read-only,
+/// disabled, and password fields remain unwritable.
+#[cfg(any(target_os = "linux", test))]
+fn apply_synthetic_insert_reality(
+    capabilities: &mut Capabilities,
+    facts: &atspi_caps::FieldFacts,
+    xtest_available: bool,
+) {
+    if xtest_available
+        && facts.has_text
+        && !facts.has_editable_text
+        && facts.editable
+        && facts.sensitive
+        && !capabilities.secure
+    {
+        capabilities.writable = true;
+        capabilities.insert_strategy = InsertStrategy::SyntheticKeys;
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1268,7 +1400,7 @@ mod tests {
         ));
         assert!(matches!(
             adapter.text_range_rect(&field, platform::CorrectionRange { start: 0, end: 1 }),
-            Err(PlatformError::UnsupportedField { .. })
+            Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
             adapter.insert_replacing_range(
@@ -1327,6 +1459,10 @@ mod tests {
         ));
         assert!(matches!(
             adapter.caret_rect(&field),
+            Err(PlatformError::AccessibilityUnavailable { .. })
+        ));
+        assert!(matches!(
+            adapter.text_range_rect(&field, platform::CorrectionRange { start: 0, end: 1 }),
             Err(PlatformError::AccessibilityUnavailable { .. })
         ));
         assert!(matches!(
@@ -1914,6 +2050,55 @@ mod tests {
         );
         apply_overlay_reality(&mut caps, true);
         assert_eq!(caps.overlay_at_caret, platform::OverlayPlacement::None);
+    }
+
+    #[test]
+    fn synthetic_insert_is_advertised_only_for_safe_nonsecure_field_facts() {
+        let mut facts = crate::atspi_caps::FieldFacts {
+            has_text: true,
+            has_editable_text: false,
+            editable: true,
+            sensitive: true,
+            multiline: false,
+            role: "entry".to_string(),
+            toolkit_name: "GTK".to_string(),
+        };
+        let mut caps = crate::atspi_caps::capabilities_from(&facts);
+        apply_synthetic_insert_reality(&mut caps, &facts, true);
+        assert!(caps.writable);
+        assert_eq!(caps.insert_strategy, InsertStrategy::SyntheticKeys);
+
+        for (label, mutate) in [
+            (
+                "XTEST unavailable",
+                None::<fn(&mut crate::atspi_caps::FieldFacts)>,
+            ),
+            (
+                "not editable",
+                Some(|facts: &mut crate::atspi_caps::FieldFacts| facts.editable = false),
+            ),
+            (
+                "disabled",
+                Some(|facts: &mut crate::atspi_caps::FieldFacts| facts.sensitive = false),
+            ),
+            (
+                "secure",
+                Some(|facts: &mut crate::atspi_caps::FieldFacts| {
+                    facts.role = "password text".to_string()
+                }),
+            ),
+        ] {
+            facts.editable = true;
+            facts.sensitive = true;
+            facts.role = "entry".to_string();
+            if let Some(mutate) = mutate {
+                mutate(&mut facts);
+            }
+            let mut caps = crate::atspi_caps::capabilities_from(&facts);
+            apply_synthetic_insert_reality(&mut caps, &facts, label != "XTEST unavailable");
+            assert!(!caps.writable, "{label}");
+            assert_eq!(caps.insert_strategy, InsertStrategy::None, "{label}");
+        }
     }
 
     #[test]

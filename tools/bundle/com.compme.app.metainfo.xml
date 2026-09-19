@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.compme.app</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>Apache-2.0</project_license>
+  <name>Compme</name>
+  <summary>Local inline text completion</summary>
+  <description>
+    <p>Compme suggests text as you type using a local language model.
+    Linux support is experimental and currently requires an X11 session
+    and applications exposing editable text through AT-SPI2.</p>
+    <p>Models are downloaded separately. Application text is processed locally.</p>
+  </description>
+  <launchable type="desktop-id">com.compme.app.desktop</launchable>
+  <url type="homepage">https://github.com/mudrii/compme</url>
+  <url type="bugtracker">https://github.com/mudrii/compme/issues</url>
+  <provides><binary>compme</binary></provides>
+  <content_rating type="oars-1.1"/>
+</component>

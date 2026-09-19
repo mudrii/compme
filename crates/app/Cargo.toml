@@ -5,6 +5,11 @@ rust-version.workspace = true
 edition = "2021"
 license.workspace = true
 
+[features]
+default = []
+vulkan = ["model_client/vulkan"]
+cuda = ["model_client/cuda"]
+
 [[bin]]
 name = "compme"
 path = "src/main.rs"

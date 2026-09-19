@@ -375,6 +375,7 @@ pub fn recorder_outcome(
 struct SettingsTargetIvars {
     flags: SettingsFlags,
     tabs: RefCell<Option<TabControls>>,
+    apps_domain_field: RefCell<Option<Retained<NSTextField>>>,
 }
 
 struct TabControls {
@@ -516,6 +517,34 @@ define_class!(
                 .flags
                 .apps_erase_all
                 .store(true, Ordering::Relaxed);
+        }
+
+        #[unsafe(method(selectMemoryMode:))]
+        fn select_memory_mode(&self, sender: Option<&NSPopUpButton>) {
+            if let Some(popup) = sender {
+                record_selection_index(
+                    &self.ivars().flags.apps_memory_mode_index,
+                    popup.indexOfSelectedItem(),
+                );
+            }
+        }
+
+        #[unsafe(method(deleteDomainInputs:))]
+        fn delete_domain_inputs(&self, _sender: Option<&NSButton>) {
+            let Some(field) = self.ivars().apps_domain_field.borrow().as_ref().cloned() else {
+                return;
+            };
+            let domain = field.stringValue().to_string();
+            if domain.trim().is_empty() {
+                return;
+            }
+            *self
+                .ivars()
+                .flags
+                .apps_delete_domain
+                .lock()
+                .unwrap_or_else(|e| e.into_inner()) = Some(domain);
+            field.setStringValue(&NSString::from_str(""));
         }
 
         #[unsafe(method(editAppPolicy:))]
@@ -713,6 +742,7 @@ impl SettingsTarget {
         let this = Self::alloc(mtm).set_ivars(SettingsTargetIvars {
             flags,
             tabs: RefCell::new(None),
+            apps_domain_field: RefCell::new(None),
         });
         // SAFETY: NSObject's init signature is correct for this subclass.
         unsafe { objc2::msg_send![super(this), init] }
@@ -1004,6 +1034,7 @@ pub struct MacosSettingsWindow {
     // Per-row Apps policy checkboxes (APP_POLICY_FIELDS per row, row-major),
     // hidden on the same non-deletable rows as the Delete buttons.
     apps_policy_checkboxes: Vec<Retained<NSButton>>,
+    apps_memory_mode_popup: Option<Retained<NSPopUpButton>>,
     // General-tab switches, refreshed from their atomics on every show:
     // enabled has EXTERNAL writers (tray, SIGUSR1), so its rendered state
     // can go stale while the window is closed (c95 staleness class). The
@@ -1037,6 +1068,7 @@ impl MacosSettingsWindow {
             apps_labels: Vec::new(),
             apps_delete_buttons: Vec::new(),
             apps_policy_checkboxes: Vec::new(),
+            apps_memory_mode_popup: None,
             switches: Vec::new(),
             shortcuts_label: None,
             recorder_labels: Vec::new(),
@@ -1060,6 +1092,7 @@ impl MacosSettingsWindow {
             self.apps_labels = built.apps_labels;
             self.apps_delete_buttons = built.apps_delete_buttons;
             self.apps_policy_checkboxes = built.apps_policy_checkboxes;
+            self.apps_memory_mode_popup = Some(built.apps_memory_mode_popup);
             self.switches = built.switches;
             self.shortcuts_label = Some(built.shortcuts_label);
             self.recorder_labels = built.recorder_labels;
@@ -1095,6 +1128,11 @@ impl MacosSettingsWindow {
         // window was closed would otherwise leave the checkboxes stale.
         if let Ok(bits) = self.flags.apps_policy_bits.lock() {
             refresh_apps_policy_checkbox_states(&self.apps_policy_checkboxes, &bits);
+        }
+        if let Some(popup) = &self.apps_memory_mode_popup {
+            popup.selectItemAtIndex(
+                self.flags.apps_memory_mode_index.load(Ordering::Relaxed) as isize
+            );
         }
         // Personalization fields re-seed from their mutexes — a config reload
         // while the window was closed updates flags.personalization_* and the
@@ -1252,6 +1290,11 @@ impl MacosSettingsWindow {
     /// Re-render the Apps rows from `flags.apps_lines` after a delete (the
     /// run loop recomposes, then calls this; show() covers the open edge).
     pub fn refresh_apps_labels(&self) {
+        if let Some(popup) = &self.apps_memory_mode_popup {
+            popup.selectItemAtIndex(
+                self.flags.apps_memory_mode_index.load(Ordering::Relaxed) as isize
+            );
+        }
         if let Ok(lines) = self.flags.apps_lines.lock() {
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
@@ -1407,9 +1450,21 @@ mod apps_layout {
     /// "Recorded inputs by app" title.
     pub const HEADER: PaneRect = PaneRect {
         x: 20.0,
-        y: 300.0,
+        y: 298.0,
         w: 300.0,
-        h: 24.0,
+        h: 20.0,
+    };
+    pub const MODE_LABEL: PaneRect = PaneRect {
+        x: 20.0,
+        y: 326.0,
+        w: 110.0,
+        h: 20.0,
+    };
+    pub const MODE_POPUP: PaneRect = PaneRect {
+        x: 135.0,
+        y: 322.0,
+        w: 210.0,
+        h: 26.0,
     };
     /// Column-header row, just above the first data row.
     pub const COL_HEADER_Y: f64 = 278.0;
@@ -1477,6 +1532,24 @@ mod apps_layout {
         x: 20.0,
         y: 36.0,
         w: 220.0,
+        h: 22.0,
+    };
+    pub const DOMAIN_LABEL: PaneRect = PaneRect {
+        x: 250.0,
+        y: 38.0,
+        w: 50.0,
+        h: 20.0,
+    };
+    pub const DOMAIN_FIELD: PaneRect = PaneRect {
+        x: 300.0,
+        y: 35.0,
+        w: 105.0,
+        h: 24.0,
+    };
+    pub const DELETE_DOMAIN: PaneRect = PaneRect {
+        x: 410.0,
+        y: 36.0,
+        w: 70.0,
         h: 22.0,
     };
 }
@@ -1594,6 +1667,7 @@ fn build_window(
     let mut apps_labels: Vec<Retained<NSTextField>> = Vec::new();
     let mut apps_delete_buttons: Vec<Retained<NSButton>> = Vec::new();
     let mut apps_policy_checkboxes: Vec<Retained<NSButton>> = Vec::new();
+    let apps_memory_mode_popup: Retained<NSPopUpButton>;
     let mut switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)> = Vec::new();
     // Personalization text fields, kept so show() can re-seed them from
     // flags.personalization_* after an out-of-window config reload (the same
@@ -1969,6 +2043,29 @@ fn build_window(
     // every show like the other data tabs.
     {
         let apps = &pane_views[3];
+        let mode_label = NSTextField::labelWithString(&NSString::from_str("Input memory:"), mtm);
+        mode_label.setFrame(apps_layout::MODE_LABEL.ns());
+        apps.addSubview(&mode_label);
+        let mode_popup = NSPopUpButton::initWithFrame_pullsDown(
+            NSPopUpButton::alloc(mtm),
+            apps_layout::MODE_POPUP.ns(),
+            false,
+        );
+        for title in &flags.apps_memory_mode_titles {
+            mode_popup.addItemWithTitle(&NSString::from_str(title));
+        }
+        let selected = flags.apps_memory_mode_index.load(Ordering::Relaxed);
+        if selected < flags.apps_memory_mode_titles.len() {
+            mode_popup.selectItemAtIndex(selected as isize);
+        }
+        unsafe {
+            let any: &AnyObject = target.as_ref();
+            mode_popup.setTarget(Some(any));
+            mode_popup.setAction(Some(sel!(selectMemoryMode:)));
+        }
+        apps.addSubview(&mode_popup);
+        apps_memory_mode_popup = mode_popup;
+
         let header =
             NSTextField::labelWithString(&NSString::from_str("Recorded inputs by app"), mtm);
         header.setFrame(apps_layout::HEADER.ns());
@@ -2084,6 +2181,30 @@ fn build_window(
         };
         erase_all.setFrame(apps_layout::ERASE_ALL.ns());
         apps.addSubview(&erase_all);
+
+        let domain_label = NSTextField::labelWithString(&NSString::from_str("Domain:"), mtm);
+        domain_label.setFrame(apps_layout::DOMAIN_LABEL.ns());
+        apps.addSubview(&domain_label);
+        let domain_field = NSTextField::new(mtm);
+        domain_field.setFrame(apps_layout::DOMAIN_FIELD.ns());
+        domain_field.setEditable(true);
+        domain_field.setSelectable(true);
+        domain_field.setPlaceholderString(Some(&NSString::from_str("example.com")));
+        apps.addSubview(&domain_field);
+        *target.ivars().apps_domain_field.borrow_mut() = Some(domain_field);
+        let delete_domain = unsafe {
+            NSButton::buttonWithTitle_target_action(
+                &NSString::from_str("Delete"),
+                Some({
+                    let any: &AnyObject = target.as_ref();
+                    any
+                }),
+                Some(sel!(deleteDomainInputs:)),
+                mtm,
+            )
+        };
+        delete_domain.setFrame(apps_layout::DELETE_DOMAIN.ns());
+        apps.addSubview(&delete_domain);
     }
 
     // Context tab: prompt-context sources. Clipboard applies live; screen OCR
@@ -2410,6 +2531,7 @@ fn build_window(
         apps_labels,
         apps_delete_buttons,
         apps_policy_checkboxes,
+        apps_memory_mode_popup,
         switches,
         shortcuts_label,
         recorder_labels,
@@ -2429,6 +2551,7 @@ struct BuiltWindow {
     apps_labels: Vec<Retained<NSTextField>>,
     apps_delete_buttons: Vec<Retained<NSButton>>,
     apps_policy_checkboxes: Vec<Retained<NSButton>>,
+    apps_memory_mode_popup: Retained<NSPopUpButton>,
     switches: Vec<(Retained<NSSwitch>, Arc<AtomicBool>)>,
     shortcuts_label: Retained<NSTextField>,
     recorder_labels: Vec<(RecorderRole, Retained<NSTextField>)>,
@@ -2570,6 +2693,8 @@ mod tests {
         // compact one-line grid must keep every control of every row collision-
         // free and inside the ~500x350 pane budget.
         let mut all: Vec<(&'static str, PaneRect)> = vec![
+            ("mode_label", apps_layout::MODE_LABEL),
+            ("mode_popup", apps_layout::MODE_POPUP),
             ("header", apps_layout::HEADER),
             ("name_header", apps_layout::NAME_HEADER),
         ];
@@ -2586,6 +2711,9 @@ mod tests {
         // The pane-wide erase button must clear the last data row as well as
         // the pane bounds — it is the one control placed below the grid.
         all.push(("erase_all", apps_layout::ERASE_ALL));
+        all.push(("domain_label", apps_layout::DOMAIN_LABEL));
+        all.push(("domain_field", apps_layout::DOMAIN_FIELD));
+        all.push(("delete_domain", apps_layout::DELETE_DOMAIN));
 
         assert_no_overlaps_within_budget(&all);
     }

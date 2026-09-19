@@ -43,10 +43,9 @@ use zeroize::Zeroize;
 const NONCE_LEN: usize = 12;
 
 /// Schema version stamped into `PRAGMA user_version` (see the 0.x schema policy
-/// in the module docs). Version 1 is the original — and so far only — schema, so
-/// the first schema change bumps this to 2 in the same commit as the migration
-/// that upgrades a version-1 store.
-const SCHEMA_VERSION: i64 = 1;
+/// in the module docs). Version 1 is the original app/blob schema; version 2
+/// adds nullable canonical-domain metadata for scoped deletion and AAD binding.
+const SCHEMA_VERSION: i64 = 2;
 
 /// Upper bound on stored records. After each insert the store trims oldest-first
 /// (lowest id) back down to this cap. Paired with [`MAX_RECORD_CHARS`] (a
@@ -142,16 +141,45 @@ pub struct MemoryStore {
 }
 
 impl MemoryStore {
+    /// The collection policy this handle enforces. `Off` handles may still
+    /// expose deletion, but callers must not replay their rows into prompts.
+    pub fn mode(&self) -> StorageMode {
+        self.mode
+    }
+
+    /// Change the live collection policy without reopening the encrypted
+    /// database. The key and rows stay available for deletion in `Off`.
+    pub fn set_mode(&mut self, mode: StorageMode) {
+        self.mode = mode;
+    }
+
     /// Open (creating if needed) a file-backed store.
     ///
     /// The parent directory is created (0700 on unix) if missing, and the
     /// database file is created/restricted to owner-only (0600 on unix) so its
     /// plaintext `app` metadata column is not world/group-readable.
     pub fn open(path: &Path, key: &StaticKey, mode: StorageMode) -> Result<Self> {
+        Self::open_file(path, key, mode, true)
+    }
+
+    /// Open a file-backed store only if the database already exists.
+    ///
+    /// Unlike [`Self::open`], this never creates the parent directory or the
+    /// database file. The host uses it with [`StorageMode::Off`] to expose
+    /// deletion controls after collection is disabled without turning a stale
+    /// configured path into a new database.
+    pub fn open_existing(path: &Path, key: &StaticKey, mode: StorageMode) -> Result<Self> {
+        Self::open_file(path, key, mode, false)
+    }
+
+    fn open_file(path: &Path, key: &StaticKey, mode: StorageMode, create: bool) -> Result<Self> {
         // Ensure the parent directory exists, or SQLite fails to create the file
         // and the store silently never initializes.
-        if let Some(parent) = path.parent() {
-            if !parent.as_os_str().is_empty() {
+        if create {
+            if let Some(parent) = path
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty())
+            {
                 // Read existence BEFORE create_dir_all; only the unix arm
                 // consumes it (0700 tightening), so gate the binding too or
                 // non-unix clippy -D warnings rejects it as unused.
@@ -174,7 +202,7 @@ impl MemoryStore {
         {
             use std::fs::OpenOptions;
             use std::os::unix::fs::OpenOptionsExt;
-            if !path.exists() {
+            if create && !path.exists() {
                 OpenOptions::new()
                     .write(true)
                     .create(true)
@@ -191,22 +219,22 @@ impl MemoryStore {
         // creates during connection initialization.
         #[cfg(unix)]
         {
-            let validate = |p: &Path| -> Result<()> {
+            let validate = |p: &Path, required: bool| -> Result<()> {
                 match std::fs::symlink_metadata(p) {
                     Ok(metadata) if metadata.file_type().is_file() => Ok(()),
                     Ok(_) => Err(MemoryError::Io(format!(
                         "refusing non-file memory database path {}",
                         p.display()
                     ))),
-                    Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
+                    Err(err) if err.kind() == std::io::ErrorKind::NotFound && !required => Ok(()),
                     Err(err) => Err(err.into()),
                 }
             };
-            validate(path)?;
+            validate(path, !create)?;
             for suffix in ["-journal", "-wal", "-shm"] {
                 let mut sidecar = path.as_os_str().to_owned();
                 sidecar.push(suffix);
-                validate(Path::new(&sidecar))?;
+                validate(Path::new(&sidecar), false)?;
             }
         }
 
@@ -220,7 +248,10 @@ impl MemoryStore {
             }
             _ => path.to_path_buf(),
         };
-        let flags = rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        let mut flags = rusqlite::OpenFlags::default() | rusqlite::OpenFlags::SQLITE_OPEN_NOFOLLOW;
+        if !create {
+            flags.remove(rusqlite::OpenFlags::SQLITE_OPEN_CREATE);
+        }
         let store =
             Self::from_connection(Connection::open_with_flags(&open_path, flags)?, key, mode)?;
 
@@ -271,7 +302,7 @@ impl MemoryStore {
         Self::from_connection(Connection::open_in_memory()?, key, mode)
     }
 
-    fn from_connection(conn: Connection, key: &StaticKey, mode: StorageMode) -> Result<Self> {
+    fn from_connection(mut conn: Connection, key: &StaticKey, mode: StorageMode) -> Result<Self> {
         // secure_delete zeroes freed content so delete_all/delete_app actually
         // erase ciphertext from disk (freelist pages), not just unlink rows.
         conn.pragma_update(None, "secure_delete", true)?;
@@ -305,16 +336,36 @@ impl MemoryStore {
         // SQLite stores `user_version` in the header and never interprets it, so
         // it is only worth stamping if every open acts on what it reads.
         let user_version: i64 = conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let memories_exists: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memories')",
+            [],
+            |row| row.get(0),
+        )?;
         match user_version {
-            // 0 is BOTH a brand-new database (SQLite's default) and every store
-            // written before this marker existed. Those two are byte-identical —
-            // this change adds no column, only the stamp — so adopting 0 as
-            // version 1 is a label, not a migration, and it is the only option
-            // that does not lock every existing install out of its own records.
-            // The first real schema change gets version 2 and an explicit
-            // 1 -> 2 upgrade; 0 keeps meaning "the original schema".
-            0 => conn.pragma_update(None, "user_version", SCHEMA_VERSION)?,
-            SCHEMA_VERSION => {}
+            // 0 is either a brand-new database or a pre-marker version-1
+            // database. Presence of the memories table distinguishes them.
+            0 if memories_exists => Self::migrate_v1_to_v2(&mut conn)?,
+            0 => {
+                let tx = conn.transaction()?;
+                tx.execute(
+                    "CREATE TABLE memories (
+                         id     INTEGER PRIMARY KEY AUTOINCREMENT,
+                         app    TEXT NOT NULL,
+                         blob   BLOB NOT NULL,
+                         domain TEXT
+                     )",
+                    [],
+                )?;
+                tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+                tx.commit()?;
+            }
+            1 => Self::migrate_v1_to_v2(&mut conn)?,
+            SCHEMA_VERSION if memories_exists => {}
+            SCHEMA_VERSION => {
+                return Err(MemoryError::Db(
+                    "refusing memory store: schema version 2 has no memories table".into(),
+                ));
+            }
             // A NEWER build wrote this file (or something corrupted the header).
             // Its rows may follow a schema this build cannot read, so opening it
             // would mislabel or silently drop a user's records — and the row cap
@@ -327,14 +378,6 @@ impl MemoryStore {
                 )))
             }
         }
-        conn.execute(
-            "CREATE TABLE IF NOT EXISTS memories (
-                 id   INTEGER PRIMARY KEY AUTOINCREMENT,
-                 app  TEXT NOT NULL,
-                 blob BLOB NOT NULL
-             )",
-            [],
-        )?;
         // Scrub the key copy returned by the provider once the cipher has
         // absorbed it; the cipher itself zeroizes its key schedule on drop
         // (aes-gcm `zeroize` feature).
@@ -346,27 +389,50 @@ impl MemoryStore {
         Ok(Self { conn, cipher, mode })
     }
 
+    /// Transactional version-1 → version-2 migration. Existing ciphertext was
+    /// authenticated with app-only AAD, so migrated rows keep `domain = NULL`;
+    /// domain-aware reads use the original AAD for exactly those rows.
+    fn migrate_v1_to_v2(conn: &mut Connection) -> Result<()> {
+        let tx = conn.transaction()?;
+        tx.execute("ALTER TABLE memories ADD COLUMN domain TEXT", [])?;
+        tx.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Record an **accepted** completion for `app`. No-op when storage is `Off`.
     /// The text is redacted, then encrypted (with `app` bound as AEAD AAD); only
     /// ciphertext is persisted.
     pub fn remember(&self, app: &str, text: &str) -> Result<()> {
+        self.remember_for_domain(app, None, text)
+    }
+
+    /// Record an accepted completion with an optional canonical browser domain.
+    pub fn remember_for_domain(&self, app: &str, domain: Option<&str>, text: &str) -> Result<()> {
         if self.mode == StorageMode::Off {
             return Ok(());
         }
-        self.store(app, text)
+        self.store(app, domain, text)
     }
 
     /// Record **monitored-but-not-accepted** text for `app`. Only stored in
     /// `AllMonitored` mode; a no-op in `AcceptedOnly`/`Off` (§16: accepted-only
     /// mode must not persist non-accepted text).
     pub fn monitor(&self, app: &str, text: &str) -> Result<()> {
+        self.monitor_for_domain(app, None, text)
+    }
+
+    /// Record monitored text with an optional canonical browser domain.
+    pub fn monitor_for_domain(&self, app: &str, domain: Option<&str>, text: &str) -> Result<()> {
         if self.mode != StorageMode::AllMonitored {
             return Ok(());
         }
-        self.store(app, text)
+        self.store(app, domain, text)
     }
 
-    fn store(&self, app: &str, text: &str) -> Result<()> {
+    fn store(&self, app: &str, domain: Option<&str>, text: &str) -> Result<()> {
+        Self::validate_app_aad(app)?;
+        let domain = domain.filter(|domain| !domain.is_empty());
         // Hold the redacted plaintext in a zeroizing buffer so it is scrubbed from
         // the heap after encryption — matching the key-zeroization rigor under the
         // same core-dump/swap/live-inspection threat model the module guards. The
@@ -381,10 +447,11 @@ impl MemoryStore {
         // already-safe placeholder. `capped` borrows the zeroizing buffer, so it
         // stays scrubbed too.
         let capped = truncate_chars(redacted.as_str(), MAX_RECORD_CHARS);
-        let blob = self.encrypt(capped, app.as_bytes())?;
+        let aad = Self::record_aad(app, domain);
+        let blob = self.encrypt(capped, &aad)?;
         self.conn.execute(
-            "INSERT INTO memories (app, blob) VALUES (?1, ?2)",
-            params![app, blob],
+            "INSERT INTO memories (app, blob, domain) VALUES (?1, ?2, ?3)",
+            params![app, blob, domain],
         )?;
         Self::trim_to_cap(&self.conn, MAX_RECORDS)?;
         Ok(())
@@ -417,11 +484,36 @@ impl MemoryStore {
     /// The most recent `limit` decryptable records for `app`, newest first.
     /// Records that fail to decrypt (e.g. a different key) are skipped.
     pub fn recent(&self, app: &str, limit: usize) -> Result<Vec<String>> {
+        self.recent_scoped(app, None, false, limit)
+    }
+
+    /// Most recent decryptable records for exactly one app/domain scope.
+    /// `domain = None` selects only non-domain and migrated version-1 rows.
+    pub fn recent_for_domain(
+        &self,
+        app: &str,
+        domain: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        self.recent_scoped(app, domain.filter(|domain| !domain.is_empty()), true, limit)
+    }
+
+    fn recent_scoped(
+        &self,
+        app: &str,
+        domain: Option<&str>,
+        exact_domain: bool,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        Self::validate_app_aad(app)?;
         if limit == 0 {
             return Ok(Vec::new());
         }
         let mut stmt = self.conn.prepare(
-            "SELECT blob FROM memories WHERE app = ?1 ORDER BY id DESC LIMIT ?2 OFFSET ?3",
+            "SELECT blob, domain FROM memories
+             WHERE app = ?1
+               AND (?4 = 0 OR (?4 = 1 AND domain IS NULL) OR (?4 = 2 AND domain = ?5))
+             ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         )?;
         // Fetch (and decrypt) a page at a time instead of every row up front, so
         // the common all-decryptable case touches only `limit` ciphertexts. We
@@ -434,17 +526,28 @@ impl MemoryStore {
         // above i64::MAX would wrap negative, and SQLite reads a negative LIMIT
         // as "no limit".
         let page = i64::try_from(limit).unwrap_or(i64::MAX);
+        let domain_kind = if !exact_domain {
+            0i64
+        } else if domain.is_some() {
+            2i64
+        } else {
+            1i64
+        };
         let mut out = Vec::new();
         let mut offset: i64 = 0;
         loop {
-            let blobs =
-                stmt.query_map(params![app, page, offset], |row| row.get::<_, Vec<u8>>(0))?;
+            let rows = stmt.query_map(
+                params![app, page, offset, domain_kind, domain.unwrap_or("")],
+                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?)),
+            )?;
             let mut fetched = 0i64;
-            for blob in blobs {
+            for row in rows {
                 fetched += 1;
+                let (blob, stored_domain) = row?;
                 // Best-effort read: a row that fails to decrypt (wrong key, or
-                // app column tampered so the AAD no longer matches) is absent.
-                if let Some(text) = self.decrypt(&blob?, app.as_bytes()) {
+                // app/domain column tampered so the AAD no longer matches) is absent.
+                let aad = Self::record_aad(app, stored_domain.as_deref());
+                if let Some(text) = self.decrypt(&blob, &aad) {
                     out.push(text);
                     if out.len() == limit {
                         return Ok(out);
@@ -483,6 +586,24 @@ impl MemoryStore {
         Ok(out)
     }
 
+    /// Canonical browser-domain record counts across apps, most-used first.
+    /// Migrated version-1 and non-browser rows have no domain and are omitted.
+    pub fn count_by_domain(&self) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT domain, COUNT(*) AS cnt FROM memories WHERE domain IS NOT NULL \
+             GROUP BY domain ORDER BY cnt DESC, domain ASC",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
+        })?;
+        let mut out = Vec::new();
+        for row in rows {
+            let (domain, n) = row?;
+            out.push((domain, u64::try_from(n.max(0)).unwrap_or(u64::MAX)));
+        }
+        Ok(out)
+    }
+
     /// Delete every record (the "disable and erase" control).
     pub fn delete_all(&self) -> Result<()> {
         self.conn.execute("DELETE FROM memories", [])?;
@@ -495,6 +616,44 @@ impl MemoryStore {
             .conn
             .execute("DELETE FROM memories WHERE app = ?1", params![app])?;
         Ok(removed)
+    }
+
+    /// Delete records for one canonical browser domain across all apps.
+    /// Empty domains never match the `NULL` legacy/non-browser scope.
+    pub fn delete_domain(&self, domain: &str) -> Result<usize> {
+        if domain.is_empty() {
+            return Ok(0);
+        }
+        let removed = self
+            .conn
+            .execute("DELETE FROM memories WHERE domain = ?1", params![domain])?;
+        Ok(removed)
+    }
+
+    fn record_aad(app: &str, domain: Option<&str>) -> Vec<u8> {
+        let Some(domain) = domain else {
+            // Version-1 and non-domain rows retain the original AAD exactly.
+            return app.as_bytes().to_vec();
+        };
+        let mut aad = b"compme-memory-domain-v2\0".to_vec();
+        aad.extend_from_slice(&u64::try_from(app.len()).unwrap_or(u64::MAX).to_be_bytes());
+        aad.extend_from_slice(app.as_bytes());
+        aad.extend_from_slice(domain.as_bytes());
+        aad
+    }
+
+    fn validate_app_aad(app: &str) -> Result<()> {
+        // Bundle/application identifiers cannot contain NUL. Reject it at the
+        // public write/read boundary because the version-1 AAD was the raw app
+        // bytes: a crafted app containing the version-2 prefix and binary
+        // length field could otherwise alias a domain-bound AAD after metadata
+        // relabeling. Existing real version-1 identifiers remain valid.
+        if app.contains('\0') {
+            return Err(MemoryError::Db(
+                "refusing memory record: app identifier contains NUL".into(),
+            ));
+        }
+        Ok(())
     }
 
     /// Encrypt `plaintext`, binding `aad` (the app id) so a record cannot be
@@ -562,7 +721,7 @@ mod tests {
         std::env::temp_dir().join(format!("cm-memory-test-{hex}.db"))
     }
 
-    /// The 0.x schema policy in this module's docs, made executable.
+    /// The current schema policy in this module's docs, made executable.
     ///
     /// **If this test fails you are changing the 0.x schema.** The policy is not
     /// "never change it", it is "changing it is a migration": add
@@ -574,7 +733,7 @@ mod tests {
     /// The DDL is compared as SQLite echoes it back (`sqlite_master.sql`), so a
     /// changed column name, type, or constraint fails here, not in the field.
     #[test]
-    fn the_0x_schema_is_exactly_this_ddl_until_a_migration_lands() {
+    fn the_v2_schema_is_exactly_this_ddl_until_a_migration_lands() {
         let store = MemoryStore::open_in_memory(&key(72), StorageMode::AcceptedOnly).unwrap();
         // AUTOINCREMENT makes SQLite create `sqlite_sequence` on the first
         // insert, so write a row first: the snapshot must cover the schema an
@@ -598,9 +757,7 @@ mod tests {
                     "table".to_string(),
                     "memories".to_string(),
                     Some(
-                        "CREATE TABLE memories (\n                 id   INTEGER PRIMARY KEY \
-                         AUTOINCREMENT,\n                 app  TEXT NOT NULL,\n                 \
-                         blob BLOB NOT NULL\n             )"
+                        "CREATE TABLE memories (\n                         id     INTEGER PRIMARY KEY AUTOINCREMENT,\n                         app    TEXT NOT NULL,\n                         blob   BLOB NOT NULL,\n                         domain TEXT\n                     )"
                             .to_string()
                     )
                 ),
@@ -648,6 +805,37 @@ mod tests {
     }
 
     #[test]
+    fn open_existing_never_creates_a_missing_database_or_parent() {
+        let parent = temp_db_path();
+        let path = parent.join("memory.db");
+        assert!(!parent.exists());
+
+        assert!(MemoryStore::open_existing(&path, &key(91), StorageMode::Off).is_err());
+        assert!(
+            !parent.exists(),
+            "deletion-only open must not materialize a stale configured path"
+        );
+    }
+
+    #[test]
+    fn open_existing_off_exposes_deletion_without_collecting() {
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(92), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "existing row").unwrap();
+        }
+
+        let store = MemoryStore::open_existing(&path, &key(92), StorageMode::Off).unwrap();
+        assert_eq!(store.count().unwrap(), 1);
+        store.remember("app", "must not be collected").unwrap();
+        assert_eq!(store.count().unwrap(), 1, "Off remains collection-disabled");
+        store.delete_all().unwrap();
+        assert_eq!(store.count().unwrap(), 0);
+        drop(store);
+        let _ = std::fs::remove_file(path);
+    }
+
+    #[test]
     fn a_pre_marker_database_is_adopted_at_the_current_version() {
         // Every store written before the marker existed reads back as 0, and its
         // schema is the one this build creates. Adopting it is the pinned policy:
@@ -656,7 +844,11 @@ mod tests {
         {
             let store = MemoryStore::open(&path, &key(81), StorageMode::AcceptedOnly).unwrap();
             store.remember("app", "written before the marker").unwrap();
-            // Rewind the header to what a pre-marker build left behind.
+            // Recreate what a pre-marker version-1 build left behind.
+            store
+                .conn
+                .execute("ALTER TABLE memories DROP COLUMN domain", [])
+                .unwrap();
             store
                 .conn
                 .pragma_update(None, "user_version", 0i64)
@@ -678,8 +870,47 @@ mod tests {
         assert_eq!(
             rows,
             vec!["written before the marker".to_string()],
-            "adoption must keep the existing records readable"
+            "migration must keep the existing records readable"
         );
+    }
+
+    #[test]
+    fn version_one_migrates_transactionally_and_preserves_app_aad_rows() {
+        let path = temp_db_path();
+        {
+            let store = MemoryStore::open(&path, &key(83), StorageMode::AcceptedOnly).unwrap();
+            store.remember("app", "version one row").unwrap();
+            store
+                .conn
+                .execute("ALTER TABLE memories DROP COLUMN domain", [])
+                .unwrap();
+            store
+                .conn
+                .pragma_update(None, "user_version", 1i64)
+                .unwrap();
+        }
+
+        let reopened = MemoryStore::open(&path, &key(83), StorageMode::AcceptedOnly).unwrap();
+        let columns: Vec<String> = reopened
+            .conn
+            .prepare("PRAGMA table_info(memories)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        assert_eq!(columns, vec!["id", "app", "blob", "domain"]);
+        assert_eq!(
+            reopened.recent_for_domain("app", None, 4).unwrap(),
+            vec!["version one row"]
+        );
+        let version: i64 = reopened
+            .conn
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, SCHEMA_VERSION);
+        drop(reopened);
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -705,7 +936,7 @@ mod tests {
 
         let message = message.expect("a newer schema version must be refused as a Db error");
         assert!(
-            message.contains("schema version 2"),
+            message.contains("schema version 3"),
             "the error must name the version it refused: {message}"
         );
     }
@@ -754,6 +985,97 @@ mod tests {
                 ("org.zed.Zed".to_string(), 1),
             ]
         );
+    }
+
+    #[test]
+    fn domain_records_are_scoped_counted_and_deleted_across_apps() {
+        let store = MemoryStore::open_in_memory(&key(84), StorageMode::AcceptedOnly).unwrap();
+        store
+            .remember_for_domain("browser.a", Some("example.com"), "a example")
+            .unwrap();
+        store
+            .remember_for_domain("browser.b", Some("example.com"), "b example")
+            .unwrap();
+        store
+            .remember_for_domain("browser.a", Some("other.test"), "a other")
+            .unwrap();
+        store.remember("browser.a", "legacy scope").unwrap();
+
+        assert_eq!(
+            store
+                .recent_for_domain("browser.a", Some("example.com"), 10)
+                .unwrap(),
+            vec!["a example"]
+        );
+        assert_eq!(
+            store.recent_for_domain("browser.a", None, 10).unwrap(),
+            vec!["legacy scope"]
+        );
+        assert_eq!(
+            store.count_by_domain().unwrap(),
+            vec![("example.com".into(), 2), ("other.test".into(), 1)]
+        );
+        assert_eq!(store.delete_domain("example.com").unwrap(), 2);
+        assert!(store
+            .recent_for_domain("browser.a", Some("example.com"), 10)
+            .unwrap()
+            .is_empty());
+        assert_eq!(
+            store
+                .recent_for_domain("browser.a", Some("other.test"), 10)
+                .unwrap(),
+            vec!["a other"]
+        );
+        assert_eq!(store.delete_domain("").unwrap(), 0);
+        assert_eq!(
+            store
+                .recent_for_domain("browser.a", None, 10)
+                .unwrap()
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn domain_metadata_is_bound_into_the_ciphertext_aad() {
+        let store = MemoryStore::open_in_memory(&key(85), StorageMode::AcceptedOnly).unwrap();
+        store
+            .remember_for_domain("browser", Some("example.com"), "bound")
+            .unwrap();
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET domain = 'attacker.test' WHERE domain = 'example.com'",
+                [],
+            )
+            .unwrap();
+
+        assert_eq!(store.count().unwrap(), 1);
+        assert!(store
+            .recent_for_domain("browser", Some("attacker.test"), 10)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn nul_app_identifier_cannot_alias_a_domain_bound_aad() {
+        let store = MemoryStore::open_in_memory(&key(86), StorageMode::AcceptedOnly).unwrap();
+        store
+            .remember_for_domain("browser", Some("example.com"), "bound")
+            .unwrap();
+        let crafted_app =
+            String::from_utf8(MemoryStore::record_aad("browser", Some("example.com"))).unwrap();
+        assert!(crafted_app.contains('\0'));
+        store
+            .conn
+            .execute(
+                "UPDATE memories SET app = ?1, domain = NULL",
+                params![crafted_app],
+            )
+            .unwrap();
+
+        assert!(store.recent(&crafted_app, 10).is_err());
+        assert!(store.remember(&crafted_app, "new text").is_err());
     }
 
     #[test]

@@ -30,7 +30,7 @@ validate_log() {
   # untrusted run a higher-ranked environmental block can win over
   # Blocked(ModelUnavailable) (derive_status ordering), so accept those too;
   # startup/recovery logs above still prove the missing model path was exercised.
-  grep -Eq '^compme: status=Blocked\((ModelUnavailable|Permission|SecureInput)\)' "$log_file" \
+  grep -Eq '^compme: status=Blocked\((ModelUnavailable|Permission|SecureInput|AccessibilityUnavailable)\)' "$log_file" \
     || fail "missing blocked status log (log: $log_file)"
   if grep -Eq '^compme: request gen=' "$log_file"; then
     fail "completion request was submitted without a model (log: $log_file)"
@@ -57,6 +57,7 @@ fi
 [ "$mode" = omit-setup ] || printf '%s\n' 'compme: setup: Model file not ready'
 case "$mode" in
   secure-input) printf '%s\n' 'compme: status=Blocked(SecureInput) enabled=false snoozed=false' ;;
+  accessibility-unavailable) printf '%s\n' 'compme: status=Blocked(AccessibilityUnavailable) enabled=false snoozed=false' ;;
   omit-status) ;;
   *) printf '%s\n' 'compme: status=Blocked(ModelUnavailable) enabled=false snoozed=false' ;;
 esac
@@ -77,6 +78,13 @@ SH
     echo "PASS self-test-missing-model-startup-secure-input-status"
   else
     echo "FAIL self-test-missing-model-startup-secure-input-status" >&2
+    exit 1
+  fi
+
+  if COMPME_FAKE_MODE=accessibility-unavailable COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/no-accessibility.log" "$0" >"$tmp_dir/no-accessibility.out" 2>&1; then
+    echo "PASS self-test-missing-model-startup-accessibility-unavailable"
+  else
+    echo "FAIL self-test-missing-model-startup-accessibility-unavailable" >&2
     exit 1
   fi
 

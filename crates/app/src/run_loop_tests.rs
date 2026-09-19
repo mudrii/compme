@@ -2232,6 +2232,7 @@ fn env_shadow_warnings_name_only_set_switch_keys() {
         "COMPME_TRAILING_SPACE",
         "COMPME_CLIPBOARD_CONTEXT",
         "COMPME_SCREEN_CONTEXT",
+        "COMPME_MEMORY",
         "COMPME_INSTRUCTIONS",
         "COMPME_SENDER_NAME",
         "COMPME_SENDER_EMAIL",
@@ -2264,7 +2265,7 @@ fn env_shadow_warnings_name_only_set_switch_keys() {
             "{key} must warn when env shadows persisted config"
         );
     }
-    assert_eq!(every_warning.len(), 36);
+    assert_eq!(every_warning.len(), 37);
 }
 
 #[test]
@@ -3399,6 +3400,7 @@ fn collection_disabled_skips_both_recording_sinks() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             collection_allowed: false,
         },
     );
@@ -3418,11 +3420,44 @@ fn collection_disabled_skips_both_recording_sinks() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             collection_allowed: true,
         },
     );
     assert_eq!(store.count().expect("count"), 1);
     assert!(!previous.recent("com.apple.TextEdit").is_empty());
+}
+
+#[test]
+fn accepted_browser_text_is_persisted_under_its_resolved_domain() {
+    let previous = PreviousInputs::default();
+    let store = accepted_store();
+    let field = field_with_app("com.apple.Safari");
+
+    record_full_accept(
+        AcceptAction::Full,
+        &field,
+        "accepted on this site",
+        AcceptRecording {
+            context_max_chars: 0,
+            cross_app_previous_inputs: false,
+            previous_inputs: &previous,
+            memory: Some(&store),
+            domain: Some("example.com"),
+            collection_allowed: true,
+        },
+    );
+
+    assert_eq!(
+        store
+            .recent_for_domain(&field.app, Some("example.com"), 10)
+            .unwrap(),
+        vec!["accepted on this site"]
+    );
+    assert!(store
+        .recent_for_domain(&field.app, Some("other.example"), 10)
+        .unwrap()
+        .is_empty());
 }
 
 #[test]
@@ -3450,6 +3485,7 @@ fn failed_accept_records_no_context_memory_or_accept_stats() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -3511,6 +3547,7 @@ fn committed_cleanup_failure_records_context_memory_and_accept_stats_once() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -3561,6 +3598,7 @@ fn replacement_accept_absorbs_the_delete_then_insert_echo() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -3621,6 +3659,7 @@ fn correction_accept_absorbs_exact_range_echo_and_records_stats() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -3683,6 +3722,7 @@ fn selection_replacement_absorbs_exact_range_echo_and_records_stats() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -3752,6 +3792,7 @@ fn correction_accept_absorbs_app_normalized_readback_as_caret_move() {
             cross_app_previous_inputs: false,
             previous_inputs: &previous,
             memory: Some(&store),
+            domain: None,
             prefs: &prefs,
             tracker: &mut tracker,
             usage: &mut usage,
@@ -4801,6 +4842,59 @@ fn memory_storage_mode_defaults_off_and_parses_modes() {
 }
 
 #[test]
+fn live_memory_mode_transition_opens_and_persists_before_committing() {
+    let mut store = None;
+    let mut current = memory::StorageMode::Off;
+    let mut persisted = None;
+
+    assert_eq!(
+        transition_memory_mode(
+            &mut store,
+            &mut current,
+            memory::StorageMode::AcceptedOnly,
+            |mode| {
+                memory::MemoryStore::open_in_memory(&memory::StaticKey([41u8; 32]), mode).ok()
+            },
+            |value| {
+                persisted = Some(value.to_string());
+                Ok(())
+            },
+        ),
+        Ok(true)
+    );
+    assert_eq!(current, memory::StorageMode::AcceptedOnly);
+    assert_eq!(store.as_ref().unwrap().mode(), current);
+    assert_eq!(persisted.as_deref(), Some("accepted"));
+}
+
+#[test]
+fn live_memory_mode_transition_rolls_back_store_when_persistence_fails() {
+    let mut store = Some(
+        memory::MemoryStore::open_in_memory(
+            &memory::StaticKey([42u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .unwrap(),
+    );
+    let mut current = memory::StorageMode::AcceptedOnly;
+
+    let result = transition_memory_mode(
+        &mut store,
+        &mut current,
+        memory::StorageMode::AllMonitored,
+        |_| panic!("an existing store must be reused"),
+        |_| Err("forced persistence failure".into()),
+    );
+
+    assert_eq!(result, Err("forced persistence failure".into()));
+    assert_eq!(current, memory::StorageMode::AcceptedOnly);
+    assert_eq!(
+        store.as_ref().unwrap().mode(),
+        memory::StorageMode::AcceptedOnly
+    );
+}
+
+#[test]
 fn hex_key_parses_64_chars_and_rejects_bad_input() {
     let hex = "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff";
     let key = parse_hex_key(hex).expect("valid 64-hex key");
@@ -4813,21 +4907,23 @@ fn hex_key_parses_64_chars_and_rejects_bad_input() {
 }
 
 #[test]
-fn memory_disabled_without_key_or_path_even_when_mode_set() {
+fn memory_stays_unavailable_without_a_path_or_existing_database() {
     // Mode on but no key/path → no store (fail-closed, logged).
     let cfg = MemoryConfig {
         mode: memory::StorageMode::AcceptedOnly,
         path: None,
         key: None,
     };
-    assert!(open_memory_store(&cfg, || None).is_none());
-    // Off mode is always disabled regardless of key/path.
+    assert!(open_memory_store(&cfg, || None, || None).is_none());
+    // Off mode does not create the configured database.
+    let path = private_memory_test_path("off-missing");
     let cfg_off = MemoryConfig {
         mode: memory::StorageMode::Off,
-        path: Some(PathBuf::from("/tmp/should-not-open.db")),
+        path: Some(path.clone()),
         key: Some([7u8; 32]),
     };
-    assert!(open_memory_store(&cfg_off, || None).is_none());
+    assert!(open_memory_store(&cfg_off, || None, || None).is_none());
+    assert!(!path.exists());
 }
 
 #[test]
@@ -4997,7 +5093,11 @@ fn memory_opens_with_the_keychain_fallback_key_when_env_key_is_missing() {
         key: None,
     };
 
-    let store = open_memory_store(&cfg, || Some([7u8; 32]));
+    let store = open_memory_store(
+        &cfg,
+        || panic!("load-existing used while collection enabled"),
+        || Some([7u8; 32]),
+    );
     assert!(
         store.is_some(),
         "a keychain-provided key must open the store when the env key is absent"
@@ -5018,7 +5118,11 @@ fn an_explicit_env_key_takes_precedence_over_the_keychain() {
         key: Some([7u8; 32]),
     };
 
-    let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"));
+    let store = open_memory_store(
+        &cfg,
+        || panic!("load-existing consulted despite env key"),
+        || panic!("load-or-create consulted despite env key"),
+    );
     assert!(store.is_some());
     drop(store);
     remove_private_memory_test_dir(&path);
@@ -5035,8 +5139,12 @@ fn configured_all_monitored_store_persists_redacted_inserted_deltas_only() {
         "COMPME_MEMORY_KEY" => Some(key.into()),
         _ => None,
     });
-    let store = open_memory_store(&cfg, || panic!("keychain consulted despite env key"))
-        .expect("configured all-monitored store opens");
+    let store = open_memory_store(
+        &cfg,
+        || panic!("load-existing consulted despite env key"),
+        || panic!("load-or-create consulted despite env key"),
+    )
+    .expect("configured all-monitored store opens");
     let field = field_with_app("com.apple.TextEdit");
     let change = typed_change_after_baseline(
         &field,
@@ -5051,8 +5159,12 @@ fn configured_all_monitored_store_persists_redacted_inserted_deltas_only() {
     );
     drop(store);
 
-    let reopened = open_memory_store(&cfg, || panic!("keychain consulted despite env key"))
-        .expect("configured all-monitored store reopens");
+    let reopened = open_memory_store(
+        &cfg,
+        || panic!("load-existing consulted despite env key"),
+        || panic!("load-or-create consulted despite env key"),
+    )
+    .expect("configured all-monitored store reopens");
     assert_eq!(
         reopened.recent("com.apple.TextEdit", 10).unwrap(),
         vec![" typed [redacted-email] "]
@@ -5073,12 +5185,18 @@ fn configured_all_monitored_store_persists_redacted_inserted_deltas_only() {
 
 #[test]
 fn the_keychain_is_not_consulted_when_memory_is_off_or_path_is_missing() {
+    let path = private_memory_test_path("off-does-not-consult");
     let cfg_off = MemoryConfig {
         mode: memory::StorageMode::Off,
-        path: Some(PathBuf::from("/tmp/should-not-open.db")),
+        path: Some(path),
         key: None,
     };
-    assert!(open_memory_store(&cfg_off, || panic!("keychain consulted while Off")).is_none());
+    assert!(open_memory_store(
+        &cfg_off,
+        || panic!("load-existing consulted for absent database"),
+        || panic!("load-or-create consulted while Off"),
+    )
+    .is_none());
     // No path → no store to encrypt; creating a keychain key would be a
     // side effect with no purpose.
     let cfg_no_path = MemoryConfig {
@@ -5086,9 +5204,110 @@ fn the_keychain_is_not_consulted_when_memory_is_off_or_path_is_missing() {
         path: None,
         key: None,
     };
-    assert!(
-        open_memory_store(&cfg_no_path, || panic!("keychain consulted without a path")).is_none()
+    assert!(open_memory_store(
+        &cfg_no_path,
+        || panic!("load-existing consulted without a path"),
+        || panic!("load-or-create consulted without a path"),
+    )
+    .is_none());
+}
+
+#[cfg(unix)]
+#[test]
+fn memory_off_rejects_a_database_symlink_before_loading_a_key() {
+    use std::os::unix::fs::symlink;
+
+    let path = private_memory_test_path("off-symlink");
+    let parent = path.parent().unwrap();
+    std::fs::create_dir_all(parent).unwrap();
+    let target = parent.join("target.db");
+    std::fs::write(&target, b"not consulted").unwrap();
+    symlink(&target, &path).unwrap();
+    let cfg = MemoryConfig {
+        mode: memory::StorageMode::Off,
+        path: Some(path.clone()),
+        key: None,
+    };
+
+    assert!(open_memory_store(
+        &cfg,
+        || panic!("invalid database path must be rejected before key lookup"),
+        || panic!("disabled mode must never enter the create-key path"),
+    )
+    .is_none());
+    remove_private_memory_test_dir(&path);
+}
+
+#[test]
+fn memory_off_opens_an_existing_store_without_using_the_create_key_path() {
+    let path = private_memory_test_path("off-existing");
+    {
+        let store = memory::MemoryStore::open(
+            &path,
+            &memory::StaticKey([17u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .unwrap();
+        store.remember("com.a", "persisted").unwrap();
+    }
+    let cfg = MemoryConfig {
+        mode: memory::StorageMode::Off,
+        path: Some(path.clone()),
+        key: None,
+    };
+
+    let store = open_memory_store(
+        &cfg,
+        || Some([17u8; 32]),
+        || panic!("disabled mode must never enter the create-key path"),
+    )
+    .expect("existing store remains available for deletion");
+    assert_eq!(store.count().unwrap(), 1);
+    store.remember("com.a", "must not be collected").unwrap();
+    assert_eq!(store.count().unwrap(), 1, "Off still blocks collection");
+    store.delete_all().unwrap();
+    assert_eq!(store.count().unwrap(), 0);
+    drop(store);
+    remove_private_memory_test_dir(&path);
+}
+
+#[test]
+fn memory_off_never_creates_a_missing_key_for_an_existing_database() {
+    let path = private_memory_test_path("off-missing-key");
+    {
+        let store = memory::MemoryStore::open(
+            &path,
+            &memory::StaticKey([18u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .unwrap();
+        store.remember("com.a", "preserved").unwrap();
+    }
+    let cfg = MemoryConfig {
+        mode: memory::StorageMode::Off,
+        path: Some(path.clone()),
+        key: None,
+    };
+
+    assert!(open_memory_store(
+        &cfg,
+        || None,
+        || panic!("missing existing key must not authorize creating one"),
+    )
+    .is_none());
+    let reopened = memory::MemoryStore::open_existing(
+        &path,
+        &memory::StaticKey([18u8; 32]),
+        memory::StorageMode::Off,
+    )
+    .unwrap();
+    assert_eq!(
+        reopened.count().unwrap(),
+        1,
+        "failed cleanup open preserves data"
     );
+    drop(reopened);
+    remove_private_memory_test_dir(&path);
 }
 
 #[test]
@@ -5482,18 +5701,27 @@ fn buffered_monitored_text_drops_orphaned_prior_generation_buffer() {
     gen2.generation = 2; // same app/pid/element_id, replaced element
 
     // Mid-word collection on gen1 leaves a Collecting buffer (no boundary).
-    assert_eq!(buffered_monitored_text(&mut buffers, &gen1, "ab"), None);
+    assert_eq!(
+        buffered_monitored_text(&mut buffers, &gen1, Some("com.apple.TextEdit"), None, "ab"),
+        None
+    );
     assert_eq!(buffers.len(), 1);
 
     // First keystroke on gen2 evicts the orphaned gen1 buffer.
-    assert_eq!(buffered_monitored_text(&mut buffers, &gen2, "cd"), None);
+    assert_eq!(
+        buffered_monitored_text(&mut buffers, &gen2, Some("com.apple.TextEdit"), None, "cd"),
+        None
+    );
     assert_eq!(buffers.len(), 1, "stale gen1 buffer pruned: {buffers:?}");
     assert!(buffers.contains_key(&gen2));
     assert!(!buffers.contains_key(&gen1));
 
     // An UNRELATED field is left untouched by the prune.
     let other = field_with_app("com.apple.Notes");
-    assert_eq!(buffered_monitored_text(&mut buffers, &other, "ef"), None);
+    assert_eq!(
+        buffered_monitored_text(&mut buffers, &other, Some("com.apple.Notes"), None, "ef"),
+        None
+    );
     assert_eq!(buffers.len(), 2);
     assert!(buffers.contains_key(&gen2));
     assert!(buffers.contains_key(&other));
@@ -6504,6 +6732,7 @@ fn full_accept_records_to_both_sinks_under_a_resolved_bundle_id() {
             cross_app_previous_inputs: false,
             previous_inputs: &prev,
             memory: Some(&store),
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -6524,6 +6753,7 @@ fn full_accept_collects_cross_app_history_only_while_the_opt_in_is_on() {
             cross_app_previous_inputs: false,
             previous_inputs: &prev,
             memory: None,
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -6538,6 +6768,7 @@ fn full_accept_collects_cross_app_history_only_while_the_opt_in_is_on() {
             cross_app_previous_inputs: true,
             previous_inputs: &prev,
             memory: None,
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -6564,6 +6795,7 @@ fn word_accept_records_nothing() {
             cross_app_previous_inputs: false,
             previous_inputs: &prev,
             memory: Some(&store),
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -6584,6 +6816,7 @@ fn full_accept_under_a_volatile_pid_key_records_nothing() {
             cross_app_previous_inputs: false,
             previous_inputs: &prev,
             memory: Some(&store),
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -6606,6 +6839,7 @@ fn full_accept_with_context_disabled_still_records_to_memory() {
             cross_app_previous_inputs: false,
             previous_inputs: &prev,
             memory: Some(&store),
+            domain: None,
             collection_allowed: true,
         },
     );
@@ -7041,10 +7275,10 @@ fn monitored_overflow_drops_until_next_boundary() {
         };
         queue_and_flush_monitored_with_buffers(&change, &mut buffers, &store, &prefs, true, false);
     }
-    assert_eq!(
+    assert!(matches!(
         buffers.get(&field),
-        Some(&MonitoredBuffer::DroppedUntilBoundary)
-    );
+        Some(MonitoredBuffer::DroppedUntilBoundary { .. })
+    ));
 
     value.push(' ');
     let change = match tracker.observe_with_inserted_text(
@@ -7148,7 +7382,11 @@ fn secure_policy_clears_buffered_monitored_text_without_boundary() {
     let field = field_with_app("com.apple.TextEdit");
     let mut buffers = HashMap::from([(
         field.clone(),
-        MonitoredBuffer::Collecting("partial secret".into()),
+        MonitoredBuffer::Collecting {
+            text: "partial secret".into(),
+            app_key: Some("com.apple.TextEdit".into()),
+            domain: None,
+        },
     )]);
     let mut pending = Vec::new();
 
@@ -7364,7 +7602,11 @@ fn monitored_flush_rechecks_secure_input_for_buffered_work() {
     let mut pending = Vec::new();
     let mut buffers = HashMap::from([(
         field.clone(),
-        MonitoredBuffer::Collecting("partial secret".into()),
+        MonitoredBuffer::Collecting {
+            text: "partial secret".into(),
+            app_key: Some("com.apple.TextEdit".into()),
+            domain: None,
+        },
     )]);
     let mut secure = false;
     let mut last_secure_poll_ms = None;
@@ -7470,6 +7712,62 @@ fn monitored_buffers_are_isolated_per_same_app_field() {
 }
 
 #[test]
+fn browser_navigation_never_carries_a_monitored_buffer_into_the_new_domain() {
+    let store = memory::MemoryStore::open_in_memory(
+        &memory::StaticKey([31u8; 32]),
+        memory::StorageMode::AllMonitored,
+    )
+    .expect("open in-memory store");
+    let field = field_with_app("com.google.Chrome");
+    let prefs = Prefs::default();
+    let mut pending = Vec::new();
+    let mut buffers = HashMap::new();
+
+    let old_page_partial = typed_change_after_baseline(&field, "", "old-page-partial");
+    enqueue_monitored_change(
+        &mut pending,
+        &old_page_partial,
+        Some(field.app.clone()),
+        Some("old.example".into()),
+    );
+    flush_monitored_changes(
+        &mut pending,
+        &mut buffers,
+        Some(&store),
+        &prefs,
+        monitored_policy(true, false, true, 1_000),
+    );
+    assert!(buffers.contains_key(&field));
+
+    let new_page_boundary = typed_change_after_baseline(&field, "", "new page ");
+    enqueue_monitored_change(
+        &mut pending,
+        &new_page_boundary,
+        Some(field.app.clone()),
+        Some("new.example".into()),
+    );
+    flush_monitored_changes(
+        &mut pending,
+        &mut buffers,
+        Some(&store),
+        &prefs,
+        monitored_policy(true, false, true, 1_001),
+    );
+
+    assert!(buffers.is_empty());
+    assert!(store
+        .recent_for_domain(&field.app, Some("old.example"), 10)
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .recent_for_domain(&field.app, Some("new.example"), 10)
+            .unwrap(),
+        vec!["new page "]
+    );
+}
+
+#[test]
 fn monitored_write_failure_drains_boundary_without_replay() {
     let field = field_with_app("com.apple.TextEdit");
     let prefs = Prefs::default();
@@ -7489,8 +7787,8 @@ fn monitored_write_failure_drains_boundary_without_replay() {
         &mut buffers,
         &prefs,
         monitored_policy(true, false, true, 1_001),
-        |field, text| {
-            attempts.push((field.app.clone(), text.to_string()));
+        |app, _domain, text| {
+            attempts.push((app.to_string(), text.to_string()));
             Err(memory::MemoryError::Db("forced failure".into()))
         },
     );
@@ -7509,8 +7807,8 @@ fn monitored_write_failure_drains_boundary_without_replay() {
         &mut buffers,
         &prefs,
         monitored_policy(true, false, true, 1_002),
-        |field, text| {
-            attempts.push((field.app.clone(), text.to_string()));
+        |app, _domain, text| {
+            attempts.push((app.to_string(), text.to_string()));
             Ok(())
         },
     );
@@ -10576,9 +10874,11 @@ fn recording_factories(
         },
         make_tray: {
             let log = Arc::clone(log);
-            Box::new(move |flags| {
+            Box::new(move |_flags| {
                 log_push(&log, "tray");
-                crate::shell::stub::make_tray(flags)
+                Err(platform::PlatformError::UnsupportedField {
+                    reason: "recording startup fixture has no tray".into(),
+                })
             })
         },
     }
@@ -11161,9 +11461,14 @@ fn phase_pending_suggestion() -> SuggestionState {
 
 fn phase_monitored_with_buffer(field: &FieldHandle) -> MonitoredInput {
     let mut monitored = MonitoredInput::default();
-    monitored
-        .monitored_buffers
-        .insert(field.clone(), MonitoredBuffer::Collecting("partial".into()));
+    monitored.monitored_buffers.insert(
+        field.clone(),
+        MonitoredBuffer::Collecting {
+            text: "partial".into(),
+            app_key: Some(field.app.clone()),
+            domain: None,
+        },
+    );
     monitored
 }
 
@@ -11987,6 +12292,43 @@ fn hydrate_previous_inputs_never_displaces_this_session_history() {
         |_, _| panic!("populated ring must not be re-read")
     ));
     assert_eq!(previous.recent("com.a"), vec!["typed this session"]);
+}
+
+#[test]
+fn off_cleanup_store_never_hydrates_persisted_prompt_context() {
+    let path = private_memory_test_path("off-no-hydrate");
+    {
+        let store = memory::MemoryStore::open(
+            &path,
+            &memory::StaticKey([19u8; 32]),
+            memory::StorageMode::AcceptedOnly,
+        )
+        .unwrap();
+        store.remember("com.a", "persisted context").unwrap();
+    }
+    let memory = Some(
+        memory::MemoryStore::open_existing(
+            &path,
+            &memory::StaticKey([19u8; 32]),
+            memory::StorageMode::Off,
+        )
+        .unwrap(),
+    );
+    let previous = PreviousInputs::default();
+
+    assert!(!hydrate_focus_previous_inputs(
+        &field_with_app("com.a"),
+        &memory,
+        400,
+        &Prefs::default(),
+        &previous,
+    ));
+    assert!(previous.recent("com.a").is_empty());
+    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 1);
+    memory.as_ref().unwrap().delete_all().unwrap();
+    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 0);
+    drop(memory);
+    remove_private_memory_test_dir(&path);
 }
 
 // apps_row_policy_edit_phase

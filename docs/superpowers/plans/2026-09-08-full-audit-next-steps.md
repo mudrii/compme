@@ -12,9 +12,13 @@ and item 2d (G2) the same day (`b26caca` + `c93b508`); items 4a
 lane (runs 34432782232, 34439157981, 34455569795, and 34488750297, macOS
 included; platform_macos 357 tests, app 606) — item 2 is closed except for
 the Chromium-family live recording attached to the caret-marker gates.
-Still open: item 1's live `ln1` record (owner's niri host), 6 (G6
-verification of the red `9b91b35` run first, then G7/G20), 7, 8, the rest
-of 9, and 10 · item 5 closed 2026-09-10/11 (`3e061ba`/`6ed8289`
+Current status reviewed 2026-09-19: item 1's native `ln1` evidence remains
+open; item 6 has only G7 remaining (Qfd §22, physical baseline required).
+G6/G21 and G20 are closed. Item 7's host probes and message pump shipped;
+item 8's read-only code shipped, with native read evidence and the new
+read-path repair tracked in ROADMAP. Item 9's remaining work is G19 and
+upstream retirement of the vendor patch; item 10 retains the live-gate and
+governance decisions. Item 5 closed 2026-09-10/11 (`3e061ba`/`6ed8289`
 Wayland capability, `bf5893b` D-Bus timeouts, `02eaaaf` overlay collapse;
 the 37-test Xvfb lane runs on the dev host) ·
 **Tree audited:** `2d18c34` (v0.1.6 + same-day post-release commits); seven
@@ -248,16 +252,18 @@ Replaces the ROADMAP "typed commands + immutable snapshots" design for now.
   `remember_dispatched_poll` refreshing the memo from the `ObserverEvent`
   arm so an X → Y → X round trip inside one tick cannot strand a consumer.
   Three tests; count pins 2158 → 2160.
-- G7: marshal Carbon register/unregister to the main thread via
-  `DispatchQueue::main().exec_sync`, resource ownership stays on the worker.
-- G20: annotate the 80 bare `unsafe` blocks in the same pass (mechanical;
-  do it while the code is open).
+- G7: use the design of record in **Qfd §22**: register inline on main or
+  asynchronously from another thread, with generation-guarded unregister.
+  Never synchronously dispatch worker → main: main already waits on the
+  worker during arming, so that creates a deadlock. Record the physical-key
+  baseline before changing the production path, then repeat it afterward.
+- G20: **closed 2026-09-16**; production unsafe-block annotations are complete.
 - Live evidence: `always-on-hotkeys-physical-look` and the caret-marker
   gates, recorded in the item-0 evidence table.
 
 ## Item 7 — Windows Phase 1, slice 1.1 (M, hosted runner only)
 
-Smallest slice unit-testable on `windows-latest` without a desktop:
+**Host-service slice implemented 2026-09-16.** Its original scope was:
 `RtlGetVersion` for `environment()` (drops `version: "unknown"`),
 `GlobalMemoryStatusEx` for `physical_memory_bytes` (fixes the hard-coded 0 at
 `platform_windows/src/lib.rs:142-144`, the same "every model rated Exceeds"
@@ -269,25 +275,26 @@ series.
 
 ## Item 8 — Windows UIA read-only slice (L)
 
-`IUIAutomation` on an STA thread: `GetFocusedElement` + `TextPattern` feeding
-`capabilities`/`read_context`; best-effort notepad smoke per the
-cross-platform plan §1.7. Insertion, the keyboard hook, and the layered
-overlay follow only after this reads real fields.
+`IUIAutomation` on a dedicated window-less **MTA** thread, per Qfd §23:
+`GetFocusedElement` + `TextPattern` feeding `capabilities`/`read_context`.
+The read-only implementation landed 2026-09-17; the 2026-09-18 review found
+range-offset, pattern-availability and lifecycle defects, now tracked in
+ROADMAP. A controlled native desktop smoke must assert exact context and
+selection; hosted runners without interactive focus are not that proof.
+Insertion, the keyboard hook, and the layered overlay follow verified reads.
 
 ## Item 9 — Pre-emptive hardening (S/M)
 
-- G14: `&exp=<unix>` inside the signed deep-link prefix, rejected past
-  expiry, with a test; do it while every command is still reversible.
-- G15: decide between a longer forced-exit deadline while the first decode
-  is in flight and documenting exit code 70 during warm-up as expected in
-  `docs/ACCEPTANCE.md`.
+- G14: **implemented** — signed links require a signed `exp=<unix>` deadline.
+- G15: **decided** — ACCEPTANCE documents warm-up exit code 70 and its
+  zeroization trade-off; the deadline was not lengthened.
 - G19: `persist-credentials: false` on `release.yml:25,383,635` (`:750`
   needs push); extend the checker allowlist form to `release.yml`; add doc
   tests and `cargo audit` to the Windows lane.
-- Vendor drift checker in `tools/release/` (`diff -r` against the registry
-  tarball, allowlisting the three patched files); open the upstream
-  `llama-cpp-2` PR so `[patch.crates-io]` can be retired; `PRAGMA
-  user_version` in `memory` before its first schema change. ✅ The loopback
+- Vendor drift checking is **implemented** in `check-vendor-drift.sh`.
+  Upstream support and eventual removal of `[patch.crates-io]` remain pending.
+  The memory schema's `PRAGMA user_version` marker is **implemented**;
+  future changes require a transactional migration. ✅ The loopback
   redirect tests in `model_fetch` (https→http refusal, same-host 302 keeping
   `Range`, redirect cap) landed with item 3 in `5bf36fc`.
 
@@ -299,7 +306,8 @@ overlay follow only after this reads real fields.
   v0.1.6 did the other.
 - **Governance** (ROADMAP item 10): unchanged; the read-only checker's three
   pending mismatches are the inventory.
-- **Release-notes policy** (item 0).
+- **Release-notes policy settled:** generated GitHub notes are the baseline;
+  optional hand-written notes supplement them (RELEASING).
 
 ## Deliberately not in this plan
 

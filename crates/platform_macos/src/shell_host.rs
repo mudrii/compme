@@ -158,6 +158,10 @@ impl ShellHost for MacosShellHost {
     fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
         crate::keychain::KeychainKeyStore::new().load_or_create_memory_key()
     }
+
+    fn load_existing_memory_key(&self) -> Result<Option<[u8; 32]>, PlatformError> {
+        crate::keychain::KeychainKeyStore::new().load_existing_memory_key()
+    }
 }
 
 impl TrayHandle for crate::MacosTray {

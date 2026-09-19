@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Compme
+Comment=Local inline text completion
+Exec=compme
+Icon=com.compme.app
+Terminal=false
+Categories=Utility;Accessibility;
+Keywords=completion;typing;local;

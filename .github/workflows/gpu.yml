@@ -1,0 +1,35 @@
+name: Optional GPU builds
+
+on:
+  schedule:
+    - cron: "43 4 * * 2"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: optional-gpu-builds
+  cancel-in-progress: false
+
+jobs:
+  vulkan-linux:
+    name: Linux Vulkan SDK build
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30 # stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          key: optional-vulkan
+      - name: Install Vulkan SDK build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y cmake libclang-dev libvulkan-dev glslc
+      - name: Check feature isolation
+        run: tools/release/check-model-client-features.sh
+      - name: Build with Vulkan
+        run: cargo build --locked -p app --features vulkan

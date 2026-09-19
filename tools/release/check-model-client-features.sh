@@ -40,13 +40,14 @@ tree_for() {
 check_non_macos_tree() {
   label="$1"
   tree="$2"
-  # Static CPU-only llama off macOS until the real adapters land (ROADMAP
-  # 1.1): "vulkan" needs the Vulkan SDK at build time (CI runners lack it)
+  # Static CPU-only llama is the off-mac default. Opt-in "vulkan" and "cuda"
+  # require their respective SDKs and are checked separately below;
   # and "dynamic-backends" hard-links shared libs in its build script with a
   # racy !exists()->hard_link().unwrap() that panics AlreadyExists under CI.
   assert_contains "$label" "$tree" 'llama-cpp-2 v' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "dynamic-backends"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "vulkan"' || return 1
+  assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "cuda"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "metal"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "default"' || return 1
   assert_not_contains "$label" "$tree" 'llama-cpp-2 feature "openmp"' || return 1
@@ -82,6 +83,7 @@ run_self_test() {
   macos_tree='llama-cpp-2 feature "metal"'
   non_macos_tree='llama-cpp-2 v0.1.146'
   non_macos_with_vulkan="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "vulkan"')"
+  non_macos_with_cuda="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "cuda"')"
   non_macos_with_dynamic_backends="$(printf '%s\n%s\n' "$non_macos_tree" 'llama-cpp-2 feature "dynamic-backends"')"
 
   check_macos_tree "self-test macOS" "$macos_tree" >/dev/null
@@ -123,6 +125,10 @@ run_self_test() {
   fi
   if check_non_macos_tree "self-test non-macOS forbidden vulkan" "$non_macos_with_vulkan" >/dev/null 2>&1; then
     echo "model_client feature self-test failed: non-macOS Vulkan feature passed" >&2
+    return 1
+  fi
+  if check_non_macos_tree "self-test non-macOS forbidden cuda" "$non_macos_with_cuda" >/dev/null 2>&1; then
+    echo "model_client feature self-test failed: non-macOS CUDA default passed" >&2
     return 1
   fi
   if check_non_macos_tree "self-test non-macOS forbidden dynamic-backends" "$non_macos_with_dynamic_backends" >/dev/null 2>&1; then
@@ -191,3 +197,20 @@ fi
 
 check_non_macos_target "linux x86_64" "x86_64-unknown-linux-gnu"
 check_non_macos_target "windows x86_64" "x86_64-pc-windows-msvc"
+
+# Opt-in GPU builds must forward exactly the requested static backend from
+# the product feature. This resolves dependency metadata; SDK compilation
+# and real-device performance are separate gates.
+for target in x86_64-unknown-linux-gnu x86_64-pc-windows-msvc; do
+  for backend in vulkan cuda; do
+    tree="$(cargo tree --locked -p app --target "$target" --features "$backend" -e features -i llama-cpp-2)"
+    assert_contains "$target opt-in $backend" "$tree" "llama-cpp-2 feature \"$backend\""
+    assert_not_contains "$target opt-in $backend" "$tree" 'llama-cpp-2 feature "dynamic-backends"'
+    assert_not_contains "$target opt-in $backend" "$tree" 'llama-cpp-2 feature "metal"'
+    if [ "$backend" = vulkan ]; then
+      assert_not_contains "$target opt-in $backend" "$tree" 'llama-cpp-2 feature "cuda"'
+    else
+      assert_not_contains "$target opt-in $backend" "$tree" 'llama-cpp-2 feature "vulkan"'
+    fi
+  done
+done

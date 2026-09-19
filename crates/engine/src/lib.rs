@@ -881,6 +881,7 @@ mod tests {
         fail_popup: bool,
         fail_range_rect: bool,
         fail_insert: bool,
+        insert_error: Option<PlatformError>,
         inserts: Arc<Mutex<Vec<(FieldHandle, String, InsertStrategy)>>>,
         replacing_inserts: Arc<Mutex<Vec<ReplacingInsert>>>,
         range_rect: Option<ScreenRect>,
@@ -904,6 +905,7 @@ mod tests {
                 fail_popup: false,
                 fail_range_rect: false,
                 fail_insert: false,
+                insert_error: None,
                 inserts: Arc::new(Mutex::new(Vec::new())),
                 replacing_inserts: Arc::new(Mutex::new(Vec::new())),
                 range_rect: Some(ScreenRect {
@@ -986,6 +988,9 @@ mod tests {
             text: &str,
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
+            if let Some(err) = &self.insert_error {
+                return Err(err.clone());
+            }
             if self.fail_insert {
                 return Err(PlatformError::StaleField);
             }
@@ -1006,6 +1011,9 @@ mod tests {
             replace_left: usize,
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
+            if let Some(err) = &self.insert_error {
+                return Err(err.clone());
+            }
             if self.fail_insert {
                 return Err(PlatformError::StaleField);
             }
@@ -1029,6 +1037,9 @@ mod tests {
             range: CorrectionRange,
             strategy: InsertStrategy,
         ) -> Result<Inserted, PlatformError> {
+            if let Some(err) = &self.insert_error {
+                return Err(err.clone());
+            }
             if self.fail_insert {
                 return Err(PlatformError::StaleField);
             }
@@ -2730,6 +2741,61 @@ mod tests {
                 error: PlatformError::StaleField,
                 committed: false,
             })
+        );
+    }
+
+    #[test]
+    fn unknown_mutation_outcome_disarms_without_retry_or_accept_commit() {
+        let mut adapter = FakeAdapter::new();
+        adapter.insert_error = Some(PlatformError::MutationOutcomeUnknown {
+            reason: "write dispatched; provider reply missing".into(),
+        });
+        let inserts = Arc::clone(&adapter.inserts);
+        let overlay = FakeOverlay::default();
+        let mut engine = Engine::new(adapter, overlay.clone(), 200, 4, 32);
+        let visible: Arc<Mutex<Vec<bool>>> = Arc::new(Mutex::new(Vec::new()));
+        let actions: Arc<Mutex<Vec<Option<AcceptAction>>>> = Arc::new(Mutex::new(Vec::new()));
+        let v = Arc::clone(&visible);
+        let a = Arc::clone(&actions);
+        engine.set_accept_subscription(AcceptSubscription::new(
+            Subscription::new(0),
+            move |shown| {
+                v.lock().unwrap().push(shown);
+                Ok(())
+            },
+            |_| Ok(()),
+            move |action| {
+                a.lock().unwrap().push(action);
+                Ok(())
+            },
+        ));
+
+        engine.on_focus(field()).unwrap();
+        engine.on_text_changed(typed("x", 1, 0)).unwrap();
+        let requests = engine.on_tick(500).unwrap();
+        engine.on_completion(&requests[0], "hello".into()).unwrap();
+        overlay.calls.lock().unwrap().clear();
+        visible.lock().unwrap().clear();
+        actions.lock().unwrap().clear();
+
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Err(AcceptError {
+                error: PlatformError::MutationOutcomeUnknown {
+                    reason: "write dispatched; provider reply missing".into(),
+                },
+                committed: false,
+            })
+        );
+        assert_eq!(*overlay.calls.lock().unwrap(), vec![OverlayCall::Hide]);
+        assert_eq!(*visible.lock().unwrap(), vec![false]);
+        assert_eq!(*actions.lock().unwrap(), vec![None]);
+        assert!(!engine.has_visible_suggestion());
+        assert!(inserts.lock().unwrap().is_empty());
+        assert_eq!(
+            engine.on_accept(AcceptAction::Full),
+            Ok(Vec::new()),
+            "the dismissed suggestion must not automatically retry an uncertain mutation"
         );
     }
 

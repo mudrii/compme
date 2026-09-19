@@ -294,10 +294,14 @@ pub enum OperatingSystem {
 }
 
 /// Per-call adapter failure. All variants are non-fatal and per-operation: the
-/// engine treats any error as "no suggestion this turn", so adapters must leave
-/// the field unmodified when returning one. `StaleField` means the
-/// [`FieldHandle`] is dead — retrying with the same handle will keep failing;
-/// callers must wait for a fresh focus event instead.
+/// engine treats any error as "no suggestion this turn". Except for
+/// [`PlatformError::MutationOutcomeUnknown`], adapters must leave the field
+/// unmodified when returning one. `MutationOutcomeUnknown` is the explicit
+/// escape hatch for a native mutation that was dispatched but whose reply was
+/// lost or missed its deadline: callers must hide and disarm the suggestion,
+/// must not record an acceptance, and must not retry the mutation. `StaleField`
+/// means the [`FieldHandle`] is dead — retrying with the same handle will keep
+/// failing; callers must wait for a fresh focus event instead.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum PlatformError {
     PermissionMissing {
@@ -319,6 +323,14 @@ pub enum PlatformError {
         reason: String,
     },
     Timeout,
+    /// A mutation crossed the platform boundary, but its committed/refused
+    /// outcome cannot be proven. Unlike every other error variant, the field may
+    /// have changed. Callers must reconcile their UI without treating the text as
+    /// accepted and must not retry; adapters should quarantine later mutations
+    /// until they can establish a fresh native session.
+    MutationOutcomeUnknown {
+        reason: String,
+    },
     StaleField,
     AppExited {
         app: AppId,
@@ -344,6 +356,9 @@ impl std::fmt::Display for PlatformError {
                 write!(f, "unsupported field: {reason}")
             }
             PlatformError::Timeout => write!(f, "platform operation timed out"),
+            PlatformError::MutationOutcomeUnknown { reason } => {
+                write!(f, "mutation outcome unknown: {reason}")
+            }
             PlatformError::StaleField => write!(f, "field is stale"),
             PlatformError::AppExited { app } => write!(f, "app exited: {app}"),
         }
@@ -505,8 +520,11 @@ pub struct Inserted {
 /// - **Blocking.** Methods are synchronous but must not block unboundedly —
 ///   return [`PlatformError::Timeout`] instead of hanging the run loop.
 /// - **Error semantics.** Every error is per-call and recoverable (the engine
-///   skips the suggestion and moves on); a failed mutation must leave the
-///   field unmodified — no partial inserts.
+///   skips the suggestion and moves on). A failed mutation must leave the field
+///   unmodified — no partial inserts — unless it returns
+///   [`PlatformError::MutationOutcomeUnknown`] after a native write was already
+///   dispatched. That variant means the field may have changed and forbids an
+///   automatic retry.
 pub trait PlatformAdapter: Send + Sync {
     /// Static host description. Must be cheap and infallible.
     fn environment(&self) -> Environment;
@@ -1278,6 +1296,13 @@ mod tests {
         assert_eq!(
             PlatformError::Timeout.to_string(),
             "platform operation timed out"
+        );
+        assert_eq!(
+            PlatformError::MutationOutcomeUnknown {
+                reason: "provider reply lost".to_string(),
+            }
+            .to_string(),
+            "mutation outcome unknown: provider reply lost"
         );
         assert_eq!(PlatformError::StaleField.to_string(), "field is stale");
     }

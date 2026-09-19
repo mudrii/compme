@@ -18,7 +18,7 @@ use crate::shell::SettingsFlags;
 ///
 /// Deliberately conservative: a key set to `""` still warns because it still
 /// occupies the environment layer.
-pub(crate) const SWITCH_KEYS: [&str; 36] = [
+pub(crate) const SWITCH_KEYS: [&str; 37] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
@@ -29,6 +29,7 @@ pub(crate) const SWITCH_KEYS: [&str; 36] = [
     "COMPME_CROSS_APP_PREVIOUS_INPUTS",
     "COMPME_CLIPBOARD_CONTEXT",
     "COMPME_SCREEN_CONTEXT",
+    "COMPME_MEMORY",
     "COMPME_INSTRUCTIONS",
     "COMPME_SENDER_NAME",
     "COMPME_SENDER_EMAIL",

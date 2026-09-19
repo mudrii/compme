@@ -47,28 +47,37 @@ impl KeychainKeyStore {
         }
     }
 
+    /// Return the stored 32-byte key without ever creating one.
+    ///
+    /// `Ok(None)` is a genuine first-use state. Keeping it distinct from an
+    /// error lets disabled-mode cleanup inspect a leftover database without
+    /// minting a Keychain item (or triggering a first-use access prompt).
+    pub fn load_existing_memory_key(&self) -> Result<Option<[u8; 32]>, PlatformError> {
+        let Some(mut secret) = (self.read_secret)(&self.service, &self.account)? else {
+            return Ok(None);
+        };
+        // Copy into the fixed array, then scrub the raw keychain bytes so the
+        // AES key does not linger in the heap Vec after this returns (matches
+        // the `memory` crate's key zeroization).
+        let result =
+            <[u8; 32]>::try_from(secret.as_slice()).map_err(|_| PlatformError::CannotComplete {
+                reason: format!(
+                    "keychain entry {}/{} holds {} bytes, expected 32 — refusing to \
+                     overwrite a foreign or corrupt secret",
+                    self.service,
+                    self.account,
+                    secret.len()
+                ),
+            });
+        secret.zeroize();
+        result.map(Some)
+    }
+
     /// Returns the stored 32-byte key, or generates + persists one on first
     /// use. See the module docs for the fail-closed contract.
     pub fn load_or_create_memory_key(&self) -> Result<[u8; 32], PlatformError> {
-        match (self.read_secret)(&self.service, &self.account)? {
-            Some(mut secret) => {
-                // Copy into the fixed array, then scrub the raw keychain bytes
-                // so the AES key does not linger in the heap Vec after this
-                // returns (matches the `memory` crate's key zeroization).
-                let result = <[u8; 32]>::try_from(secret.as_slice()).map_err(|_| {
-                    PlatformError::CannotComplete {
-                        reason: format!(
-                            "keychain entry {}/{} holds {} bytes, expected 32 — refusing to \
-                                 overwrite a foreign or corrupt secret",
-                            self.service,
-                            self.account,
-                            secret.len()
-                        ),
-                    }
-                });
-                secret.zeroize();
-                result
-            }
+        match self.load_existing_memory_key()? {
+            Some(key) => Ok(key),
             None => {
                 let key = (self.generate_key)()?;
                 (self.write_secret)(&self.service, &self.account, &key)?;
@@ -247,6 +256,30 @@ mod tests {
         assert!(
             writes.lock().unwrap().is_empty(),
             "an existing key must be returned as-is, never rewritten"
+        );
+    }
+
+    #[test]
+    fn load_existing_absence_never_generates_or_writes() {
+        let touched = Arc::new(Mutex::new(Vec::new()));
+        let touched_in_write = Arc::clone(&touched);
+        let touched_in_generate = Arc::clone(&touched);
+        let store = store_with_hooks(
+            Arc::new(|_, _| Ok(None)),
+            Arc::new(move |_, _, _| {
+                touched_in_write.lock().unwrap().push("write");
+                Ok(())
+            }),
+            Arc::new(move || {
+                touched_in_generate.lock().unwrap().push("generate");
+                Ok([9u8; 32])
+            }),
+        );
+
+        assert_eq!(store.load_existing_memory_key(), Ok(None));
+        assert!(
+            touched.lock().unwrap().is_empty(),
+            "load-existing must have no create-path side effects"
         );
     }
 

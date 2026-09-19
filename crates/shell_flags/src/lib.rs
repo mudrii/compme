@@ -206,6 +206,12 @@ pub struct SettingsFlags {
     pub apps_lines: Arc<Mutex<Vec<String>>>,
     pub apps_policy_bits: Arc<Mutex<Vec<[bool; APP_POLICY_FIELDS]>>>,
     pub apps_delete_row: Arc<Mutex<Option<usize>>>,
+    /// Apps-pane encrypted-memory mode picker: Off, accepted completions, or
+    /// all monitored typing. The run loop owns validation and persistence.
+    pub apps_memory_mode_index: Arc<AtomicUsize>,
+    pub apps_memory_mode_titles: Vec<String>,
+    /// Canonical browser host requested by the Apps-pane domain erase field.
+    pub apps_delete_domain: Arc<Mutex<Option<String>>>,
     /// The Apps pane's "Erase all recorded inputs" button (design spec §6/§16
     /// "disable and erase"). Separate from `apps_delete_row` because it is not
     /// row-scoped: the per-row control can only reach the `APPS_ROWS` apps

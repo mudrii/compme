@@ -204,11 +204,11 @@ from `tools/spike/`.
 | `platform_macos` | macOS implementation of the adapter and overlay presenter using Accessibility, CoreGraphics, AppKit/Carbon, and pasteboard APIs; ghost overlay, tray, key recorder, and settings window. |
 | `platform_windows` | Windows adapter scaffold that fails closed for platform I/O/subscription methods until the real UIA adapter lands, plus real host services already shipped: owner-only DACL file hardening, a console Ctrl-C handler, and native `ShellExecuteW` URL opening. |
 | `shell_flags` | Product-shaped shell state vocabulary shared across platforms — settings/tray flags, shortcut bindings, the persisted key-chord grammar, and the confirm-prompt payload. Pure data and sync types, std-only. |
-| `platform_linux` | Linux adapter over AT-SPI2 (D-Bus): field read/write and focus/caret event subscriptions are real with an accessibility session, and the X11 accept tap and ghost/correction overlay are real too; the tray and Wayland placement stay fail-closed. Host surfaces needing no desktop session are real — distro + kernel version from `/etc/os-release` and `/proc/sys/kernel/osrelease`, physical memory from `/proc/meminfo`, launch-at-login as an XDG autostart entry, and `xdg-open` URL opening that reports an immediate launcher failure and reaps a longer-running child without blocking the host. The session-dependent shell services are implemented and fail closed when their service is absent: the memory key comes from the Secret Service over D-Bus (never libsecret, so a missing library cannot stop startup; a locked keyring is reported, not worked around), confirmation dialogs run `zenity` with `--default-cancel` so Return declines and only exit 0 is accepted as a confirm (`kdialog` was removed after measurement: it cannot make the declining button the default, so Return confirmed), and reveal selects the file through `org.freedesktop.FileManager1.ShowItems` with an `xdg-open` directory fallback. |
+| `platform_linux` | Linux adapter over AT-SPI2 (D-Bus): field read/write, range geometry and focus/caret events are real with an accessibility session. X11 provides the accept tap, overlay, constrained XTEST plain insertion and global shortcuts; StatusNotifierItem provides the tray when a host exists. Wayland placement and global shortcuts remain unsupported. Host services include distro/kernel and memory probes, XDG autostart and `xdg-open`. Session services fail closed when unavailable: Secret Service memory keys, Cancel-default `zenity` confirmation, and FileManager1 reveal with an `xdg-open` directory fallback. Linux remains experimental; desktop acceptance boundaries are in ROADMAP. |
 | `context` | Pure text-context helpers around a caret (left/right context, word-at-caret extraction, left-tail truncation, context-block assembly). |
 | `engine_core` | Deterministic `SuggestionMachine` that turns focus/text/caret/model events into commands. |
 | `engine` | Impure-but-deterministic wiring between the pure machine and the platform adapter + overlay; surfaces `RequestCompletion` as a `CompletionRequest` for the host to fulfil, so inference never blocks the machine. |
-| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal, while current non-macOS builds are CPU-only until Vulkan/CUDA and their CI SDKs land. |
+| `model_client` | `LocalModel` trait plus a `LlamaModel` implementation using `llama-cpp-2`; macOS enables Metal. Off-mac builds default to CPU, with opt-in `vulkan` / `cuda` features. Linux Vulkan build/runtime is verified; CUDA and Windows SDK verification remain pending. |
 | `model_catalog` | Pure, static catalog of which local models the Setup pane offers, their download sources, and a `fits` / `tight` / `exceeds` RAM-fit verdict for the host. |
 | `model_fetch` | Pure SHA-256 integrity + resume planning, plus the blocking network downloader (`.part` → verify → atomic rename) and a `ModelDownloader` worker thread. |
 | `ranker` | Candidate shaping helpers: word capping, first-word extraction, and repetition penalty. |
@@ -222,7 +222,7 @@ from `tools/spike/`.
 | `thesaurus` | Pure synonym lookup with the queried word's case pattern applied; the host supports both trailing-word auto offers and exact single-word selection replacement with candidate cycling. |
 | `textcase` | Pure capitalization-pattern detection and application, shared by the text-suggestion crates. |
 | `redaction` | Pure best-effort scrubbing of emails, Luhn-valid card numbers, and high-entropy tokens before any persistence or diagnostics; biased to over-redact. |
-| `memory` | Encrypted local memory for accepted completions or all monitored typing: text is redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, Keychain-managed key, plaintext app metadata for per-app counts/delete. |
+| `memory` | Encrypted local memory for accepted completions or all monitored typing: text is redacted then AES-256-GCM encrypted to SQLite, opt-in storage modes, OS-managed key, plaintext app and optional canonical-domain metadata for scoped counts/delete. |
 | `stats` | Pure rolling 30-day accumulator for shown/accepted/dismissed/superseded counts, words completed, and latency, with injected time. |
 | `webconfig` | Strict, fail-closed parser for `compme://setOverride` deep links; reversible per-app/per-domain overrides only, signed (Ed25519) links required for anything non-reversible. |
 | `app` | `compme` orchestration boundary: config loading, run loop, portable platform/shell wiring, inference worker, and shutdown ordering. AppKit implementation remains owned by `platform_macos`. |
@@ -362,7 +362,7 @@ probes under `tools/spike`, not the Carbon-hotkey production accept path.)
 Use the full local gate before treating the workspace as development-ready. The
 canonical command list is single-sourced in
 [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md#full-local-gate); the root suite is
-roughly 2,190 tests.
+roughly 2,222 tests.
 
 A2 validation is local/manual-only and is deliberately excluded from CI, tag
 releases, and the release-policy checker: the automated workflows never execute

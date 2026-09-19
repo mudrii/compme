@@ -22,6 +22,8 @@ use platform::{
 // so they are never dead code off-Windows); only the COM half is cfg(windows).
 pub mod uia_caps;
 pub mod uia_ids;
+#[cfg(any(windows, test))]
+mod uia_lifecycle;
 #[cfg(windows)]
 pub mod uia_live;
 pub mod uia_text;

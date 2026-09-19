@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-17 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2190 workspace tests listed on the current tree (44 spike tests separate)
+> **Last updated:** 2026-09-19 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2222 workspace tests expected for macOS (native count gate pending; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -175,6 +175,46 @@ tested**. Everything below is what the plan still calls for.
 
 ## Current release — v0.1.6 audit remediation
 
+### Authorized implementation queue — 2026-09-19
+
+The owner requested implementation of review-list items **1–6 and 19–35**.
+The numbers below refer to that list, not the historical roadmap execution
+order. Windows feature slices 7–18 are not included in this request. Work
+is on `main`; an implementation is not marked validated until its required
+gates have run. Native acceptance and release publication retain their
+existing evidence requirements.
+
+| Item | Work | Current state / dependency |
+|---|---|---|
+| 1 | Linux mutation timeout safety | Implemented; serialized dispatch, uncertain-outcome quarantine and regression tests; Astra-reviewed |
+| 2–5 | Windows UIA offsets, pattern detection, COM cleanup, identity parsing | Implemented; 39 portable tests and MSVC cross-check pass; Astra-reviewed; native Windows provider proof pending |
+| 6 | Reconcile implementation instructions | Updated; superseded STA and synchronous Carbon dispatch recipes removed; current evidence separated from historical snapshots |
+| 19 | G7 Carbon main-thread registration | Awaiting recorded physical-key baseline; Qfd §22 remains the design of record |
+| 20 | Erase existing memory while collection is Off | Implemented and reviewed: existing-store/key-only cleanup, no creation or prompt hydration |
+| 21 | Per-domain memory deletion | Implemented and reviewed: transactional schema v2, authenticated app/domain metadata, navigation-safe buffers, confirmed global domain erase |
+| 22 | Memory-mode controls | Implemented and reviewed: live/persisted Off / AcceptedOnly / AllMonitored with rollback and context clearing; native Apps-pane LOOK pending |
+| 23 | Linux text-range geometry | Implemented; provider-backed bounded range extents; native Xvfb/AT-SPI test passes |
+| 24 | Linux synthetic insertion fallback | Implemented and Astra-reviewed: XTEST plain insertion with whole-string/layout/held-key/grab preflight, bounded probe and verified readback; unmappable text and replacements fail closed; native Xvfb tests pass |
+| 25 | Linux tray | Implemented and Astra-reviewed: StatusNotifierItem/DBusMenu, bounded startup/drop, coalesced nonblocking updates and no-host degradation; desktop rendering acceptance pending |
+| 26 | Linux shortcut services | Implemented and Astra-reviewed: four X11 actions, collision/unmapped-key refusal and socket-interrupted bounded teardown; native Xvfb test passes; real desktop reservations/Wayland remain open |
+| 27 | Wayland strategy spike | Needs GNOME, KDE and sway sessions for comparative measurements |
+| 28 | Selected Wayland implementation | Depends on item 27; no compositor support inferred from Xvfb |
+| 29 | Optional off-mac GPU backends | Vulkan/CUDA feature forwarding implemented; Linux Vulkan SDK build and Quadro RTX 4000 execution verified; scheduled build added; CUDA/Windows SDK verification pending |
+| 30 | Per-platform performance baselines | Linux diagnostics: CPU 1,778 ms, Vulkan 2,075 ms; both fail the existing 500 ms limit. Calibrated per-target runs remain open; budgets unchanged |
+| 31 | Windows packaging | Depends on a usable Windows adapter (items 7–18 remain outside this batch) and signing environment |
+| 32 | Linux packaging | Experimental assembler, desktop/AppStream metadata and self-test implemented; Ubuntu 24.04 release build, AppImage creation and extracted startup smoke pass; desktop distribution acceptance pending; Flathub later |
+| 33 | Cross-platform release workflows | Depends on validated packages; publishing requires a real release flow |
+| 34 | Remaining release/CI hardening | G19 workflow/checker changes and Windows doc/audit coverage implemented; checker self-test passes; macOS doc-count gate and real-tag execution pending |
+| 35 | Retire vendored llama extension | Reviewed published 0.1.156; equivalent lifetime/cancellation API absent; retain vendor and all exact pins |
+
+The 2026-09-18 review reproduced late side effects after the Linux timeout
+wrapper returns and malformed Windows identity decoding. It also identified
+UIA comparison magnitudes being treated as offsets, unavailable patterns
+being converted to errors by the pinned Rust bindings, and COM cleanup
+ordering. These repairs precede new adapter features. Physical baseline,
+native acceptance, and release-only gaps are dependencies, not completed
+implementation work.
+
 **v0.1.6** is the current patch release, macOS-first, cut 2026-08-26 on the
 owner's authorization. Its scope is the verified correctness fixes plus CI and
 documentation repairs accumulated after v0.1.5; Linux remains experimental and
@@ -215,7 +255,12 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   and `pump_events` waits on `MsgWaitForMultipleObjectsEx(QS_ALLINPUT,
   MWMO_INPUTAVAILABLE)` draining the queue either side — a sleeping thread
   pumps nothing, so a future `WH_KEYBOARD_LL` hook would be silently
-  unhooked past `LowLevelHooksTimeout`. Adapter IO remains fail-closed.
+  unhooked past `LowLevelHooksTimeout`. That slice left adapter IO fail-closed.
+  **Current read boundary:** a dedicated MTA UIA worker now implements focused
+  element capabilities and text/selection reads. The 2026-09-19 repairs cover
+  range offsets, absent patterns, COM teardown and identity parsing. Native
+  Windows provider acceptance is pending. Subscription, insertion and overlay
+  surfaces remain fail-closed; this is not a usable Windows completion engine.
 - **`crates/platform_linux`** (`5236a56`) — initially shipped as the same
   fail-closed foundation; its wired AT-SPI2/X11 implementation and live gates
   are recorded below.
@@ -231,8 +276,9 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   and macOS-only shell surfaces through `crate::shell`.
 - **App target-gated platform deps** (`2c80e74`) — `app` no longer depends
   unconditionally on `platform_macos`; macOS, Windows, and Linux adapter crates are
-  selected behind Cargo target gates. Windows remains fail-closed for platform
-  I/O; Linux now selects the wired adapter described below.
+  selected behind Cargo target gates. Windows has the read-only boundary above
+  and fails closed for mutation/events/overlay; Linux selects the wired adapter
+  described below.
 - **CI matrix** (`a7427c6`, widened by `2c80e74`) — `windows-latest` +
   `ubuntu-latest` jobs run fmt/clippy/test over the workspace excluding only
   Apple-only `platform_macos`, then build the `app` binary through its non-mac
@@ -256,9 +302,10 @@ hardware, sessions, and permissions unavailable on macOS.
   caret subscriptions are the next slice; the notepad smoke (the `#[ignore]`d
   `focused_text_field_reads_document_and_selection`) needs the
   Windows-hardware pass.
-- The remaining **Linux** work is an XTEST/`wtype` synthetic-key fallback
-  (IBus/libei work remains a Wayland decision), `text_range_rect`, a
-  StatusNotifierItem tray, shortcut shell surfaces, and Wayland placement.
+- The 2026-09-19 **Linux** working tree adds constrained XTEST plain insertion,
+  `text_range_rect`, StatusNotifierItem tray and X11 shortcut services.
+  Remaining work includes real-desktop acceptance, Wayland input/placement
+  strategy, distribution qualification and performance calibration.
   AT-SPI2 read/write/events, the passive X11 accept tap, the
   override-redirect X11 overlay, and the audit correctness cluster are shipped
   and live-gated.
@@ -423,9 +470,10 @@ the decisions testable everywhere and the I/O in one place:
   focus-in, which would hand every reader a selection it never asked for.
 
 **Phase 2.4 insert path ✅ DONE (2026-07-27) — live-verified:**
-- `insert` writes at the caret through `EditableText.InsertText`, honoring only
-  the atomic strategy (the XTEST synthetic fallback is not built, and accepting a
-  non-atomic request would type into a field the engine believes it set).
+- `insert` writes at the caret through `EditableText.InsertText` for the native
+  strategy. The 2026-09-19 working tree adds a separately advertised constrained
+  XTEST plain-insert fallback, with preflight refusal and uncertain-outcome
+  quarantine; it never presents synthetic writes as atomic range replacement.
 - `insert_replacing_range` swaps the **whole value in one `SetTextContents`
   call** rather than `DeleteText` + `InsertText`. Two round trips are not
   all-or-nothing: a failure between them leaves the user's field truncated, which
@@ -499,7 +547,7 @@ spike verdict still holding. The `app` binary links none of libxcb, libatspi,
 libX11, or libsecret — the property every "D-Bus/pure-Rust, not the C library"
 decision below was made to preserve. Per-phase live-test counts in the entries
 that follow were each measured on their own branch and do not sum to 26. The
-suite has since grown: the current tree carries **37 live tests** (34 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
+suite has since grown: the current tree carries **40 live tests** (37 AT-SPI/X11 adapter tests + 1 each for confirm, keyring, reveal).
 
 **Host wiring ✅ DONE (2026-07-29) — the product now drives the Linux adapter:**
 `app::shell::stub::make_adapter` calls `LinuxAdapter::with_accessibility()`
@@ -954,18 +1002,18 @@ runs. The retired screenshot matrix is not current release evidence.
 - **Personalization:** the Personalization tab now edits global instructions,
   sender name/email, and the 6-stop steering strength. Edits update the live
   inference worker profile through `set_profile` and persist through the same
-  settings path. Memory storage mode remains governed by memory config; dedicated
-  memory-mode and global delete-all Settings controls are deferred UI work, not
-  part of the personalization profile or the current Personalization-pane scope.
-- **Encrypted-store schema posture:** the SQLite schema is immutable throughout
-  0.x. Before any first schema change, land `PRAGMA user_version` handling and a
-  transactional migration helper; do not alter table definitions first and
-  strand existing encrypted stores. **Half landed 2026-09-16:** the store now
-  stamps `PRAGMA user_version = SCHEMA_VERSION`, reads it back on every open,
-  adopts a pre-marker `0` database (every existing install is one, and no
-  column changed, so adopting is a relabel rather than a migration) and
-  **refuses a database written by a newer build**. The transactional migration
-  helper is still outstanding and is what the first real column change needs.
+  settings path. Memory controls belong to the Apps pane: the 2026-09-19
+  working tree exposes Off / Accepted completions / All monitored typing,
+  app/global erase and confirmed domain erase. They remain outside the
+  personalization profile and require a native Apps-pane LOOK pass.
+- **Encrypted-store schema posture:** schema changes require a version marker
+  and transactional migration. The 2026-09-19 working tree implements the
+  first migration: legacy version 0/1 stores gain a nullable canonical-domain
+  column and version 2 in one transaction. Existing ciphertext retains its
+  app-only AAD; new domain records authenticate app and domain together.
+  **A database written by a newer build is refused.** Migration, deletion and
+  relabel-resistance tests accompany the change; native UI acceptance remains
+  separate.
 - **Remaining:** visual LOOK only: pane layout, instructions field,
   sender/strength controls, and persistence closed (assisted Batches 1-2);
   Context opt-in verified live (Batch 6). Residual is a visible steering effect
@@ -1148,7 +1196,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
 | Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: snoozed transition, volatile `pid:N` (secure-field fail-closed live-proven 2026-07-07, `f6fa98b`) |
-| Per-app memory inspect/delete UI | count/delete_app ✅; global `delete_all` ✅ (Apps-pane "Erase All Recorded Inputs", confirm-gated, reaches apps below the 8 rendered rows, clears the live rings too); `recent` retrieval ✅ (per-app ring hydrated on first focus, same enable gate as the write path) | completed live in Apps pane; the AppKit button still needs a macOS LOOK pass; **erase only works before disabling** — `StorageMode::Off` drops the handle and the deletion UI with it, pending a load-without-create key API; per-domain deletion needs a schema column; memory-mode controls remain deferred UI work |
+| Per-app memory inspect/delete UI | app/global erase plus domain erase and memory-mode controls implemented in the 2026-09-19 working tree; Off opens an existing store/key for cleanup without hydration; schema-v2 domain records are authenticated and deleted across apps; erase clears live context | portable tests, macOS cross-check and Astra review pass; native Apps-pane mode/erase LOOK remains open. Legacy NULL-domain rows require app/global erase. |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |
 | Google Docs / Arc onboarding | `needs_accessibility_setup` ✅; `setup-needed-docs-arc-onboarding` manual gate pins setup-needed UX in Arc/Docs | run the manual gate in Arc with Google Docs focused |
@@ -1312,8 +1360,7 @@ a granted macOS GUI session).
 The portable core (G1-G2, plus policy/settings logic) is **written once** and
 shared by all three OSes. Only these four trait surfaces get a per-OS impl; the
 range-bounds/range-replacement methods have fail-closed **trait defaults**
-(`crates/platform/src/lib.rs`, pinned by test). macOS overrides both; Linux
-overrides `insert_replacing_range` and inherits only `text_range_rect`; the
+(`crates/platform/src/lib.rs`, pinned by test). macOS and Linux override both; the
 Windows scaffold still inherits both:
 
 | Surface | macOS (reference) | Windows | Linux |

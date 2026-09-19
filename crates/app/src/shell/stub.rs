@@ -69,6 +69,12 @@ pub fn make_overlay() -> Result<OverlayPresenterImpl, PlatformError> {
     Ok(OverlayPresenterImpl::new())
 }
 
+#[cfg(target_os = "linux")]
+pub fn make_tray(flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError> {
+    platform_linux::LinuxTray::new(flags).map(|tray| Box::new(tray) as Box<dyn TrayHandle>)
+}
+
+#[cfg(not(target_os = "linux"))]
 pub fn make_tray(_flags: TrayFlags) -> Result<Box<dyn TrayHandle>, PlatformError> {
     Err(PlatformError::UnsupportedField {
         reason: "tray not yet implemented (Tier 1.1 scaffold)".into(),
@@ -160,16 +166,32 @@ pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
 
 #[allow(dead_code)]
 pub fn effective_shortcut_bindings() -> ShortcutBindings {
-    *SHORTCUT_BINDINGS
-        .read()
-        .unwrap_or_else(std::sync::PoisonError::into_inner)
+    #[cfg(target_os = "linux")]
+    {
+        platform_linux::x11_shortcuts::configured_bindings()
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        *SHORTCUT_BINDINGS
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+    }
 }
 
 #[allow(dead_code)]
 pub fn set_shortcut_bindings(bindings: ShortcutBindings) {
-    *SHORTCUT_BINDINGS
-        .write()
-        .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings;
+    #[cfg(target_os = "linux")]
+    {
+        platform_linux::x11_shortcuts::set_bindings(bindings);
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        *SHORTCUT_BINDINGS
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = bindings;
+    }
 }
 
 #[allow(dead_code)]
@@ -181,7 +203,11 @@ pub fn set_shortcut_bindings_from_config(
 ) -> ShortcutBindings {
     let bindings =
         ShortcutBindings::from_config(force_activate, toggle_app, toggle_global, grammar_check);
-    let effective = if bindings.has_internal_collision() {
+    #[cfg(target_os = "linux")]
+    let unsupported = !platform_linux::x11_shortcuts::bindings_supported(bindings);
+    #[cfg(not(target_os = "linux"))]
+    let unsupported = false;
+    let effective = if bindings.has_internal_collision() || unsupported {
         ShortcutBindings::default()
     } else {
         bindings

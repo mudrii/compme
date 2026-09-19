@@ -335,11 +335,9 @@ impl std::fmt::Debug for X11AcceptTap {
 ///
 /// Reports [`KeyInterceptMode::None`] on any failure — no display, a layout
 /// missing a bound key, or `BadAccess` because a window manager or IME already
-/// holds the key. Deliberately **not** `HotkeyOnly`: that variant demotes the UX
-/// to an always-on hotkey, and this adapter registers no global shortcuts yet, so
-/// claiming it would promise a path compme cannot deliver on Linux. (The plan
-/// says "degrade to `UxMode::Hotkey`"; that becomes correct once the shortcut
-/// registration lands.)
+/// holds the key. Deliberately **not** `HotkeyOnly`: the separately configured
+/// always-on shortcuts can re-show or toggle suggestions, but none is an accept
+/// key, so claiming a hotkey acceptance path would still be false.
 pub fn probe_accept_intercept() -> KeyInterceptMode {
     match trial_grab() {
         Ok(()) => KeyInterceptMode::XGrabKey,

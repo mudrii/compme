@@ -209,7 +209,7 @@ Build:
 cargo build --locked --workspace --all-targets
 ```
 
-The suite is ~2190 tests. Use `--all-targets` for clippy, test, and build so
+The suite is ~2222 tests. Use `--all-targets` for clippy, test, and build so
 the macOS example regression targets are compiled and the `platform_macos`
 example regression tests run.
 
@@ -229,6 +229,23 @@ The spike package is intentionally separate from the root workspace. Root
 workspace commands do not validate it.
 
 ## Full Local Gate
+
+Optional off-mac backends are selected with `cargo build --locked -p app
+--features vulkan` or `--features cuda`; install the corresponding SDK first.
+The default remains CPU-only. The scheduled `gpu.yml` lane compiles Linux
+Vulkan; it does not establish GPU runtime or latency acceptance. A Linux
+Vulkan SDK build passed locally on 2026-09-19. CUDA and Windows SDK builds
+remain unverified.
+
+Experimental Linux packaging uses `tools/bundle/make-appimage.sh --help`.
+Build the release binary on the oldest supported distribution, then supply
+that binary, a reviewed architecture-matched AppImage runtime, and an unused
+output path. `linuxdeploy`, `appimagetool`, `readelf`, `desktop-file-validate`,
+and `appstreamcli` must be on PATH. The helper bundles shared libraries,
+desktop entry, existing icon and AppStream metadata, and refuses Nix loader
+paths. It downloads no build tools or runtimes. Its self-test proves assembly
+and failure handling; an extracted-artifact launch on a clean distribution
+and a real X11/AT-SPI session are still required before distribution.
 
 Run this before committing a change to main or treating local validation as complete:
 
@@ -251,6 +268,7 @@ tools/release/check-version-docs.sh
 tools/bundle/check-bundle-metadata.sh --self-test
 ruby -c Casks/compme.rb
 tools/bundle/make-app.sh --self-test
+tools/bundle/make-appimage.sh --self-test
 tools/bundle/make-icon.sh --self-test
 tools/bundle/bundle-smoke.sh
 tools/bundle/bundle-smoke.sh --self-test
@@ -292,7 +310,7 @@ cargo test --locked
 cargo build --locked --bins
 ```
 
-The root suite is ~2190 tests. The `tools/spike` workspace is separate from the
+The root suite is ~2222 tests. The `tools/spike` workspace is separate from the
 root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 24 portable crates and
@@ -316,8 +334,10 @@ macOS-cfg test targets; `check-model-gates.sh --self-test` is host-agnostic.
 "`platform_macos` does not build off a Mac" is true only of a *host-target*
 build. `cargo check --target` type-checks either platform crate from any host,
 **including their `#[cfg(test)]` modules**, provided the target's std is
-installed (`rustup target list --installed`; this repo's staged toolchain
-carries `aarch64-apple-darwin` and `x86_64-pc-windows-msvc` already):
+installed. Check the active toolchain's installed targets first; the staged
+Linux toolchain had Darwin std but lacked Windows std during the 2026-09-18
+review. The historical cross-check below is not proof that a target remains
+installed on every host:
 
 ```text
 cargo check --locked -p platform_macos   --target aarch64-apple-darwin   --all-targets

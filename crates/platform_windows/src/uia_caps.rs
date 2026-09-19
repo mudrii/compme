@@ -10,9 +10,28 @@
 //! capability the engine cannot deliver arms suggestions on fields where the
 //! accept/insert path will refuse.
 
+#[cfg(any(windows, test))]
+use platform::PlatformError;
 use platform::{
     Capabilities, InsertStrategy, KeyInterceptMode, OverlayPlacement, SecurityState, Toolkit,
 };
+
+#[cfg(any(windows, test))]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum UiaPattern {
+    Text,
+    Value,
+}
+
+/// COM-facing seam for collecting capability facts. The live implementation
+/// reads UIA availability properties; a missing pattern is therefore `false`,
+/// while a property/provider failure remains an error.
+#[cfg(any(windows, test))]
+pub(crate) trait UiaElementFactsSource {
+    fn pattern_available(&self, pattern: UiaPattern) -> Result<bool, PlatformError>;
+    fn is_password(&self) -> Result<bool, PlatformError>;
+    fn framework_id(&self) -> Result<String, PlatformError>;
+}
 
 /// What the live adapter observed about one focused element. Plain data — no
 /// `windows` COM types — so this module compiles and tests everywhere.
@@ -30,6 +49,18 @@ pub struct UiaFieldFacts {
     pub is_password: bool,
     /// UIA `FrameworkId`, e.g. `WPF`, `Win32`, `Chrome`, `Electron`.
     pub framework: String,
+}
+
+#[cfg(any(windows, test))]
+pub(crate) fn collect_field_facts(
+    source: &impl UiaElementFactsSource,
+) -> Result<UiaFieldFacts, PlatformError> {
+    Ok(UiaFieldFacts {
+        has_text_pattern: source.pattern_available(UiaPattern::Text)?,
+        has_value_pattern: source.pattern_available(UiaPattern::Value)?,
+        is_password: source.is_password()?,
+        framework: source.framework_id()?,
+    })
 }
 
 /// Map observed facts onto the portable capability contract.
@@ -79,6 +110,31 @@ pub fn capabilities_from_uia(facts: &UiaFieldFacts) -> Capabilities {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct FakeSource {
+        text: Result<bool, &'static str>,
+        value: Result<bool, &'static str>,
+    }
+
+    impl UiaElementFactsSource for FakeSource {
+        fn pattern_available(&self, pattern: UiaPattern) -> Result<bool, PlatformError> {
+            let result = match pattern {
+                UiaPattern::Text => self.text,
+                UiaPattern::Value => self.value,
+            };
+            result.map_err(|reason| PlatformError::CannotComplete {
+                reason: reason.into(),
+            })
+        }
+
+        fn is_password(&self) -> Result<bool, PlatformError> {
+            Ok(false)
+        }
+
+        fn framework_id(&self) -> Result<String, PlatformError> {
+            Ok("Fake".into())
+        }
+    }
 
     fn facts(has_text_pattern: bool, has_value_pattern: bool, is_password: bool) -> UiaFieldFacts {
         UiaFieldFacts {
@@ -164,5 +220,31 @@ mod tests {
                 }
             }
         }
+    }
+
+    #[test]
+    fn availability_properties_distinguish_every_pattern_combination() {
+        for (text, value) in [(true, false), (false, true), (false, false), (true, true)] {
+            let facts = collect_field_facts(&FakeSource {
+                text: Ok(text),
+                value: Ok(value),
+            })
+            .unwrap();
+            assert_eq!(facts.has_text_pattern, text);
+            assert_eq!(facts.has_value_pattern, value);
+            assert_eq!(facts.framework, "Fake");
+        }
+    }
+
+    #[test]
+    fn availability_property_failure_is_not_misclassified_as_pattern_absence() {
+        let error = collect_field_facts(&FakeSource {
+            text: Err("provider failed"),
+            value: Ok(false),
+        })
+        .unwrap_err();
+        assert!(
+            matches!(error, PlatformError::CannotComplete { reason } if reason == "provider failed")
+        );
     }
 }

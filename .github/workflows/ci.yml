@@ -161,6 +161,9 @@ jobs:
       - name: Bundle assembler self-test
         run: tools/bundle/make-app.sh --self-test
 
+      - name: AppImage packaging helper self-test
+        run: tools/bundle/make-appimage.sh --self-test
+
       - name: Bundle icon generator self-test
         run: tools/bundle/make-icon.sh --self-test
 
@@ -324,6 +327,14 @@ jobs:
 
       - name: Test portable workspace
         run: cargo test --locked --workspace --exclude platform_macos --all-targets
+
+      - name: Doc tests (portable workspace)
+        run: cargo test --locked --workspace --exclude platform_macos --doc
+
+      - name: Rust dependency audit
+        run: |
+          cargo install cargo-audit --version 0.22.2 --locked
+          cargo audit --deny unsound --deny yanked
 
       - name: Build app binary
         run: cargo build --locked -p app

@@ -248,6 +248,50 @@ fn live_caret_rect_is_real_screen_geometry() {
 
 #[test]
 #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_text_range_rect_is_real_screen_geometry_for_scalar_ranges() {
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = LinuxAdapter::with_accessibility();
+    let entry = editable(&session, &id);
+    entry.set_text_contents("a😀b").expect("seed astral text");
+    let field = handle(&adapter, &id);
+
+    let rect = adapter
+        .text_range_rect(&field, platform::CorrectionRange { start: 1, end: 2 })
+        .expect("text_range_rect")
+        .expect("the astral scalar has range geometry");
+    assert_eq!(
+        adapter
+            .text_range_rect(&field, platform::CorrectionRange { start: 3, end: 3 })
+            .expect("valid empty range"),
+        None
+    );
+    for range in [
+        platform::CorrectionRange { start: 2, end: 1 },
+        platform::CorrectionRange { start: 0, end: 4 },
+    ] {
+        assert!(matches!(
+            adapter.text_range_rect(&field, range),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+    }
+
+    entry
+        .set_text_contents(FIXTURE_TEXT)
+        .expect("restore fixture text");
+    zbus_text(&id)
+        .set_caret_offset(i32::try_from(FIXTURE_TEXT.chars().count()).unwrap())
+        .expect("restore fixture caret");
+
+    assert!(rect.w > 0.0 && rect.h > 0.0, "degenerate rect: {rect:?}");
+    assert!(
+        rect.x >= 0.0 && rect.y >= 0.0 && rect.x < 1280.0 && rect.y < 1024.0,
+        "range rect off-screen: {rect:?}"
+    );
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
 fn live_empty_entry_uses_component_bounds_as_popup_anchor() {
     let session = session();
     let id = fixture_entry(&session);
@@ -330,6 +374,10 @@ fn live_every_atspi_io_path_rejects_a_stale_generation_before_io() {
     assert_eq!(adapter.read_context(&stale), Err(PlatformError::StaleField));
     assert_eq!(adapter.caret_rect(&stale), Err(PlatformError::StaleField));
     assert_eq!(
+        adapter.text_range_rect(&stale, range),
+        Err(PlatformError::StaleField)
+    );
+    assert_eq!(
         adapter.insert(&stale, "x", InsertStrategy::NativeRangeSet),
         Err(PlatformError::StaleField)
     );
@@ -362,6 +410,228 @@ fn live_insert_puts_text_at_the_caret() {
     assert_eq!(format!("{}{}", context.left, context.right), "abcXY");
 
     entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+}
+
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_xtest_insert_types_preflighted_text_and_refuses_an_unmapped_scalar() {
+    let session = session();
+    let id = fixture_entry(&session);
+    let adapter = Arc::new(LinuxAdapter::with_accessibility());
+    let entry = editable(&session, &id);
+    let text = zbus_text(&id);
+    entry.set_text_contents("abc").expect("seed");
+    text.remove_selection(0).ok();
+    text.set_caret_offset(3).expect("caret to end");
+    let field = handle(&adapter, &id);
+
+    let inserted = adapter
+        .insert(&field, " aA1!", InsertStrategy::SyntheticKeys)
+        .expect("mapped XTEST insert");
+    assert_eq!(inserted.strategy, InsertStrategy::SyntheticKeys);
+    assert_eq!(inserted.chars, 5);
+    let context = adapter.read_context(&field).expect("read inserted text");
+    assert_eq!(format!("{}{}", context.left, context.right), "abc aA1!");
+
+    entry.set_text_contents("abc").expect("reset");
+    text.set_caret_offset(3).expect("reset caret");
+    assert!(matches!(
+        adapter.insert(&field, "A😀B", InsertStrategy::SyntheticKeys),
+        Err(PlatformError::UnsupportedField { .. })
+    ));
+    let context = adapter.read_context(&field).expect("read refused text");
+    assert_eq!(format!("{}{}", context.left, context.right), "abc");
+
+    // A modifier still physically held from an accept chord must never turn
+    // the inserted text into an application shortcut. Hold Control through the
+    // call, observe the refusal, then release it before asserting field state.
+    {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+        use x11rb::protocol::xtest::ConnectionExt as _;
+
+        let (x11, screen) = x11rb::connect(None).expect("XTEST display");
+        let setup = x11.setup();
+        let min = setup.min_keycode;
+        let count = setup.max_keycode - min + 1;
+        let mapping = x11
+            .get_keyboard_mapping(min, count)
+            .expect("keyboard mapping")
+            .reply()
+            .expect("keyboard mapping reply");
+        let control = crate::x11_keys::keycode_for_keysym(
+            min,
+            mapping.keysyms_per_keycode,
+            &mapping.keysyms,
+            0xffe3,
+        )
+        .expect("Control_L keycode");
+        let root = setup.roots[screen].root;
+        x11.xtest_fake_input(KEY_PRESS_EVENT, control, 0, root, 0, 0, 0)
+            .expect("Control press")
+            .check()
+            .expect("Control press reply");
+        let modified = adapter.insert(&field, "x", InsertStrategy::SyntheticKeys);
+        x11.xtest_fake_input(KEY_RELEASE_EVENT, control, 0, root, 0, 0, 0)
+            .expect("Control release")
+            .check()
+            .expect("Control release reply");
+        assert!(matches!(
+            modified,
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+    }
+    let context = adapter.read_context(&field).expect("read modifier refusal");
+    assert_eq!(format!("{}{}", context.left, context.right), "abc");
+
+    // A server configured with more than one XKB group can lock group 2 with
+    // no core modifier bit. Exercise that state when present. The focused
+    // regression command sets COMPME_REQUIRE_SECOND_XKB_GROUP so it also proves
+    // the test server really accepted the group switch; the ordinary harness's
+    // one-group map still exercises every other safety property in this test.
+    {
+        use x11rb::protocol::xkb::{ConnectionExt as _, Group, ID};
+        use x11rb::protocol::xproto::ModMask;
+
+        let (x11, _) = x11rb::connect(None).expect("XKB display");
+        x11.xkb_use_extension(1, 0)
+            .expect("XKB version")
+            .reply()
+            .expect("XKB version reply");
+        let set_group = |group| {
+            x11.xkb_latch_lock_state(
+                u16::from(ID::USE_CORE_KBD),
+                ModMask::from(0u16),
+                ModMask::from(0u16),
+                true,
+                group,
+                ModMask::from(0u16),
+                false,
+                0,
+            )
+            .expect("set XKB group")
+            .check()
+            .expect("set XKB group reply");
+        };
+        set_group(Group::M2);
+        let state = x11
+            .xkb_get_state(u16::from(ID::USE_CORE_KBD))
+            .expect("XKB state")
+            .reply()
+            .expect("XKB state reply");
+        let group_locked = u8::from(state.locked_group) != 0;
+        let grouped =
+            group_locked.then(|| adapter.insert(&field, "x", InsertStrategy::SyntheticKeys));
+        set_group(Group::M1);
+        if std::env::var_os("COMPME_REQUIRE_SECOND_XKB_GROUP").is_some() {
+            assert!(group_locked, "the focused gate requires a two-group map");
+        }
+        if let Some(grouped) = grouped {
+            assert!(matches!(
+                grouped,
+                Err(PlatformError::UnsupportedField { .. })
+            ));
+        }
+    }
+    let context = adapter.read_context(&field).expect("read group refusal");
+    assert_eq!(format!("{}{}", context.left, context.right), "abc");
+
+    text.add_selection(0, 3).expect("select seed text");
+    let selected = adapter.insert(&field, "x", InsertStrategy::SyntheticKeys);
+    text.remove_selection(0).expect("clear seed selection");
+    assert!(matches!(
+        selected,
+        Err(PlatformError::UnsupportedField { .. })
+    ));
+    let context = adapter
+        .read_context(&field)
+        .expect("read selection refusal");
+    assert_eq!(format!("{}{}", context.left, context.right), "abc");
+
+    // The normal accept path begins while the triggering key is still down.
+    // The insertion must wait for that physical release before emitting XTEST
+    // events, and a planned stroke that would hit one of compme's own grabs
+    // must be refused before the first event.
+    {
+        use x11rb::connection::Connection as _;
+        use x11rb::protocol::xproto::{ConnectionExt as _, KEY_PRESS_EVENT, KEY_RELEASE_EVENT};
+        use x11rb::protocol::xtest::ConnectionExt as _;
+
+        entry.set_text_contents("abc").expect("reset for armed tap");
+        text.set_caret_offset(3).expect("reset armed-tap caret");
+        let (started_tx, started_rx) = mpsc::channel();
+        let (finished_tx, finished_rx) = mpsc::channel();
+        let callback_adapter = Arc::clone(&adapter);
+        let callback_field = field.clone();
+        let subscription = adapter
+            .subscribe_accept(Arc::new(move |_| {
+                let _ = started_tx.send(());
+                let result =
+                    callback_adapter.insert(&callback_field, "x", InsertStrategy::SyntheticKeys);
+                let _ = finished_tx.send(result);
+            }))
+            .expect("install accept tap beside XTEST insert");
+        subscription
+            .set_suggestion_visible(true)
+            .expect("arm accept tap");
+
+        let (x11, screen) = x11rb::connect(None).expect("armed-tap XTEST display");
+        let root = x11.setup().roots[screen].root;
+        let min = x11.setup().min_keycode;
+        let mapping = x11
+            .get_keyboard_mapping(min, x11.setup().max_keycode - min + 1)
+            .expect("armed-tap mapping")
+            .reply()
+            .expect("armed-tap mapping reply");
+        let grave = crate::x11_keys::keycode_for_keysym(
+            min,
+            mapping.keysyms_per_keycode,
+            &mapping.keysyms,
+            0x0060,
+        )
+        .expect("grave keycode");
+        x11.xtest_fake_input(KEY_PRESS_EVENT, grave, 0, root, 0, 0, 0)
+            .expect("held accept press")
+            .check()
+            .expect("held accept press reply");
+        started_rx
+            .recv_timeout(EVENT_TIMEOUT)
+            .expect("accept callback started while grave remains down");
+        x11.xtest_fake_input(KEY_RELEASE_EVENT, grave, 0, root, 0, 0, 0)
+            .expect("held accept release")
+            .check()
+            .expect("held accept release reply");
+        finished_rx
+            .recv_timeout(EVENT_TIMEOUT)
+            .expect("accept callback completed after release")
+            .expect("post-accept XTEST insert");
+        let context = adapter.read_context(&field).expect("read callback insert");
+        assert_eq!(format!("{}{}", context.left, context.right), "abcx");
+
+        entry
+            .set_text_contents("abc")
+            .expect("reset collision field");
+        text.set_caret_offset(3).expect("reset collision caret");
+        assert!(matches!(
+            adapter.insert(&field, "`", InsertStrategy::SyntheticKeys),
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+        assert!(matches!(
+            started_rx.recv_timeout(Duration::from_millis(100)),
+            Err(mpsc::RecvTimeoutError::Timeout)
+        ));
+        let context = adapter
+            .read_context(&field)
+            .expect("read collision refusal");
+        assert_eq!(format!("{}{}", context.left, context.right), "abc");
+        subscription
+            .set_suggestion_visible(false)
+            .expect("disarm accept tap");
+    }
+
+    entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+    text.set_caret_offset(i32::try_from(FIXTURE_TEXT.chars().count()).unwrap())
+        .expect("restore fixture caret");
 }
 
 #[test]
@@ -520,16 +790,16 @@ fn live_insert_replacing_left_stays_fail_closed() {
     let adapter = LinuxAdapter::with_accessibility();
     let before = adapter.read_context(&handle(&adapter, &id)).expect("read");
 
-    let result = adapter.insert_replacing(
-        &handle(&adapter, &id),
-        "the",
-        3,
+    for strategy in [
         InsertStrategy::NativeRangeSet,
-    );
-    assert!(matches!(
-        result,
-        Err(PlatformError::UnsupportedField { .. })
-    ));
+        InsertStrategy::SyntheticKeys,
+    ] {
+        let result = adapter.insert_replacing(&handle(&adapter, &id), "the", 3, strategy);
+        assert!(matches!(
+            result,
+            Err(PlatformError::UnsupportedField { .. })
+        ));
+    }
     let after = adapter.read_context(&handle(&adapter, &id)).expect("read");
     assert_eq!(
         format!("{}{}", before.left, before.right),

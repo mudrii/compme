@@ -1,5 +1,14 @@
 # Cross-platform implementation plan — Windows + Linux adapters
 
+**Working-tree update, 2026-09-19:** the snapshot below is historical. Windows
+has a read-only MTA UIA implementation with portable tests and MSVC compile
+verification; native provider acceptance, events, input and overlay remain
+open. Linux range geometry now has focused Xvfb/AT-SPI evidence. Optional GPU
+feature forwarding, scheduled Linux Vulkan compilation and experimental Linux
+packaging are implemented in the current work; runtime/clean-machine evidence
+is recorded separately in [the implementation record](../../IMPLEMENTATION-EVIDENCE-2026-09-19.md).
+The [roadmap](../../ROADMAP.md) owns the current status of every remaining slice.
+
 **Date:** 2026-07-08 · **Status (2026-09-09, HEAD `1da83f5`):** Phase 0 shipped; Linux Phase 2 core shipped and live-gated (2.1–2.5, 2.7, and the desktop-free half of 2.6 — residuals: XTEST fallback, `text_range_rect`, StatusNotifierItem tray, always-on shortcuts); Windows Phase 1 has nothing beyond the fail-closed scaffold; Phases 3–6 not started (native/live acceptance target-system-gated)
 **Prereqs:** clean `main` (builds, clippy clean, ≈2065 tests green, re-verified 2026-08-26).
 **Supersedes:** nothing — details ROADMAP §1.1's pending half. ROADMAP stays the
@@ -177,9 +186,8 @@ target-gated.
      scripted smoke in 1.7).
 
 1.2 **UIA read path** (focus → capabilities → read_context → caret_rect)
-   - `IUIAutomation` singleton on a dedicated STA thread (UIA callbacks have
-     apartment requirements — mirror platform_macos's worker-thread pattern:
-     one owner thread, mpsc request/reply, generation-stamped FieldHandles).
+   - `IUIAutomation` singleton on a dedicated window-less MTA thread:
+     one owner thread, mpsc request/reply, generation-stamped FieldHandles.
      (status 2026-09-09: the specs disagree — `2026-06-03-cross-platform-review.md`
      `:58,126,219` says a dedicated **MTA** thread that owns no windows. Not
      resolved here; decide and record before coding, audit plan item 8.
@@ -194,8 +202,9 @@ target-gated.
      `OverlayPlacement::LayeredWindow`; `coords_global_screen=true`;
      offsets `Utf16CodeUnits`.
    - `read_context()`: TextPattern document range + selection endpoints
-     materialized to UTF-16 offsets (UIA ranges are opaque — walk with
-     `CompareEndpoints`/`MoveEndpointByUnit`); clamp + never panic.
+     materialized to UTF-16 offsets from actual range text. `CompareEndpoints`
+     establishes ordering only, never a distance; use cloned ranges and
+     `MoveEndpointByRange` to read the prefixes. Reject inconsistent snapshots.
    - `caret_rect()`: selection range `GetBoundingRectangles`, degenerate
      range fallback to `TextPattern2::GetCaretRange`.
    - `subscribe_caret`: `TextSelectionChanged` UIA event → rect recompute,
@@ -344,8 +353,10 @@ Real-desktop calibration (GNOME-Xorg, KDE-Xorg, XFCE) is still open —
       done on real desktops: a WM there may already hold Tab.
     - Wayland is unaffected — no global grabs exist there; that remains Phase 3.
 2.4 **Insert** — ◑ `EditableText` path ✅ DONE 2026-07-27 (`insert`,
-    `insert_replacing_range` as `NativeRangeSet`); XTEST fallback NOT built
-    (non-atomic strategies fail closed with `unsupported`), and
+    `insert_replacing_range` as `NativeRangeSet`); the 2026-09-19 working tree
+    adds constrained XTEST plain insertion with native fixture evidence
+    (unmappable text, non-primary layouts, held keys and grab collisions are
+    refused before dispatch; synthetic replacements still fail closed), and
     `insert_replacing`'s left-of-caret form is deliberately fail-closed:
     `EditableText.InsertText/DeleteText` (report
     `NativeRangeSet`); XTEST synthetic fallback where EditableText absent.
@@ -356,7 +367,9 @@ Real-desktop calibration (GNOME-Xorg, KDE-Xorg, XFCE) is still open —
 2.6 **ShellHost** — ◑ shipped 2026-07-27/28: Secret Service keyring
     (`keyring.rs`, zbus, no libsecret link), `/proc/meminfo`, zenity confirm
     (zenity-only — no kdialog leg), XDG autostart entry, `xdg-open` reveal;
-    NOT built: StatusNotifierItem tray (`stub::make_tray` is `Err`);
+    2026-09-19 working tree adds the StatusNotifierItem tray via `ksni` and
+    always-on X11 shortcuts; missing-host degradation and shortcut teardown
+    are tested, while desktop presentation remains unverified;
     `open_permission_settings` fail-closed by decision: libsecret (Secret Service D-Bus) key store — fail-closed
     when absent (headless servers); `/proc/meminfo`; zenity/kdialog confirm
     fallback chain with `eprintln` last resort; XDG autostart .desktop;
@@ -441,7 +454,7 @@ in-app consumption (ROADMAP 1.2 note stands).
   flip), doc comment updated from "not yet implemented" to contract notes,
   ROADMAP 1.1 evidence anchor.
 - Port the macOS worker-thread pattern (single owner thread + mpsc +
-  generation stamps + poison-recovery) — UIA STA and D-Bus both need it;
+  generation stamps + poison-recovery) — UIA MTA and D-Bus both need it;
   do not invent a second concurrency idiom.
 - No new abstraction layers: implement against the existing 14-method
   trait; if a method's shape fights an OS API, change the trait (one

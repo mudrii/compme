@@ -34,6 +34,8 @@ windows = { version = "=0.62.2", features = [
   # SafeArrayGetElement/SafeArrayDestroy for the UIA runtime-id and selection
   # arrays (the windows crate generates the oleaut32 surface under Ole).
   "Win32_System_Ole",
+  # UIA pattern-availability properties are returned as VARIANT booleans.
+  "Win32_System_Variant",
   # GlobalMemoryStatusEx / MEMORYSTATUSEX for the RAM-fit probe, and
   # OSVERSIONINFOW for the RtlGetVersion probe above.
   "Win32_System_SystemInformation",
