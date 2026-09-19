@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-20 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2223 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-09-20 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2226 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -183,7 +183,7 @@ are separate from the original implementation-list numbers in the table below.
 
 | Follow-up | Work | Status |
 |---|---|---|
-| 1 | Clear buffered monitored text after successful app/global memory erasure | In progress; preserve buffers when deletion is cancelled or fails |
+| 1 | Clear buffered monitored text after successful app/global memory erasure | Implemented and Astra-reviewed: successful erasure clears captured pending/partial text and live history; cancelled/failed deletions preserve it. App deletion failures no longer publish success. Regression tests cover subsequent flush/typing, scoped app identity and real SQLite deletion failures; portable gates pass, native CI required |
 | 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | Implemented and Astra-reviewed: mapping failures disarm stale grabs; explicit same-layout rebinds retain rollback. Regression failed before the fix; 41 live Linux tests and 138 unit tests pass; native CI required |
 | 3 | Support basename-only `COMPME_CONFIG` paths for startup and persistence | Implemented and Astra-reviewed: basename lock/persistence paths work while empty paths and unsafe parents retain their existing refusal. Both regressions failed before the fix; 50 config unit tests and two Linux startup integration tests pass. macOS/Windows native CI required |
 | 4 | Reconcile current documentation and guard the actual published-version claim | Implemented and Astra-reviewed: checker now pins the actual release claim as well as the tag reference. The new negative fixture failed before the fix; self-test, live check, shellcheck and policy self-test pass |

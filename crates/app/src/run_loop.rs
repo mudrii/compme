@@ -2480,6 +2480,21 @@ fn clear_monitored_state_for_policy_transition(
     buffers.clear();
 }
 
+fn clear_monitored_state_for_app(
+    pending: &mut Vec<PendingMonitoredText>,
+    buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
+    app: &str,
+) {
+    pending.retain(|item| item.app_key.as_deref().unwrap_or(item.field.app.as_str()) != app);
+    buffers.retain(|field, buffer| {
+        let app_key = match buffer {
+            MonitoredBuffer::Collecting { app_key, .. }
+            | MonitoredBuffer::DroppedUntilBoundary { app_key, .. } => app_key.as_deref(),
+        };
+        app_key.unwrap_or(field.app.as_str()) != app
+    });
+}
+
 fn flush_monitored_changes(
     pending: &mut Vec<PendingMonitoredText>,
     buffers: &mut HashMap<FieldHandle, MonitoredBuffer>,
@@ -3958,8 +3973,9 @@ fn transition_memory_mode(
 
 /// Resolve a clicked Apps-row index against the ids rendered with the SAME
 /// cap/order, delete that app's history, and return the recomposed rows.
-/// `None` = out-of-range row (stale click) — nothing deleted. The confirm
-/// prompt stays at the caller (FFI lives at the consume edge).
+/// `None` = out-of-range row (stale click) or deletion failure — no successful
+/// delete to publish. The confirm prompt stays at the caller (FFI lives at the
+/// consume edge).
 fn delete_app_row_and_recompose(
     store: &memory::MemoryStore,
     ids: &[String],
@@ -3967,10 +3983,15 @@ fn delete_app_row_and_recompose(
 ) -> Option<(Vec<String>, Vec<String>)> {
     let app = ids.get(row)?;
     match store.delete_app(app) {
-        Ok(n) => eprintln!("compme: deleted {n} records for {app}"),
-        Err(err) => eprintln!("compme: delete for {app} failed: {err}"),
+        Ok(n) => {
+            eprintln!("compme: deleted {n} records for {app}");
+            Some(compose_apps_rows(Some(store)))
+        }
+        Err(err) => {
+            eprintln!("compme: delete for {app} failed: {err}");
+            None
+        }
     }
-    Some(compose_apps_rows(Some(store)))
 }
 
 /// The persistence value for a boolean settings switch (COMPME_MIDLINE,
@@ -5195,7 +5216,11 @@ fn memory_mode_phase(ctx: MemoryModeCtx<'_>) {
 
 /// Heartbeat phase: the Apps pane's Delete-row edge (confirm, secure
 /// delete, recompose, re-render). Split out of `run()` verbatim (F16).
-fn apps_row_delete_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
+fn apps_row_delete_phase(
+    ctx: AppsPaneCtx<'_>,
+    settings: &mut SettingsState,
+    monitored: &mut MonitoredInput,
+) {
     let AppsPaneCtx {
         settings_flags,
         shell,
@@ -5234,6 +5259,11 @@ fn apps_row_delete_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
                 // re-read). Borrow the id before `settings.apps_ids` is
                 // reassigned below.
                 previous_inputs.clear_app(app);
+                clear_monitored_state_for_app(
+                    &mut monitored.pending_monitored,
+                    &mut monitored.monitored_buffers,
+                    app,
+                );
                 // Poison-recovery: skipping would leave the Apps pane
                 // showing the just-deleted row (refresh runs below).
                 *settings_flags
@@ -5268,7 +5298,11 @@ fn apps_row_delete_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
 /// Same shape as `apps_row_delete_phase`: confirm first (irreversible —
 /// `secure_delete` zeroes the freed pages), then recompose and re-render so the
 /// pane cannot keep showing rows that no longer exist.
-fn apps_erase_all_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
+fn apps_erase_all_phase(
+    ctx: AppsPaneCtx<'_>,
+    settings: &mut SettingsState,
+    monitored: &mut MonitoredInput,
+) {
     let AppsPaneCtx {
         settings_flags,
         shell,
@@ -5310,6 +5344,10 @@ fn apps_erase_all_phase(ctx: AppsPaneCtx<'_>, settings: &mut SettingsState) {
     // from ever refreshing it. Drop the live copies too, or "permanently
     // erased" is false for the rest of the process.
     previous_inputs.clear_all();
+    clear_monitored_state_for_policy_transition(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+    );
     let (lines, ids) = compose_apps_rows(Some(store));
     *settings_flags
         .apps_lines
@@ -6483,8 +6521,8 @@ pub fn run() -> Result<(), String> {
             settings_window: &settings_window,
             previous_inputs: &previous_inputs,
         };
-        apps_row_delete_phase(apps_pane_ctx(), &mut settings);
-        apps_erase_all_phase(apps_pane_ctx(), &mut settings);
+        apps_row_delete_phase(apps_pane_ctx(), &mut settings, &mut monitored);
+        apps_erase_all_phase(apps_pane_ctx(), &mut settings, &mut monitored);
         apps_domain_delete_phase(apps_pane_ctx(), &mut settings, &mut monitored);
         apps_row_policy_edit_phase(
             &settings_flags,

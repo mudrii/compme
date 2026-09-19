@@ -11808,7 +11808,7 @@ fn setup_pane_actions_phase_chosen_model_is_validated_before_persist() {
 fn phase_memory_with_two_apps() -> (memory::MemoryStore, Vec<String>) {
     let store = memory::MemoryStore::open_in_memory(
         &memory::StaticKey([5u8; 32]),
-        memory::StorageMode::AcceptedOnly,
+        memory::StorageMode::AllMonitored,
     )
     .expect("store");
     store.remember("com.a", "alpha").unwrap();
@@ -11844,6 +11844,7 @@ fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
 
     assert!(
@@ -11871,6 +11872,175 @@ fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
 }
 
 #[test]
+fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
+    let _home = PhaseConfigHome::new("apps-delete-buffered");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let store = memory::MemoryStore::open_in_memory(
+        &memory::StaticKey([46u8; 32]),
+        memory::StorageMode::AllMonitored,
+    )
+    .expect("store");
+    store.remember("com.a", "stored alpha").unwrap();
+    store.remember("com.b", "stored beta").unwrap();
+    let (_, ids) = compose_apps_rows(Some(&store));
+    let row = ids.iter().position(|app| app == "com.a").unwrap();
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut monitored = MonitoredInput::default();
+    let pending_field = field_with_app("frontmost.alias");
+    let mut partial_field = field_with_app("frontmost.alias");
+    partial_field.element_id = "ax:deleted-partial".into();
+    let survivor_field = field_with_app("com.b");
+    let mut deleted_tracker = FieldTracker::new();
+    let mut survivor_tracker = FieldTracker::new();
+    let _ = deleted_tracker.observe_with_inserted_text(
+        &partial_field,
+        &text_context(&partial_field, ""),
+        TriggerPolicy::Automatic,
+        1,
+    );
+    let _ = survivor_tracker.observe_with_inserted_text(
+        &survivor_field,
+        &text_context(&survivor_field, ""),
+        TriggerPolicy::Automatic,
+        1,
+    );
+    let deleted_partial = match deleted_tracker.observe_with_inserted_text(
+        &partial_field,
+        &text_context(&partial_field, "deletedpartial"),
+        TriggerPolicy::Automatic,
+        2,
+    ) {
+        Observation::Typed(change) => change,
+        Observation::CaretMoved { .. } => panic!("expected typed change"),
+    };
+    let survivor_partial = match survivor_tracker.observe_with_inserted_text(
+        &survivor_field,
+        &text_context(&survivor_field, "survivorpartial"),
+        TriggerPolicy::Automatic,
+        2,
+    ) {
+        Observation::Typed(change) => change,
+        Observation::CaretMoved { .. } => panic!("expected typed change"),
+    };
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &deleted_partial,
+        Some("com.a".into()),
+        None,
+    );
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &survivor_partial,
+        Some(survivor_field.app.clone()),
+        None,
+    );
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 999),
+    );
+    let pending = typed_change_after_baseline(&pending_field, "", "queued before delete ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some("com.a".into()),
+        None,
+    );
+
+    *flags.apps_delete_row.lock().unwrap() = Some(row);
+    apps_row_delete_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+        &mut monitored,
+    );
+
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_000),
+    );
+    assert!(
+        memory
+            .as_ref()
+            .unwrap()
+            .recent("com.a", 10)
+            .unwrap()
+            .is_empty(),
+        "a queued boundary from the deleted app must not recreate its row"
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        vec!["stored beta"],
+        "an unrelated partial buffer must wait for its own boundary"
+    );
+
+    let post_delete = match deleted_tracker.observe_with_inserted_text(
+        &partial_field,
+        &text_context(&partial_field, "deletedpartialnew text "),
+        TriggerPolicy::Automatic,
+        3,
+    ) {
+        Observation::Typed(change) => change,
+        Observation::CaretMoved { .. } => panic!("expected typed change"),
+    };
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &post_delete,
+        Some("com.a".into()),
+        None,
+    );
+    let survivor_boundary = match survivor_tracker.observe_with_inserted_text(
+        &survivor_field,
+        &text_context(&survivor_field, "survivorpartialsurvives "),
+        TriggerPolicy::Automatic,
+        3,
+    ) {
+        Observation::Typed(change) => change,
+        Observation::CaretMoved { .. } => panic!("expected typed change"),
+    };
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &survivor_boundary,
+        Some(survivor_field.app.clone()),
+        None,
+    );
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_001),
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        vec!["new text "],
+        "the first post-delete boundary must not include an old partial buffer"
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        vec!["survivorpartialsurvives ", "stored beta"],
+        "deleting one app must preserve another app's partial buffer"
+    );
+}
+
+#[test]
 fn apps_row_delete_phase_cancel_keeps_every_row() {
     let _home = PhaseConfigHome::new("apps-delete-cancel");
     let config = startup_test_config();
@@ -11881,6 +12051,15 @@ fn apps_row_delete_phase_cancel_keeps_every_row() {
     let mut settings = phase_settings_state(ids.clone());
     let prefs = Prefs::default();
     let window = crate::shell::SettingsWindow::new(flags.clone());
+    let field = field_with_app("com.a");
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let pending = typed_change_after_baseline(&field, "", "queued before cancel ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some(field.app.clone()),
+        None,
+    );
     *flags.apps_delete_row.lock().unwrap() = Some(0);
 
     apps_row_delete_phase(
@@ -11894,6 +12073,7 @@ fn apps_row_delete_phase_cancel_keeps_every_row() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut monitored,
     );
 
     assert!(flags.apps_delete_row.lock().unwrap().is_none());
@@ -11905,6 +12085,112 @@ fn apps_row_delete_phase_cancel_keeps_every_row() {
     );
     assert_eq!(settings.apps_ids, ids, "rows unchanged");
     assert!(flags.apps_lines.lock().unwrap().is_empty(), "no re-render");
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_000),
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        vec!["partialqueued before cancel ", "alpha"],
+        "cancel keeps both queued and partial text available to the normal flush"
+    );
+}
+
+#[test]
+fn apps_delete_phases_failed_delete_preserve_volatile_state() {
+    for (tag, erase_all) in [("row", false), ("all", true)] {
+        let path = private_memory_test_path(&format!("apps-delete-failure-{tag}"));
+        let store = memory::MemoryStore::open(
+            &path,
+            &memory::StaticKey([47u8; 32]),
+            memory::StorageMode::AllMonitored,
+        )
+        .expect("store");
+        store.remember("com.a", "stored alpha").unwrap();
+        store.remember("com.b", "stored beta").unwrap();
+        let (_, ids) = compose_apps_rows(Some(&store));
+        let row = ids.iter().position(|app| app == "com.a").unwrap();
+        let original_ids = ids.clone();
+        let memory = Some(store);
+        let config = startup_test_config();
+        let flags = phase_settings_flags(&config);
+        let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+        let mut settings = phase_settings_state(ids);
+        let prefs = Prefs::default();
+        let window = crate::shell::SettingsWindow::new(flags.clone());
+        let previous = PreviousInputs::default();
+        previous.record("com.a", "live prompt text".into());
+        let field = field_with_app("com.a");
+        let mut monitored = phase_monitored_with_buffer(&field);
+        let pending = typed_change_after_baseline(&field, "", "queued before failure ");
+        enqueue_monitored_change(
+            &mut monitored.pending_monitored,
+            &pending,
+            Some(field.app.clone()),
+            None,
+        );
+
+        // The store pins journal_mode=DELETE. An external directory occupying
+        // the rollback-journal path makes the real SQLite delete fail without
+        // a mock on every supported desktop OS.
+        let mut journal_name = path.as_os_str().to_owned();
+        journal_name.push("-journal");
+        let journal_path = PathBuf::from(journal_name);
+        std::fs::create_dir(&journal_path).unwrap();
+        if erase_all {
+            flags.apps_erase_all.store(true, Ordering::Relaxed);
+            apps_erase_all_phase(
+                AppsPaneCtx {
+                    settings_flags: &flags,
+                    shell: &host,
+                    memory: &memory,
+                    prefs: &prefs,
+                    config: &config,
+                    settings_window: &window,
+                    previous_inputs: &previous,
+                },
+                &mut settings,
+                &mut monitored,
+            );
+        } else {
+            *flags.apps_delete_row.lock().unwrap() = Some(row);
+            apps_row_delete_phase(
+                AppsPaneCtx {
+                    settings_flags: &flags,
+                    shell: &host,
+                    memory: &memory,
+                    prefs: &prefs,
+                    config: &config,
+                    settings_window: &window,
+                    previous_inputs: &previous,
+                },
+                &mut settings,
+                &mut monitored,
+            );
+        }
+        std::fs::remove_dir(&journal_path).unwrap();
+
+        assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2, "{tag}");
+        assert_eq!(settings.apps_ids, original_ids, "{tag}");
+        assert_eq!(previous.recent("com.a"), vec!["live prompt text"], "{tag}");
+        flush_monitored_changes(
+            &mut monitored.pending_monitored,
+            &mut monitored.monitored_buffers,
+            memory.as_ref(),
+            &prefs,
+            monitored_policy(true, false, true, 1_000),
+        );
+        assert_eq!(
+            memory.as_ref().unwrap().recent("com.a", 10).unwrap()[0],
+            "partialqueued before failure ",
+            "after the {tag} I/O failure clears, the normal flush proves volatile text survived"
+        );
+        drop(memory);
+        remove_private_memory_test_dir(&path);
+    }
 }
 
 #[test]
@@ -11932,6 +12218,7 @@ fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
     assert!(
         flags.apps_delete_row.lock().unwrap().is_none(),
@@ -11955,6 +12242,7 @@ fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
     assert!(flags.apps_delete_row.lock().unwrap().is_none());
     assert!(shell.calls().is_empty());
@@ -11987,6 +12275,7 @@ fn apps_erase_all_phase_confirmed_empties_the_store_and_recomposes() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
 
     assert!(
@@ -12003,6 +12292,92 @@ fn apps_erase_all_phase_confirmed_empties_the_store_and_recomposes() {
 }
 
 #[test]
+fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
+    let _home = PhaseConfigHome::new("apps-erase-buffered");
+    let config = startup_test_config();
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let store = memory::MemoryStore::open_in_memory(
+        &memory::StaticKey([45u8; 32]),
+        memory::StorageMode::AllMonitored,
+    )
+    .expect("store");
+    store.remember("com.a", "stored alpha").unwrap();
+    store.remember("com.b", "stored beta").unwrap();
+    let (_, ids) = compose_apps_rows(Some(&store));
+    let memory = Some(store);
+    let mut settings = phase_settings_state(ids);
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut monitored = MonitoredInput::default();
+    let pending_field = field_with_app("com.a");
+    let partial_field = field_with_app("com.b");
+    let pending = typed_change_after_baseline(&pending_field, "", "queued before erase ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some(pending_field.app.clone()),
+        None,
+    );
+    monitored.monitored_buffers.insert(
+        partial_field.clone(),
+        MonitoredBuffer::Collecting {
+            text: "partial before erase".into(),
+            app_key: Some(partial_field.app.clone()),
+            domain: None,
+        },
+    );
+
+    flags.apps_erase_all.store(true, Ordering::Relaxed);
+    apps_erase_all_phase(
+        AppsPaneCtx {
+            settings_flags: &flags,
+            shell: &host,
+            memory: &memory,
+            prefs: &prefs,
+            config: &config,
+            settings_window: &window,
+            previous_inputs: &PreviousInputs::default(),
+        },
+        &mut settings,
+        &mut monitored,
+    );
+
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_000),
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().count().unwrap(),
+        0,
+        "a queued boundary from before erase must not recreate a row"
+    );
+
+    let post_erase = typed_change_after_baseline(&partial_field, "", "new text ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &post_erase,
+        Some(partial_field.app.clone()),
+        None,
+    );
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_001),
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        vec!["new text "],
+        "the first post-erase boundary must not include an old partial buffer"
+    );
+}
+
+#[test]
 fn apps_erase_all_phase_declined_keeps_every_record() {
     let _home = PhaseConfigHome::new("apps-erase-cancel");
     let config = startup_test_config();
@@ -12013,6 +12388,15 @@ fn apps_erase_all_phase_declined_keeps_every_record() {
     let mut settings = phase_settings_state(ids.clone());
     let prefs = Prefs::default();
     let window = crate::shell::SettingsWindow::new(flags.clone());
+    let field = field_with_app("com.a");
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let pending = typed_change_after_baseline(&field, "", "queued before cancel ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some(field.app.clone()),
+        None,
+    );
     flags.apps_erase_all.store(true, Ordering::Relaxed);
 
     apps_erase_all_phase(
@@ -12026,6 +12410,7 @@ fn apps_erase_all_phase_declined_keeps_every_record() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut monitored,
     );
 
     assert!(!flags.apps_erase_all.load(Ordering::Relaxed));
@@ -12036,6 +12421,18 @@ fn apps_erase_all_phase_declined_keeps_every_record() {
         "Cancel is safe"
     );
     assert_eq!(settings.apps_ids, ids);
+    flush_monitored_changes(
+        &mut monitored.pending_monitored,
+        &mut monitored.monitored_buffers,
+        memory.as_ref(),
+        &prefs,
+        monitored_policy(true, false, true, 1_000),
+    );
+    assert_eq!(
+        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        vec!["partialqueued before cancel ", "alpha"],
+        "cancel keeps both queued and partial text available to the normal flush"
+    );
 }
 
 #[test]
@@ -12062,6 +12459,7 @@ fn apps_erase_all_phase_unarmed_or_storeless_never_prompts() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
     assert!(shell.calls().is_empty(), "unarmed phase never prompts");
     assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2);
@@ -12081,6 +12479,7 @@ fn apps_erase_all_phase_unarmed_or_storeless_never_prompts() {
             previous_inputs: &PreviousInputs::default(),
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
     assert!(
         !flags.apps_erase_all.load(Ordering::Relaxed),
@@ -12121,6 +12520,7 @@ fn apps_erase_all_phase_also_drops_the_live_prompt_rings() {
             previous_inputs: &previous,
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
 
     assert!(
@@ -12158,6 +12558,7 @@ fn apps_row_delete_phase_also_drops_that_apps_live_ring() {
             previous_inputs: &previous,
         },
         &mut settings,
+        &mut MonitoredInput::default(),
     );
 
     assert!(
