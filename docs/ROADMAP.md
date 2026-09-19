@@ -187,7 +187,7 @@ are separate from the original implementation-list numbers in the table below.
 | 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | In progress; retain rollback for an explicit same-layout rebind |
 | 3 | Support basename-only `COMPME_CONFIG` paths for startup and persistence | Pending regression tests and fix |
 | 4 | Reconcile current documentation and guard the actual published-version claim | Documentation corrected and Astra-reviewed; formatter, version checker and its self-test, policy self-test, and changed-crate rustdoc pass. Checker hardening remains pending |
-| 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | In progress; desktop acceptance remains unverified |
+| 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | Procedures added and Astra-reviewed in [the Linux checklist](MANUAL-VALIDATION-LINUX.md); new gates remain unchecked and desktop acceptance remains unverified |
 | 6 | Investigate Linux completion latency with measured before/after evidence | Pending; retain the 500 ms budget |
 
 The owner requested implementation of review-list items **1–6 and 19–35**.
