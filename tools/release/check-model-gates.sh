@@ -7,6 +7,7 @@ release_workflow="${1:-$canonical_release_workflow}"
 ci_workflow="$repo_root/.github/workflows/ci.yml"
 audit_workflow="$repo_root/.github/workflows/audit.yml"
 docs_workflow="$repo_root/.github/workflows/docs.yml"
+gpu_workflow="$repo_root/.github/workflows/gpu.yml"
 gate_script="$repo_root/tools/release/run-model-gates.sh"
 feature_script="$repo_root/tools/release/check-model-client-features.sh"
 privacy_script="$repo_root/tools/release/check-privacy-policy.sh"
@@ -399,6 +400,110 @@ abort("missing release gate: docs lane exact action provenance") unless actions 
   retained = step && (exact ? step.fetch("run") == fragment : step.fetch("run").include?(fragment))
   abort("missing release gate: docs lane retains #{name}") unless retained
 end
+RUBY
+}
+
+check_gpu_integrity_controls() {
+  ruby -ryaml - "$1" <<'RUBY'
+def required_step_enabled?(step)
+  condition_is_enabled = !step.key?("if") || step["if"] == true
+  failure_is_required = !step.key?("continue-on-error") || step["continue-on-error"] == false
+  condition_is_enabled && failure_is_required
+end
+
+workflow = YAML.load_file(ARGV.fetch(0))
+triggers = workflow["on"] || workflow[true]
+abort("missing release gate: GPU builds keep schedule/dispatch triggers") unless
+  triggers.keys.sort == ["schedule", "workflow_dispatch"] &&
+  Array(triggers.fetch("schedule")).any? { |entry| entry["cron"].is_a?(String) }
+
+dispatch = triggers.fetch("workflow_dispatch")
+backend = dispatch.fetch("inputs").fetch("backend")
+job_names = %w[cuda-linux vulkan-linux vulkan-windows]
+abort("missing release gate: GPU dispatch selects all or exactly one backend") unless
+  backend.fetch("type") == "choice" &&
+  backend.fetch("default") == "all" &&
+  backend.fetch("options").sort == (["all"] + job_names).sort
+
+abort("missing release gate: GPU workflow defaults to read-only contents permission") unless
+  workflow.fetch("permissions") == {"contents" => "read"}
+abort("missing release gate: GPU jobs use independent concurrency groups") if workflow.key?("concurrency")
+
+jobs = workflow.fetch("jobs")
+abort("missing release gate: exact GPU build job topology") unless jobs.keys.sort == job_names.sort
+expected = {
+  "vulkan-linux" => {"feature" => "vulkan", "timeout" => 45},
+  "cuda-linux" => {"feature" => "cuda", "timeout" => 90, "build_jobs" => 2},
+  "vulkan-windows" => {"feature" => "vulkan", "timeout" => 60, "build_jobs" => 2},
+}
+concurrency_groups = []
+expected.each do |job_name, policy|
+  job = jobs.fetch(job_name)
+  expected_condition = "github.event_name != 'workflow_dispatch' || inputs.backend == 'all' || inputs.backend == '#{job_name}'"
+  abort("missing release gate: GPU #{job_name} runs on schedule or its selected dispatch backend") unless
+    job.fetch("if") == expected_condition
+  abort("missing release gate: GPU #{job_name} cannot ignore job failure") if
+    job.key?("continue-on-error") && job["continue-on-error"] != false
+
+  concurrency = job.fetch("concurrency")
+  group = concurrency.fetch("group").to_s
+  abort("missing release gate: GPU #{job_name} has a non-cancelling job concurrency group") unless
+    !group.empty? && concurrency.fetch("cancel-in-progress") == false
+  concurrency_groups << group
+
+  timeout = Integer(job.fetch("timeout-minutes"))
+  abort("missing release gate: GPU #{job_name} timeout remains bounded") unless
+    timeout.positive? && timeout <= policy.fetch("timeout")
+  if policy.key?("build_jobs")
+    build_jobs = Integer(job.fetch("env").fetch("CARGO_BUILD_JOBS"))
+    abort("missing release gate: GPU #{job_name} compile parallelism remains bounded") unless
+      build_jobs.positive? && build_jobs <= policy.fetch("build_jobs")
+  end
+
+  abort("missing release gate: GPU #{job_name} inherits read-only workflow permissions") if job.key?("permissions")
+  steps = job.fetch("steps")
+  checkouts = steps.select { |step| step["uses"].to_s.start_with?("actions/checkout@") }
+  abort("missing release gate: GPU #{job_name} has one credential-free checkout") unless
+    checkouts.length == 1 && checkouts.first.fetch("with").fetch("persist-credentials") == false
+
+  build = "cargo build --locked -p app --features #{policy.fetch("feature")}"
+  abort("missing release gate: GPU #{job_name} builds app with the intended feature") unless
+    steps.count { |step| step["run"] == build && required_step_enabled?(step) } == 1
+end
+abort("missing release gate: GPU jobs have distinct concurrency groups") unless
+  concurrency_groups.uniq.length == concurrency_groups.length
+
+cuda_install = jobs.fetch("cuda-linux").fetch("steps").find do |step|
+  step["run"].to_s.include?("cuda-keyring.deb")
+end
+abort("missing release gate: CUDA SDK installer step") unless cuda_install
+abort("missing release gate: CUDA SDK installer step must run and fail loud") unless
+  required_step_enabled?(cuda_install)
+cuda_run = cuda_install.fetch("run")
+cuda_download = cuda_run.index(/^[[:space:]]*curl[[:space:]]+-[A-Za-z]*o[A-Za-z]*[[:space:]]+"\$RUNNER_TEMP\/cuda-keyring\.deb"[[:space:]]*\\$/)
+cuda_checksum = cuda_run.index(/^[[:space:]]*echo "[0-9a-fA-F]{64}  \$RUNNER_TEMP\/cuda-keyring\.deb"[[:space:]]*\\\n[[:space:]]*\| sha256sum --check --strict[[:space:]]*$/)
+cuda_install_command = cuda_run.index(/^[[:space:]]*sudo dpkg -i "\$RUNNER_TEMP\/cuda-keyring\.deb"[[:space:]]*$/)
+abort("missing release gate: CUDA keyring is downloaded, checksum-verified, then installed") unless
+  cuda_download && cuda_checksum && cuda_install_command &&
+  cuda_download < cuda_checksum && cuda_checksum < cuda_install_command
+
+vulkan_install = jobs.fetch("vulkan-windows").fetch("steps").find do |step|
+  step["run"].to_s.include?("Get-FileHash")
+end
+abort("missing release gate: Windows Vulkan SDK installer step") unless vulkan_install
+abort("missing release gate: Windows Vulkan SDK installer step must run and fail loud") unless
+  required_step_enabled?(vulkan_install)
+vulkan_run = vulkan_install.fetch("run")
+expected_sha = vulkan_run.index(/^[[:space:]]*\$expectedSha256 = "[0-9a-fA-F]{64}"[[:space:]]*$/)
+download = vulkan_run.index(/^[[:space:]]*Invoke-WebRequest\b[^\n]*-OutFile \$installer[[:space:]]*$/)
+actual_sha = vulkan_run.index(/^[[:space:]]*\$actualSha256 = \(Get-FileHash -Algorithm SHA256 \$installer\)\.Hash\.ToLowerInvariant\(\)[[:space:]]*$/)
+comparison = vulkan_run.index(/^[[:space:]]*if \(\$actualSha256 -ne \$expectedSha256\) \{[[:space:]]*$/)
+failure = vulkan_run.index(/^[[:space:]]*throw "Vulkan SDK checksum mismatch:[^\n]*"[[:space:]]*$/)
+installer = vulkan_run.index(/^[[:space:]]*\$process = Start-Process -FilePath \$installer\b/)
+abort("missing release gate: Windows Vulkan SDK is downloaded, checksum-verified, then installed") unless
+  expected_sha && download && actual_sha && comparison && failure && installer &&
+  expected_sha < download && download < actual_sha && actual_sha < comparison &&
+  comparison < failure && failure < installer
 RUBY
 }
 
@@ -1262,6 +1367,107 @@ run_self_test() {
   ruby -0pi -e 'sub(/ # stable$/, "")' "$bad_toolchain_comments"
   if check_toolchain_pin_comments "$bad_toolchain_comments" 4 "CI" >/dev/null 2>&1; then
     echo "release gate self-test failed: rust-toolchain pin without its stable comment was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  check_gpu_integrity_controls "$gpu_workflow"
+
+  bad_gpu_omitted_build="$tmp_dir/bad-gpu-omitted-build.yml"
+  cp "$gpu_workflow" "$bad_gpu_omitted_build"
+  ruby -0pi -e 'sub(/^        run: cargo build --locked -p app --features vulkan\n/, "")' "$bad_gpu_omitted_build"
+  if check_gpu_integrity_controls "$bad_gpu_omitted_build" >/dev/null 2>&1; then
+    echo "release gate self-test failed: GPU job without its build command was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_feature="$tmp_dir/bad-gpu-feature.yml"
+  cp "$gpu_workflow" "$bad_gpu_feature"
+  ruby -0pi -e 'sub(/--features cuda$/, "--features vulkan")' "$bad_gpu_feature"
+  if check_gpu_integrity_controls "$bad_gpu_feature" >/dev/null 2>&1; then
+    echo "release gate self-test failed: GPU job with the wrong feature was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_cuda_checksum="$tmp_dir/bad-gpu-cuda-checksum.yml"
+  cp "$gpu_workflow" "$bad_gpu_cuda_checksum"
+  ruby -0pi -e 'sub(/^            \| sha256sum --check --strict\n/, "")' "$bad_gpu_cuda_checksum"
+  if check_gpu_integrity_controls "$bad_gpu_cuda_checksum" >/dev/null 2>&1; then
+    echo "release gate self-test failed: unchecked CUDA keyring package was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_vulkan_checksum="$tmp_dir/bad-gpu-vulkan-checksum.yml"
+  cp "$gpu_workflow" "$bad_gpu_vulkan_checksum"
+  ruby -0pi -e 'sub(/^          if \(\$actualSha256 -ne \$expectedSha256\) \{\n/, "")' "$bad_gpu_vulkan_checksum"
+  if check_gpu_integrity_controls "$bad_gpu_vulkan_checksum" >/dev/null 2>&1; then
+    echo "release gate self-test failed: unchecked Windows Vulkan installer was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_timeout="$tmp_dir/bad-gpu-timeout.yml"
+  cp "$gpu_workflow" "$bad_gpu_timeout"
+  ruby -0pi -e 'sub(/^    timeout-minutes: 90$/, "    timeout-minutes: 91")' "$bad_gpu_timeout"
+  if check_gpu_integrity_controls "$bad_gpu_timeout" >/dev/null 2>&1; then
+    echo "release gate self-test failed: weakened GPU timeout bound was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_credentials="$tmp_dir/bad-gpu-credentials.yml"
+  cp "$gpu_workflow" "$bad_gpu_credentials"
+  ruby -0pi -e 'sub(/^          persist-credentials: false$/, "          persist-credentials: true")' "$bad_gpu_credentials"
+  if check_gpu_integrity_controls "$bad_gpu_credentials" >/dev/null 2>&1; then
+    echo "release gate self-test failed: credential-persisting GPU checkout was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_selection="$tmp_dir/bad-gpu-selection.yml"
+  cp "$gpu_workflow" "$bad_gpu_selection"
+  ruby -0pi -e 'sub(/inputs\.backend == '\''vulkan-linux'\''/, "inputs.backend == '\''cuda-linux'\''")' "$bad_gpu_selection"
+  if check_gpu_integrity_controls "$bad_gpu_selection" >/dev/null 2>&1; then
+    echo "release gate self-test failed: GPU dispatch selecting the wrong job was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_concurrency="$tmp_dir/bad-gpu-concurrency.yml"
+  cp "$gpu_workflow" "$bad_gpu_concurrency"
+  ruby -0pi -e 'sub(/^      cancel-in-progress: false$/, "      cancel-in-progress: true")' "$bad_gpu_concurrency"
+  if check_gpu_integrity_controls "$bad_gpu_concurrency" >/dev/null 2>&1; then
+    echo "release gate self-test failed: cancelling GPU backend concurrency was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_disabled_build="$tmp_dir/bad-gpu-disabled-build.yml"
+  cp "$gpu_workflow" "$bad_gpu_disabled_build"
+  ruby -0pi -e 'sub(/^        run: cargo build --locked -p app --features vulkan$/, "        if: false\n        run: cargo build --locked -p app --features vulkan")' "$bad_gpu_disabled_build"
+  if check_gpu_integrity_controls "$bad_gpu_disabled_build" >/dev/null 2>&1; then
+    echo "release gate self-test failed: disabled GPU build step was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_ignored_installer="$tmp_dir/bad-gpu-ignored-installer.yml"
+  cp "$gpu_workflow" "$bad_gpu_ignored_installer"
+  ruby -0pi -e 'sub(/^        shell: pwsh$/, "        continue-on-error: true\n        shell: pwsh")' "$bad_gpu_ignored_installer"
+  if check_gpu_integrity_controls "$bad_gpu_ignored_installer" >/dev/null 2>&1; then
+    echo "release gate self-test failed: ignored GPU installer failure was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_ignored_job="$tmp_dir/bad-gpu-ignored-job.yml"
+  cp "$gpu_workflow" "$bad_gpu_ignored_job"
+  ruby -0pi -e 'sub(/^    name: Linux Vulkan SDK build$/, "    name: Linux Vulkan SDK build\n    continue-on-error: true")' "$bad_gpu_ignored_job"
+  if check_gpu_integrity_controls "$bad_gpu_ignored_job" >/dev/null 2>&1; then
+    echo "release gate self-test failed: ignored GPU job failure was accepted" >&2
     cleanup
     return 1
   fi
@@ -3651,6 +3857,7 @@ check_toolchain_pin_comments "$audit_workflow" 1 "audit"
 check_ci_integrity_controls "$ci_workflow"
 check_audit_integrity_controls "$audit_workflow"
 check_docs_integrity_controls "$docs_workflow" "$ci_workflow"
+check_gpu_integrity_controls "$gpu_workflow"
 check_release_integrity_controls "$release_workflow"
 check_all_self_test_env_contracts
 check_manual_a2_summary "$readme_doc" "README"
