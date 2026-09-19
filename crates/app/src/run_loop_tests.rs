@@ -5241,6 +5241,8 @@ fn memory_off_rejects_a_database_symlink_before_loading_a_key() {
 #[test]
 fn memory_off_opens_an_existing_store_without_using_the_create_key_path() {
     let path = private_memory_test_path("off-existing");
+    config::create_owner_only_dir_if_missing(path.parent().unwrap())
+        .expect("create a production-shaped private memory directory");
     {
         let store = memory::MemoryStore::open(
             &path,
