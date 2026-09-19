@@ -87,8 +87,8 @@ MD
     cat >"$root/docs/DEVELOPMENT.md" <<'MD'
 ## Repository State
 
-The current checkout develops on `main`; the latest published release is
-`v1.2.3`. Specifically, `v1.2.3` points to `deadbeef`.
+The current checkout develops on `main`; the latest published release is `v1.2.3`.
+Specifically, `v1.2.3` points to `deadbeef`.
 MD
     cat >"$root/docs/ACCEPTANCE.md" <<'MD'
 # Acceptance
@@ -136,6 +136,19 @@ MD
       *) echo "version-docs self-test failed: failure did not name $stale_file, got: $out" >&2; return 1 ;;
     esac
   done
+
+  # A current tag reference must not conceal a stale published-release claim.
+  write_fixtures "$root"
+  sed '/latest published release is/s/1\.2\.3/9.9.9/g' "$root/docs/DEVELOPMENT.md" >"$tmp/stale.md"
+  mv "$tmp/stale.md" "$root/docs/DEVELOPMENT.md"
+  if out="$(COMPME_VERSION_DOCS_ROOT="$root" "$0" 2>&1)"; then
+    echo "version-docs self-test failed: stale published-release claim passed" >&2
+    return 1
+  fi
+  case "$out" in
+    *"docs/DEVELOPMENT.md: published-release claim"*) ;;
+    *) echo "version-docs self-test failed: wrong published-release diagnostic: $out" >&2; return 1 ;;
+  esac
 
   # The ROADMAP needle is the bare version: a header without the parenthesized
   # commit still passes because the anchor already pins the context.
@@ -227,6 +240,7 @@ require_doc_version "header" "docs/ROADMAP.md" "remains the latest published art
 require_doc_version "release-boundary note" "docs/ROADMAP.md" "**Release boundary:** the published" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/RELEASING.md" "latest published artifact is" "$backticked" || stale=1
 require_doc_version "repository-state note" "docs/DEVELOPMENT.md" "points to" "$backticked" || stale=1
+require_doc_version "published-release claim" "docs/DEVELOPMENT.md" "latest published release is" "$backticked" || stale=1
 require_doc_version "release-boundary header" "docs/ACCEPTANCE.md" "latest published artifact" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/ARCHITECTURE.md" "Release boundary" "$backticked" || stale=1
 require_doc_version "validation boundary note" "docs/MANUAL-VALIDATION.md" "Validate the latest published" "$backticked" || stale=1

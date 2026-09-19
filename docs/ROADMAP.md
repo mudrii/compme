@@ -186,7 +186,7 @@ are separate from the original implementation-list numbers in the table below.
 | 1 | Clear buffered monitored text after successful app/global memory erasure | In progress; preserve buffers when deletion is cancelled or fails |
 | 2 | Disarm stale X11 accept grabs after a layout change collides with another client's grab | In progress; retain rollback for an explicit same-layout rebind |
 | 3 | Support basename-only `COMPME_CONFIG` paths for startup and persistence | Pending regression tests and fix |
-| 4 | Reconcile current documentation and guard the actual published-version claim | Documentation corrected and Astra-reviewed; formatter, version checker and its self-test, policy self-test, and changed-crate rustdoc pass. Checker hardening remains pending |
+| 4 | Reconcile current documentation and guard the actual published-version claim | Implemented and Astra-reviewed: checker now pins the actual release claim as well as the tag reference. The new negative fixture failed before the fix; self-test, live check, shellcheck and policy self-test pass |
 | 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | Procedures added and Astra-reviewed in [the Linux checklist](MANUAL-VALIDATION-LINUX.md); new gates remain unchecked and desktop acceptance remains unverified |
 | 6 | Investigate Linux completion latency with measured before/after evidence | Decode-phase investigation completed and Astra-reviewed: strict baseline 1,844 ms; three instrumented samples attribute about 53% to prompt decode and 47% to generated-token decode. Probes removed; [evidence](PERFORMANCE-2026-09-19.md) records the still-failing 500 ms budget. No production optimization is claimed |
 
