@@ -117,3 +117,40 @@ gate. Independently run portable/native checks are listed above rather than
 being represented as a green Full Local Gate. No commit or release was made.
 The release-policy checker's self-test passed; its full run likewise reaches
 the macOS-only workspace test enumeration and cannot finish here.
+
+## Resumed implementation and CI repairs
+
+The preceding validation snapshot predates the owner's subsequent commit/push
+instruction. The implementation landed in `f3cd4a4`; the saved handoff is
+`cc1d161`. On resuming, both commits' CI runs showed the same two failures:
+an unused portable tray function in macOS test builds, and a Windows memory
+fixture whose directory did not have the production owner-only DACL.
+
+Sol implemented both repairs and Astra reviewed each independently before
+the owner-requested commits and pushes:
+
+- `66e5889` confines the tray dead-code allowance to macOS.
+- `f4266bd` creates the existing-memory test fixture through the production
+  directory-hardening helper; production permission checks are unchanged.
+- `baa89c9` corrects stale GPU-feature documentation; Astra reviewed it
+  separately against the manifests.
+
+The focused existing-memory regression passed on Linux, as did portable
+workspace clippy with warnings denied. Version-doc, privacy-policy,
+agent-brief, gate-runner self-test and release-policy self-test checks passed.
+The canonical Full Local Gate again passed formatting and stopped at **2/56**:
+
+```text
+error[E0455]: link kind `framework` is only supported on Apple targets
+error: `objc2` only works on Apple platforms
+```
+
+Steps 3–56 did not run through that wrapper. Initial focused-test attempts
+also exposed missing libclang, C headers and the libstdc++ runtime in the
+shell; after supplying the Nix compiler environment and library paths, the
+test passed. These environment failures are not assertion results.
+
+The existing Linux Vulkan SDK workflow passed on `cc1d161`
+([run 35431748221](https://github.com/mudrii/compme/actions/runs/35431748221)).
+It built `app --features vulkan` on the hosted runner; this is compilation
+evidence, not GPU runtime or latency acceptance.
