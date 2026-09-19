@@ -436,6 +436,11 @@ expected = {
   "cuda-linux" => {"feature" => "cuda", "timeout" => 90, "build_jobs" => 2},
   "vulkan-windows" => {"feature" => "vulkan", "timeout" => 60, "build_jobs" => 2},
 }
+expected_action_identities = %w[
+  actions/checkout
+  dtolnay/rust-toolchain
+  Swatinem/rust-cache
+]
 concurrency_groups = []
 expected.each do |job_name, policy|
   job = jobs.fetch(job_name)
@@ -462,6 +467,17 @@ expected.each do |job_name, policy|
 
   abort("missing release gate: GPU #{job_name} inherits read-only workflow permissions") if job.key?("permissions")
   steps = job.fetch("steps")
+  actions = steps.each_with_object([]) do |step, found|
+    found << step["uses"] if step.key?("uses")
+  end
+  action_identities = actions.map do |uses|
+    identity, ref = uses.split("@", 2)
+    abort("missing release gate: GPU #{job_name} action uses a full commit SHA") unless
+      ref&.match?(/\A[0-9a-f]{40}\z/)
+    identity
+  end
+  abort("missing release gate: GPU #{job_name} has the exact approved action identities") unless
+    action_identities == expected_action_identities
   checkouts = steps.select { |step| step["uses"].to_s.start_with?("actions/checkout@") }
   abort("missing release gate: GPU #{job_name} has one credential-free checkout") unless
     checkouts.length == 1 && checkouts.first.fetch("with").fetch("persist-credentials") == false
@@ -1423,6 +1439,15 @@ run_self_test() {
   ruby -0pi -e 'sub(/^          persist-credentials: false$/, "          persist-credentials: true")' "$bad_gpu_credentials"
   if check_gpu_integrity_controls "$bad_gpu_credentials" >/dev/null 2>&1; then
     echo "release gate self-test failed: credential-persisting GPU checkout was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  bad_gpu_action_ref="$tmp_dir/bad-gpu-action-ref.yml"
+  cp "$gpu_workflow" "$bad_gpu_action_ref"
+  ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$bad_gpu_action_ref"
+  if check_gpu_integrity_controls "$bad_gpu_action_ref" >/dev/null 2>&1; then
+    echo "release gate self-test failed: tag-pinned GPU action was accepted" >&2
     cleanup
     return 1
   fi
@@ -3967,6 +3992,7 @@ ruby -ryaml -e '
   ci_workflow = YAML.load_file(ARGV.fetch(1))
   audit_workflow = YAML.load_file(ARGV.fetch(2))
   docs_workflow = YAML.load_file(ARGV.fetch(3))
+  gpu_workflow = YAML.load_file(ARGV.fetch(4))
 
   def rust_toolchain_step_valid?(step)
     step["uses"].to_s.start_with?("dtolnay/rust-toolchain@") &&
@@ -4006,6 +4032,9 @@ ruby -ryaml -e '
                    {"cache-directories" => "tools/spike/models"},
                    {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "tools/spike/models"},
                    {"key" => "macos-15", "workspaces" => ".\ntools/spike\n", "cache-directories" => "~/.cargo/advisory-db"},
+                   {"key" => "optional-vulkan"},
+                   {"key" => "optional-cuda"},
+                   {"key" => "optional-vulkan-windows"},
                  ]
                when "actions/upload-artifact"
                  [
@@ -4045,6 +4074,7 @@ ruby -ryaml -e '
   validate_actions!(ci_workflow, "CI")
   validate_actions!(audit_workflow, "audit")
   validate_actions!(docs_workflow, "docs")
+  validate_actions!(gpu_workflow, "GPU")
   ci_action_sequence = [
     "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1",
     "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30",
@@ -4666,7 +4696,7 @@ ruby -ryaml -e '
     "Check release tag matches bundle metadata",
     "COMPME_EXPECTED_VERSION=\"${GITHUB_REF_NAME#v}\" tools/bundle/check-bundle-metadata.sh"
   )
-' "$release_workflow" "$ci_workflow" "$audit_workflow" "$docs_workflow"
+' "$release_workflow" "$ci_workflow" "$audit_workflow" "$docs_workflow" "$gpu_workflow"
 
 workspace_members_count="$(cargo metadata --format-version 1 --no-deps | ruby -rjson -e 'puts JSON.parse(STDIN.read).fetch("workspace_members").length')"
 workspace_test_count="$(cargo test --locked --workspace --all-targets -- --list | awk '/: test$/ { count++ } END { print count + 0 }')"
