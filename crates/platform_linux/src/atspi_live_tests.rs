@@ -1531,7 +1531,8 @@ mod x11_accept_tap {
     use super::*;
     use crate::x11_keys::keycode_for_keysym;
     use platform::{AcceptAction, AcceptCallback, AcceptSubscription, TapControl};
-    use std::sync::{Arc, Mutex};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{mpsc, Arc, Mutex};
     use std::time::{Duration, Instant};
     use x11rb::connection::Connection;
     // `ConnectionExt` is not re-imported here: the parent module already brings it
@@ -1894,21 +1895,62 @@ mod x11_accept_tap {
         // A leaked grab is invisible until a user presses Tab in another
         // application, so it is proven two independent ways.
         let (conn, root) = xtest();
-        let (_adapter, subscription, _recorded) = install_tap();
-        subscription.set_suggestion_visible(true).expect("arm");
+        let (entered_tx, entered_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let release_rx = Mutex::new(release_rx);
+        let (delivery_tx, delivery_rx) = mpsc::channel();
+        let cancellation_returned = Arc::new(AtomicBool::new(false));
+        let returned_for_callback = Arc::clone(&cancellation_returned);
+        let callback: AcceptCallback = Arc::new(move |control| {
+            delivery_tx
+                .send((control, returned_for_callback.load(Ordering::Acquire)))
+                .unwrap();
+            if control == TapControl::Dismiss {
+                entered_tx.send(()).unwrap();
+                release_rx.lock().unwrap().recv().unwrap();
+            }
+        });
+        let tap = crate::x11_tap::X11AcceptTap::install(callback).expect("install live tap");
+        tap.set_suggestion_visible(true).expect("arm");
+        tap.enqueue_for_test(TapControl::Dismiss);
+        entered_rx
+            .recv_timeout(KEY_WAIT)
+            .expect("first callback did not enter");
+        assert_eq!(
+            delivery_rx.recv_timeout(KEY_WAIT).unwrap(),
+            (TapControl::Dismiss, false)
+        );
+        tap.enqueue_for_test(TapControl::Cycle);
+
         // Teardown must also be BOUNDED. It used to join all three workers with
         // no timeout, so a worker that missed its wake — a dropped `SendEvent`,
         // an X server that stopped answering — hung the run loop forever, on the
-        // very thread that drives the product. Drop now waits `STOP_TIMEOUT` and
-        // then detaches, so this must return promptly even though nothing here
-        // is wedged.
-        let started = std::time::Instant::now();
-        drop(subscription);
-        let teardown = started.elapsed();
+        // very thread that drives the product. Keep the first callback blocked
+        // across the bound and queue a second control behind it: Drop may let the
+        // in-flight callback finish later, but the queued one must never begin.
+        let (drop_done_tx, drop_done_rx) = mpsc::channel();
+        let started = Instant::now();
+        let dropper = std::thread::spawn(move || {
+            drop(tap);
+            drop_done_tx.send(started.elapsed()).unwrap();
+        });
+        let teardown = drop_done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("live tap teardown exceeded its bound");
         assert!(
-            teardown < std::time::Duration::from_secs(5),
+            teardown < Duration::from_secs(5),
             "teardown must be bounded, took {teardown:?}"
         );
+        cancellation_returned.store(true, Ordering::Release);
+        release_tx.send(()).unwrap();
+        assert!(
+            matches!(
+                delivery_rx.recv_timeout(KEY_WAIT),
+                Err(mpsc::RecvTimeoutError::Disconnected)
+            ),
+            "a callback queued behind in-flight work began after teardown returned"
+        );
+        dropper.join().unwrap();
 
         let expected = key_count("Tab") + 1;
         tap_key(&conn, root, KEYSYM_TAB);

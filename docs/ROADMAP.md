@@ -189,7 +189,7 @@ Native CI and GUI acceptance are separate evidence requirements.
 | C4: model prompts exceeding the native batch limit | Implemented; chunked decoding passes the same long-prompt case that aborted before, including prefix reuse; Vulkan regression and default model tests pass; Astra approved. Native CI pending |
 | C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved. Native CI pending |
 | C6: bounded Linux accessibility setup | Implemented; real authentication stall returns Timeout and late subscription setup cannot start workers; 141 unit and 41 live tests pass; Astra approved. Native CI pending |
-| C7: cancel queued X11 callbacks | Pending |
+| C7: cancel queued X11 callbacks | Implemented; real tap teardown drops queued callbacks while allowing in-flight work to finish; regression fails before the fix and passes after; 41 live tests pass; Astra approved. Native CI pending |
 | D1: coverage measurement scope | Corrected and Astra-reviewed; historical percentages are not current production-only coverage |
 | D2: Accessibility relaunch instructions | Corrected and Astra-reviewed in first-run and troubleshooting guidance |
 | D3: native memory-control acceptance procedure | Added and Astra-reviewed within existing gate IDs; native execution remains unverified |

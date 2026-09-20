@@ -805,6 +805,7 @@ impl X11AcceptTap {
             guard.threads.push(spawn_dispatcher(
                 &mut spawner,
                 callback,
+                Arc::clone(&state),
                 dispatch_rx,
                 guard.stopped_tx.as_ref().expect("stop sender").clone(),
             )?);
@@ -866,6 +867,15 @@ impl X11AcceptTap {
             crate::x11_keys::configured_bindings(),
             GrabFailureRecovery::RestorePreviousPlan,
         )
+    }
+
+    #[cfg(test)]
+    pub(crate) fn enqueue_for_test(&self, control: TapControl) {
+        self.dispatch_tx
+            .as_ref()
+            .expect("test tap is active")
+            .send(control)
+            .expect("test dispatcher is running");
     }
 
     /// Schedule the tap to treat the suggestion as hidden after `delay` — the
@@ -991,12 +1001,16 @@ fn wake_event_thread(conn: &RustConnection, window: Window, atom: u32) {
 fn spawn_dispatcher(
     spawner: &mut WorkerSpawner,
     callback: AcceptCallback,
+    state: Arc<TapState>,
     rx: mpsc::Receiver<TapControl>,
     stopped: mpsc::Sender<()>,
 ) -> Result<JoinHandle<()>, PlatformError> {
     spawner.spawn("compme-keytap-dispatch", "dispatcher thread", move || {
         let _stopped = stopped;
         while let Ok(control) = rx.recv() {
+            if !state.active.load(Ordering::Acquire) || state.stopping.load(Ordering::Acquire) {
+                break;
+            }
             // The engine's callback is foreign code on the far side of the
             // FFI-shaped boundary: an unwind here must not poison the tap or
             // abort the process, and it must never be able to reach the
