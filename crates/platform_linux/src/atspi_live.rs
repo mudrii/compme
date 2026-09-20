@@ -885,13 +885,16 @@ fn read_context_on(
     // A negative or past-the-end caret is a toolkit bug, not something to
     // propagate into scalar arithmetic: clamp into the text we actually read.
     let caret = usize::try_from(caret).unwrap_or(0).min(scalars.len());
-    let left: String = scalars[..caret].iter().collect();
-    let right: String = scalars[caret..].iter().collect();
     let (selection, selected_text) = selection_on(&text, &scalars);
+    let (left_end, right_start, caret) = selection.map_or((caret, caret, caret), |range| {
+        (range.start, range.end, range.start)
+    });
+    let left: String = scalars[..left_end].iter().collect();
+    let right: String = scalars[right_start..].iter().collect();
     Ok(TextContext {
         left,
         right,
-        left_scalars: caret,
+        left_scalars: left_end,
         selection,
         selected_text,
         caret,

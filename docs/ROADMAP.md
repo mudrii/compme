@@ -184,7 +184,7 @@ Native CI and GUI acceptance are separate evidence requirements.
 | Finding | Status |
 |---|---|
 | C1: private text in Linux replacement errors | Implemented; regression failed before the fix and passes; Astra approved. Native CI pending |
-| C2: Linux selection context reconstruction | Pending |
+| C2: Linux selection context reconstruction | Implemented; forward/backward and Unicode selections reconstruct exactly; 41 live tests pass; Astra approved. Native CI pending |
 | C3: edits during Linux replacement preparation | Pending |
 | C4: model prompts exceeding the native batch limit | Pending |
 | C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved. Native CI pending |

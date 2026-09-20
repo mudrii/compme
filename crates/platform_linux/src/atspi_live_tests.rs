@@ -26,7 +26,7 @@ use atspi::proxy::component::ComponentProxyBlocking;
 
 use atspi::proxy::editable_text::EditableTextProxyBlocking;
 
-use platform::{InsertStrategy, OffsetEncoding, PlatformAdapter, SecurityState};
+use platform::{InsertStrategy, OffsetEncoding, PlatformAdapter, SecurityState, TextRange};
 
 use std::sync::{mpsc, Arc};
 
@@ -191,6 +191,53 @@ fn live_selection_is_reported_as_a_scalar_range_with_its_text() {
     let range = context.selection.expect("a selection was set");
     assert_eq!((range.start, range.end), (4, 9));
     assert_eq!(context.selected_text.as_deref(), Some("quick"));
+    assert_eq!(context.left, "teh ");
+    assert_eq!(context.right, " brown");
+    assert_eq!(context.left_scalars, 4);
+    assert_eq!(
+        context.caret, 4,
+        "a selection snapshots its start as the caret"
+    );
+    assert_eq!(
+        format!(
+            "{}{}{}",
+            context.left,
+            context.selected_text.as_deref().unwrap_or_default(),
+            context.right
+        ),
+        FIXTURE_TEXT,
+        "left + selected text + right must reconstruct the field exactly"
+    );
+
+    text.remove_selection(0).expect("remove ASCII selection");
+    let entry = editable(&session, &id);
+    entry
+        .set_text_contents("a😀b")
+        .expect("seed astral selection text");
+    text.add_selection(1, 2).expect("select astral scalar");
+    let astral = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read astral selection");
+    assert_eq!(astral.left, "a");
+    assert_eq!(astral.selected_text.as_deref(), Some("😀"));
+    assert_eq!(astral.right, "b");
+    assert_eq!(astral.left_scalars, 1);
+    assert_eq!(astral.caret, 1);
+    assert_eq!(astral.selection, Some(TextRange { start: 1, end: 2 }));
+
+    text.remove_selection(0).expect("remove astral selection");
+    entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+    text.add_selection(9, 4)
+        .expect("select quick from its end back to its start");
+    let backwards = adapter
+        .read_context(&handle(&adapter, &id))
+        .expect("read backwards selection");
+    assert_eq!(backwards.selection, Some(TextRange { start: 4, end: 9 }));
+    assert_eq!(backwards.left, "teh ");
+    assert_eq!(backwards.selected_text.as_deref(), Some("quick"));
+    assert_eq!(backwards.right, " brown");
+    assert_eq!(backwards.left_scalars, 4);
+    assert_eq!(backwards.caret, 4);
 
     text.remove_selection(0).ok();
 }
