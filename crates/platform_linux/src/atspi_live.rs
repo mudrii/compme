@@ -203,10 +203,14 @@ pub(crate) const BUS_CALL_DEADLINE: Duration = Duration::from_secs(10);
 /// this adapter forever. The closure owns a clone of the connection (cheap
 /// Arc clone; the proxies it builds borrow that clone and never leave the
 /// helper thread). On deadline the caller gets [`PlatformError::Timeout`];
-/// the helper thread is deliberately left to finish on its own — it holds
-/// nothing but the cloned connection and exits when the call finally
-/// returns or errors.
-fn bounded_bus_call<T, F>(label: &str, deadline: Duration, call: F) -> Result<T, PlatformError>
+/// the helper thread is deliberately left to finish on its own. If a late call
+/// returns a connection, proxy, or iterator after the receiver is gone, the
+/// failed send drops that resource on the helper thread.
+pub(crate) fn bounded_bus_call<T, F>(
+    label: &str,
+    deadline: Duration,
+    call: F,
+) -> Result<T, PlatformError>
 where
     T: Send + 'static,
     F: FnOnce() -> Result<T, PlatformError> + Send + 'static,
@@ -504,12 +508,33 @@ impl AtspiSession {
     /// each is reported rather than retried or panicked on. The caller treats an
     /// error as "this host has no accessibility support".
     pub fn open() -> Result<Self, PlatformError> {
+        let session_address =
+            atspi::zbus::Address::session().map_err(|err| cannot_complete("session bus", err))?;
+        Self::open_from_session_address(session_address, BUS_CALL_DEADLINE)
+    }
+
+    fn open_from_session_address(
+        session_address: atspi::zbus::Address,
+        deadline: Duration,
+    ) -> Result<Self, PlatformError> {
+        // `method_timeout` applies only after a connection exists; put the
+        // session and accessibility-bus authentication handshakes under one
+        // outer deadline as well.
+        bounded_bus_call("accessibility session setup", deadline, move || {
+            Self::open_unbounded(session_address, deadline)
+        })
+    }
+
+    fn open_unbounded(
+        session_address: atspi::zbus::Address,
+        deadline: Duration,
+    ) -> Result<Self, PlatformError> {
         // The session bus connection carries a method timeout so the raw
         // GetAddress round trip below is bounded (zbus applies
         // `method_timeout` inside Connection::call_method).
-        let session = atspi::zbus::blocking::connection::Builder::session()
+        let session = atspi::zbus::blocking::connection::Builder::address(session_address)
             .map_err(|err| cannot_complete("session bus", err))?
-            .method_timeout(BUS_CALL_DEADLINE)
+            .method_timeout(deadline)
             .build()
             .map_err(|err| cannot_complete("session bus", err))?;
         let address: String = session
@@ -533,7 +558,7 @@ impl AtspiSession {
             // connection. The generated *ProxyBlocking calls are NOT covered
             // (zbus 5.19 applies this only inside call_method) — those are
             // bounded by [`bounded_bus_call`] at the adapter boundary.
-            .method_timeout(BUS_CALL_DEADLINE)
+            .method_timeout(deadline)
             .build()
             .map_err(|err| cannot_complete("a11y bus connect", err))?;
         Ok(Self {
@@ -1303,6 +1328,52 @@ fn insert_replacing_range_on(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn connection_authentication_is_bounded_by_the_setup_deadline() {
+        use std::os::unix::net::UnixListener;
+
+        let socket = std::env::temp_dir().join(format!(
+            "compme-atspi-auth-{}-{}.sock",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .expect("clock after epoch")
+                .as_nanos()
+        ));
+        let listener = UnixListener::bind(&socket).expect("bind fake D-Bus listener");
+        let address: atspi::zbus::Address = format!("unix:path={}", socket.display())
+            .parse()
+            .expect("local Unix address");
+        let (accepted_tx, accepted_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+        let server = std::thread::spawn(move || {
+            let (stream, _) = listener.accept().expect("accept client");
+            accepted_tx.send(()).expect("test still listening");
+            let _ = release_rx.recv();
+            drop(stream);
+        });
+        let (done_tx, done_rx) = mpsc::channel();
+        let client = std::thread::spawn(move || {
+            let result =
+                AtspiSession::open_from_session_address(address, Duration::from_millis(50));
+            let _ = done_tx.send(result);
+        });
+
+        accepted_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("client reached fake listener");
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        release_tx.send(()).expect("release fake listener");
+        server.join().expect("fake server exits");
+        client.join().expect("client helper exits");
+        let _ = std::fs::remove_file(socket);
+
+        assert!(
+            matches!(result, Ok(Err(PlatformError::Timeout))),
+            "authentication must return Timeout before the fake server is released"
+        );
+    }
 
     #[test]
     fn bounded_bus_call_maps_a_wedged_call_to_platform_timeout() {

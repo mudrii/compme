@@ -27,7 +27,7 @@
 
 use crate::atspi_event_map::{latest, LinuxFieldRegistry};
 use crate::atspi_ids::ElementId;
-use crate::atspi_live::AtspiSession;
+use crate::atspi_live::{bounded_bus_call, AtspiSession, BUS_CALL_DEADLINE};
 use atspi::events::object::{StateChangedEvent, TextCaretMovedEvent};
 use atspi::events::{DBusMatchRule, RegistryEventString};
 use atspi::proxy::registry::RegistryProxyBlocking;
@@ -318,6 +318,23 @@ fn into_subscription(workers: EventWorkers) -> Subscription {
     crate::new_cancelling_subscription(move || workers.stop())
 }
 
+/// Complete every blocking registration step before publishing worker threads.
+/// A setup result that arrives after the deadline is dropped by
+/// [`bounded_bus_call`], closing its connection and match iterator; `start` is
+/// invoked only for a result received in time.
+fn bounded_setup_then_start<S, T>(
+    label: &str,
+    deadline: Duration,
+    setup: impl FnOnce() -> Result<S, PlatformError> + Send + 'static,
+    start: impl FnOnce(S) -> Result<T, PlatformError>,
+) -> Result<T, PlatformError>
+where
+    S: Send + 'static,
+{
+    let setup = bounded_bus_call(label, deadline, setup)?;
+    start(setup)
+}
+
 /// Start the reader and dispatcher for one event kind.
 ///
 /// `decode` runs on the reader thread and must stay cheap — it turns a bus message
@@ -333,53 +350,62 @@ fn start<F>(
 where
     F: FnMut(&AtspiSession, ElementId) + Send + 'static,
 {
-    let session = AtspiSession::open()?;
-    let connection = session.connection().clone();
-    RegistryProxyBlocking::new(&connection)
-        .map_err(|err| cannot_complete("registry proxy", err))?
-        .register_event(registry_event)
-        .map_err(|err| cannot_complete("Registry.RegisterEvent", err))?;
-    // `for_match_rule` both registers the rule with the bus and filters what the
-    // iterator yields, so the reader never wakes for another client's traffic.
-    let messages =
-        MessageIterator::for_match_rule(match_rule, &connection, Some(EVENT_QUEUE_DEPTH))
-            .map_err(|err| cannot_complete("event match rule", err))?;
+    let registry_event = registry_event.to_string();
+    bounded_setup_then_start(
+        "event subscription setup",
+        BUS_CALL_DEADLINE,
+        move || {
+            let session = AtspiSession::open()?;
+            let connection = session.connection().clone();
+            RegistryProxyBlocking::new(&connection)
+                .map_err(|err| cannot_complete("registry proxy", err))?
+                .register_event(&registry_event)
+                .map_err(|err| cannot_complete("Registry.RegisterEvent", err))?;
+            // `for_match_rule` both registers the rule with the bus and filters what the
+            // iterator yields, so the reader never wakes for another client's traffic.
+            let messages =
+                MessageIterator::for_match_rule(match_rule, &connection, Some(EVENT_QUEUE_DEPTH))
+                    .map_err(|err| cannot_complete("event match rule", err))?;
+            Ok((session, connection, messages))
+        },
+        move |(session, connection, messages)| {
+            let active = Arc::new(AtomicBool::new(true));
+            let (event_tx, event_rx) = mpsc::channel();
+            let (stopped_tx, stopped_rx) = mpsc::channel();
 
-    let active = Arc::new(AtomicBool::new(true));
-    let (event_tx, event_rx) = mpsc::channel();
-    let (stopped_tx, stopped_rx) = mpsc::channel();
+            // The dispatcher starts first: if the reader then fails to spawn, dropping its
+            // never-started closure drops `event_tx`, and the dispatcher retires on its own.
+            let active_for_dispatch = Arc::clone(&active);
+            let dispatcher = spawn("compme-atspi-dispatch", move || {
+                dispatch_gated_events(&active_for_dispatch, &event_rx, coalesce, |element| {
+                    deliver(&session, element);
+                });
+                let _ = stopped_tx.send(());
+            })?;
 
-    // The dispatcher starts first: if the reader then fails to spawn, dropping its
-    // never-started closure drops `event_tx`, and the dispatcher retires on its own.
-    let active_for_dispatch = Arc::clone(&active);
-    let dispatcher = spawn("compme-atspi-dispatch", move || {
-        dispatch_gated_events(&active_for_dispatch, &event_rx, coalesce, |element| {
-            deliver(&session, element);
-        });
-        let _ = stopped_tx.send(());
-    })?;
-
-    let reader = spawn("compme-atspi-events", move || {
-        for message in messages {
-            // An `Err` is the closed connection or a bus that died; either way there
-            // is nothing left to read.
-            let Ok(message) = message else {
-                break;
-            };
-            if let Some(element) = decode(&message) {
-                if event_tx.send(element).is_err() {
-                    break;
+            let reader = spawn("compme-atspi-events", move || {
+                for message in messages {
+                    // An `Err` is the closed connection or a bus that died; either way there
+                    // is nothing left to read.
+                    let Ok(message) = message else {
+                        break;
+                    };
+                    if let Some(element) = decode(&message) {
+                        if event_tx.send(element).is_err() {
+                            break;
+                        }
+                    }
                 }
-            }
-        }
-    })?;
+            })?;
 
-    Ok(EventWorkers {
-        active,
-        connection,
-        stopped: stopped_rx,
-        threads: vec![reader, dispatcher],
-    })
+            Ok(EventWorkers {
+                active,
+                connection,
+                stopped: stopped_rx,
+                threads: vec![reader, dispatcher],
+            })
+        },
+    )
 }
 
 fn spawn(
@@ -401,6 +427,54 @@ mod tests {
 
     const BUS_NAME: &str = ":1.42";
     const PATH: &str = "/org/a11y/atspi/accessible/17";
+
+    struct DropSignal(mpsc::Sender<()>);
+
+    impl Drop for DropSignal {
+        fn drop(&mut self) {
+            let _ = self.0.send(());
+        }
+    }
+
+    #[test]
+    fn timed_out_subscription_setup_drops_late_resources_without_starting_workers() {
+        let (release_tx, release_rx) = mpsc::channel();
+        let (dropped_tx, dropped_rx) = mpsc::channel();
+        let started = Arc::new(AtomicBool::new(false));
+        let started_for_client = Arc::clone(&started);
+        let (done_tx, done_rx) = mpsc::channel();
+        let client = thread::spawn(move || {
+            let result = bounded_setup_then_start(
+                "subscription setup test",
+                Duration::from_millis(50),
+                move || {
+                    let _ = release_rx.recv();
+                    Ok(DropSignal(dropped_tx))
+                },
+                move |_resource| {
+                    started_for_client.store(true, Ordering::Release);
+                    Ok(())
+                },
+            );
+            let _ = done_tx.send(result);
+        });
+
+        let result = done_rx.recv_timeout(Duration::from_secs(2));
+        release_tx.send(()).expect("release late setup");
+        dropped_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("late setup resource is dropped");
+        client.join().expect("setup caller exits");
+
+        assert!(
+            matches!(result, Ok(Err(PlatformError::Timeout))),
+            "subscription setup must return Timeout before it is released"
+        );
+        assert!(
+            !started.load(Ordering::Acquire),
+            "timed-out setup must never start event workers"
+        );
+    }
 
     fn item() -> ObjectRefOwned {
         ObjectRef::new_owned(
