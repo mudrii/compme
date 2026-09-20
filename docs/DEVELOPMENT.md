@@ -303,6 +303,7 @@ tools/release/check-github-governance.sh --self-test
 bash tools/release/check-model-gates.sh
 bash tools/release/check-model-gates.sh --self-test
 tools/dev/check.sh --self-test
+tools/dev/benchmark-model.sh --self-test
 go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
 tools/release/run-model-gates.sh --self-test
 tools/release/check-quality.sh --self-test
@@ -459,6 +460,37 @@ is available:
 ```sh
 tools/acceptance/run-a1b-live-gates.sh
 ```
+
+## Repeatable Linux model benchmarks
+
+`tools/dev/benchmark-model.sh` builds the existing strict warm-completion test
+once and runs its selected executable in fresh processes. It requires Linux,
+Ruby, the normal Rust/native build prerequisites, and the existing model at
+`tools/spike/models/qwen2.5-0.5b-q4_k_m.gguf`. It downloads no model or SDK.
+For Vulkan, also provision the Vulkan SDK and runtime as described in
+[the performance record](PERFORMANCE-2026-09-19.md#vulkan-boundary).
+
+```sh
+tools/dev/benchmark-model.sh --backend cpu --samples 5 --output target/benchmarks/cpu-run-1
+tools/dev/benchmark-model.sh --backend vulkan --samples 5 --output target/benchmarks/vulkan-run-1
+```
+
+Choose 1–100 samples and a fresh output directory for each invocation;
+existing output is refused.
+Run one benchmark at a time with no competing builds or inference workloads.
+The runner retains build output, individual sample logs, `samples.tsv`, and
+`report.json` with raw timings, their median, model checksum, source revision,
+working-tree state, and configuration. Vulkan measurements require native
+diagnostics proving positive Vulkan layer offload; a CPU fallback is an error.
+
+Exit `0` means every sample met the unchanged **strictly under 500 ms** budget;
+`1` means measurements completed but at least one missed it; `2` means a
+configuration, build, or measurement error. Budget failures still produce the
+complete report. An unavailable model or a skipped/zero-test run is never a
+passing benchmark. The measured interval excludes model loading and warm-up,
+and uses the existing fixed prompt, 12-token request, and 256-token context.
+The hermetic `--self-test` runs in the local gate, CI, and release validation;
+actual hardware measurements remain separately invoked evidence.
 
 ## Test Strategy
 

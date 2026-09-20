@@ -680,6 +680,7 @@ required_validate_steps = {
   "Doc tests (macOS crates)" => "cargo test --locked --doc -p platform_macos -p app",
   "Release model gate policy self-test" => "bash tools/release/check-model-gates.sh --self-test",
   "Gate runner self-test" => "tools/dev/check.sh --self-test",
+  "Model benchmark runner self-test" => "tools/dev/benchmark-model.sh --self-test",
 }
 required_validate_steps.each do |name, run|
   step = validate_steps.find { |candidate| candidate["name"] == name }
@@ -3135,7 +3136,7 @@ YAML
   integrity_fixture="$tmp_dir/release-integrity.yml"
 
   for mutation in \
-    validate-shellcheck validate-rustdoc validate-doc-tests policy-self-test runner-self-test \
+    validate-shellcheck validate-rustdoc validate-doc-tests policy-self-test runner-self-test benchmark-self-test \
     portable-all-targets portable-doc-tests credential-scrubs prebuild-fail-open \
     publish-runner finalize-runner signer-workflow post-attestation \
     finalize-attestation-order post-attestation-order \
@@ -3154,6 +3155,7 @@ YAML
       when "validate-doc-tests" then remove_step.call("validate", "Doc tests (macOS crates)")
       when "policy-self-test" then remove_step.call("validate", "Release model gate policy self-test")
       when "runner-self-test" then remove_step.call("validate", "Gate runner self-test")
+      when "benchmark-self-test" then remove_step.call("validate", "Model benchmark runner self-test")
       when "portable-all-targets"
         step = jobs.fetch("linux").fetch("steps").find { |candidate| candidate["name"] == "Test portable workspace" }
         step["run"] = step.fetch("run").sub(" --all-targets", "")
@@ -4130,6 +4132,7 @@ ruby -ryaml -e '
     "model gate policy" => ["Release model gate policy", "bash tools/release/check-model-gates.sh"],
     "model gate policy self-test" => ["Release model gate policy self-test", "bash tools/release/check-model-gates.sh --self-test"],
     "gate runner self-test" => ["Gate runner self-test", "tools/dev/check.sh --self-test"],
+    "model benchmark runner self-test" => ["Model benchmark runner self-test", "tools/dev/benchmark-model.sh --self-test"],
     "model gate self-test" => ["Release model gate self-test", "tools/release/run-model-gates.sh --self-test"],
     "cask updater" => ["Release cask updater self-test", "tools/release/update-cask.sh --self-test"],
     "draft release preparation" => ["Draft release preparation self-test", "tools/release/prepare-draft-release.sh --self-test"],

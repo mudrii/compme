@@ -232,6 +232,9 @@ jobs:
       - name: Gate runner self-test
         run: tools/dev/check.sh --self-test
 
+      - name: Model benchmark runner self-test
+        run: tools/dev/benchmark-model.sh --self-test
+
       - name: Release model gate self-test
         run: tools/release/run-model-gates.sh --self-test
 

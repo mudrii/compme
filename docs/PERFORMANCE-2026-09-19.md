@@ -210,6 +210,37 @@ investigation should measure the prompt-decode backend/model path and calibrated
 GPU execution; these results do not justify relaxing the budget or changing
 portable thread/SIMD defaults.
 
+## Repeatable runner validation — 2026-09-20
+
+`tools/dev/benchmark-model.sh` now automates the existing strict measurement.
+See [Development](DEVELOPMENT.md#repeatable-linux-model-benchmarks) for its
+CLI, prerequisites, reports, and exit statuses. Add Ruby to the Nix shells
+above when using the runner. Each invocation performs one Cargo build command
+and selects its test executable from Cargo JSON; every sample is a fresh
+process, with loading and warm-up outside the measured interval.
+
+The implementation was validated on the same i9-9880H / Quadro RTX 4000 host,
+Linux 6.18.52, Rust 1.97.0, using the working tree based on `e1c6a3e`.
+Reports correctly recorded `git.dirty=true`: the new runner and its integration
+were not yet committed. Production model code and the existing latency test
+were unchanged. Both builds reused their current Cargo artifacts. The model
+SHA-256 was `ca6f8885c1d6a14025e705295fe1b240ad5a30c4c696215a341d7e6610a26484`.
+
+| Backend | Three samples (ms) | Median (ms) | Runner result |
+|---|---|---|---|
+| CPU, GPU layers 0 | 1,736 / 1,765 / 1,769 | 1,765 | Exit 1; all samples retained, all above budget |
+| Vulkan, requested GPU layers 999 | 94 / 75 / 74 | 75 | Exit 0; all below budget, native Vulkan diagnostics prove 25/25 layers offloaded for every sample |
+
+CPU and Vulkan were invoked sequentially, with no concurrent build/inference
+workloads during sampling, using their respective CPU and Vulkan artifacts.
+These runs validate the runner's success and budget-failure paths; they do
+not establish an optimization, a same-binary paired comparison, or performance
+on other hardware. The fixed context remained 256 tokens, output request
+12 tokens, and acceptance remained strictly less than 500 ms for every sample.
+The hermetic CLI self-tests additionally cover missing/duplicate measurements,
+zero-test success, unrelated panics, missing models, build failure, output
+preservation, and unproven Vulkan offload.
+
 ## Conclusion
 
 The Linux CPU failure is reproducible and is not explained by the earlier
