@@ -93,9 +93,13 @@ become fix loops; do not mark a gate from a headless run.
       new chord accepts while plain Tab (if unbound) passes through; an
       untranslatable chord must fail soft without killing the live set.
 - [ ] `lx7-clean-sandbox-shutdown` — `touch /tmp/compme-manual/stop`: compme
-      exits within the bounded-teardown window, no keyboard grab survives
-      (typing in gedit stays normal after exit), and the log shows orderly
-      shutdown.
+      exits within the bounded-teardown window and the log shows orderly
+      shutdown. This also terminates gedit and the private Xvfb session, so it
+      cannot prove post-exit key passthrough. Complete that leg in a real X11
+      desktop session: leave a test editor and the desktop running, show a
+      suggestion, quit only Compme, then verify its former accept/shortcut keys
+      reach the editor/window manager normally. Record both observations before
+      marking this gate passed.
 - [ ] `lx8-always-on-x11-shortcuts` — Supply distinct, non-reserved chords
       through `COMPME_FORCE_ACTIVATE_KEY`, `COMPME_TOGGLE_APP_KEY`,
       `COMPME_TOGGLE_GLOBAL_KEY`, and `COMPME_GRAMMAR_CHECK_KEY` in the
