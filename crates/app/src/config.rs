@@ -932,6 +932,7 @@ mod tests {
             .env(CHILD_ENV, "1")
             .output()
             .expect("launch isolated persistence child");
+        let persisted = load_file_map(&dir.join("config.env"));
         let _ = std::fs::remove_dir_all(&dir);
 
         assert!(
@@ -939,6 +940,14 @@ mod tests {
             "basename persistence child failed:\nstdout:\n{}\nstderr:\n{}",
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(
+            persisted
+                .expect("child must create the basename config")
+                .get("COMPME_ENABLED")
+                .map(String::as_str),
+            Some("false"),
+            "parent must observe the setting persisted by the child"
         );
     }
 

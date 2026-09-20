@@ -190,6 +190,11 @@ are separate from the original implementation-list numbers in the table below.
 | 5 | Document real-desktop Linux tray, shortcut and AppImage acceptance | Procedures added and Astra-reviewed in [the Linux checklist](MANUAL-VALIDATION-LINUX.md); new gates remain unchecked and desktop acceptance remains unverified |
 | 6 | Investigate Linux completion latency with measured before/after evidence | Completed and Astra-reviewed for this host: the existing Vulkan opt-in meets the unchanged 500 ms budget on Quadro RTX 4000. Same-binary paired medians: CPU 1,833 ms, Vulkan 120 ms (15.3×); six real-model tests including cancellation pass and quality scores 20/21. [Evidence](PERFORMANCE-2026-09-19.md) preserves the failing CPU default and single-GPU scope; no model code or defaults changed |
 
+Review follow-up (2026-09-20): the basename persistence regression now verifies
+the child-created configuration in the parent process, so a zero-test child
+cannot silently pass. A wrong-selector mutation passed the old test and failed
+the hardened assertion; all 50 configuration tests and both startup tests pass.
+
 The owner requested implementation of review-list items **1–6 and 19–35**.
 The numbers below refer to that list, not the historical roadmap execution
 order. Windows feature slices 7–18 are not included in this request. Work
