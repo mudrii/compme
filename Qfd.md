@@ -1075,3 +1075,13 @@ remoting regardless of our client apartment, and Microsoft's own UIA clients
 from the MTA. The STA option in the implementation plan predates the
 blocking-worker design and is superseded by this entry; both spec status
 notes now point here.
+
+## 24. Full-codebase audit repairs — 2026-09-20
+
+The review of `2e25460` identified seven code defects and six documentation
+findings. The owner authorized repairs implemented by Sol and independently
+reviewed by Astra. The [repair record](docs/AUDIT-REPAIRS-2026-09-20.md)
+describes each regression, implementation, and validation boundary;
+[ROADMAP](docs/ROADMAP.md#full-codebase-audit-repairs--2026-09-20) remains the
+authoritative status list. These repairs do not close the native GUI,
+physical-input, or release acceptance gates without their required evidence.

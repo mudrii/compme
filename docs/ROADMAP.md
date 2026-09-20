@@ -177,19 +177,22 @@ tested**. Everything below is what the plan still calls for.
 
 ### Full-codebase audit repairs — 2026-09-20
 
-The owner authorized all findings from the review of `2e25460`. Sol implements
-the code repairs with regression tests; Astra independently reviews them.
-Native CI and GUI acceptance are separate evidence requirements.
+The owner authorized all findings from the review of `2e25460`. Sol implemented
+the repairs with regression tests; Astra approved all thirteen findings and
+the combined change. The [repair record](AUDIT-REPAIRS-2026-09-20.md) records
+1,865 passing portable tests, 41 live Linux tests, and the validation boundaries.
+[Native CI](https://github.com/mudrii/compme/actions/workflows/ci.yml?query=branch%3Amain)
+records results per pushed commit. Native GUI acceptance remains separate.
 
 | Finding | Status |
 |---|---|
-| C1: private text in Linux replacement errors | Implemented; regression failed before the fix and passes; Astra approved. Native CI pending |
-| C2: Linux selection context reconstruction | Implemented; forward/backward and Unicode selections reconstruct exactly; 41 live tests pass; Astra approved. Native CI pending |
-| C3: edits during Linux replacement preparation | Implemented; regression preserves edits inside/outside the target range without writing; 139 unit and 41 live tests pass; Astra approved. Native CI pending |
-| C4: model prompts exceeding the native batch limit | Implemented; chunked decoding passes the same long-prompt case that aborted before, including prefix reuse; Vulkan regression and default model tests pass; Astra approved. Native CI pending |
-| C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved. Native CI pending |
-| C6: bounded Linux accessibility setup | Implemented; real authentication stall returns Timeout and late subscription setup cannot start workers; 141 unit and 41 live tests pass; Astra approved. Native CI pending |
-| C7: cancel queued X11 callbacks | Implemented; real tap teardown drops queued callbacks while allowing in-flight work to finish; regression fails before the fix and passes after; 41 live tests pass; Astra approved. Native CI pending |
+| C1: private text in Linux replacement errors | Implemented; regression failed before the fix and passes; Astra approved |
+| C2: Linux selection context reconstruction | Implemented; forward/backward and Unicode selections reconstruct exactly; 41 live tests pass; Astra approved |
+| C3: edits during Linux replacement preparation | Implemented; regression preserves edits inside/outside the target range without writing; 139 unit and 41 live tests passed for this fix; Astra approved |
+| C4: model prompts exceeding the native batch limit | Implemented; chunked decoding passes the same long-prompt case that aborted before, including prefix reuse; CPU/Vulkan regression and default model tests pass; Astra approved |
+| C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved |
+| C6: bounded Linux accessibility setup | Implemented; real authentication stall returns Timeout and late subscription setup cannot start workers; 141 unit and 41 live tests pass; Astra approved |
+| C7: cancel queued X11 callbacks | Implemented; real tap teardown drops queued callbacks while allowing in-flight work to finish; regression fails before the fix and passes after; 41 live tests pass; Astra approved |
 | D1: coverage measurement scope | Corrected and Astra-reviewed; historical percentages are not current production-only coverage |
 | D2: Accessibility relaunch instructions | Corrected and Astra-reviewed in first-run and troubleshooting guidance |
 | D3: native memory-control acceptance procedure | Added and Astra-reviewed within existing gate IDs; native execution remains unverified |
