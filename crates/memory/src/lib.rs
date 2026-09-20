@@ -449,11 +449,13 @@ impl MemoryStore {
         let capped = truncate_chars(redacted.as_str(), MAX_RECORD_CHARS);
         let aad = Self::record_aad(app, domain);
         let blob = self.encrypt(capped, &aad)?;
-        self.conn.execute(
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute(
             "INSERT INTO memories (app, blob, domain) VALUES (?1, ?2, ?3)",
             params![app, blob, domain],
         )?;
-        Self::trim_to_cap(&self.conn, MAX_RECORDS)?;
+        Self::trim_to_cap(&tx, MAX_RECORDS)?;
+        tx.commit()?;
         Ok(())
     }
 
@@ -2126,6 +2128,48 @@ mod tests {
                 "row 2".to_string()
             ],
             "trim drops the oldest rows, keeping the newest cap rows"
+        );
+    }
+
+    #[test]
+    fn remember_rolls_back_insert_when_retention_trim_fails() {
+        let store = MemoryStore::open_in_memory(&key(93), StorageMode::AcceptedOnly).unwrap();
+        store.remember("app", "existing row").unwrap();
+        store
+            .conn
+            .execute(
+                "WITH RECURSIVE rows(n) AS (\
+                     VALUES(1) UNION ALL SELECT n + 1 FROM rows WHERE n < ?1\
+                 ) \
+                 INSERT INTO memories (app, blob) SELECT 'filler', X'00' FROM rows",
+                params![MAX_RECORDS - 1],
+            )
+            .unwrap();
+        store
+            .conn
+            .execute_batch(
+                "CREATE TRIGGER fail_retention_trim BEFORE DELETE ON memories
+                 BEGIN
+                     SELECT RAISE(ABORT, 'forced retention failure');
+                 END;",
+            )
+            .unwrap();
+
+        let result = store.remember("app", "must roll back");
+
+        assert!(
+            result.is_err(),
+            "the injected retention failure must escape"
+        );
+        assert_eq!(
+            store.count().unwrap(),
+            usize::try_from(MAX_RECORDS).unwrap(),
+            "a failed remember must not leave its inserted row behind"
+        );
+        assert_eq!(
+            store.recent("app", 10).unwrap(),
+            vec!["existing row"],
+            "a failed remember must leave the prior records unchanged"
         );
     }
 

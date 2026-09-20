@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-20 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2226 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-09-20 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2227 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -187,7 +187,7 @@ Native CI and GUI acceptance are separate evidence requirements.
 | C2: Linux selection context reconstruction | Pending |
 | C3: edits during Linux replacement preparation | Pending |
 | C4: model prompts exceeding the native batch limit | Pending |
-| C5: atomic memory insertion and retention | Pending |
+| C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved. Native CI pending |
 | C6: bounded Linux accessibility setup | Pending |
 | C7: cancel queued X11 callbacks | Pending |
 | D1: coverage measurement scope | Pending |
