@@ -143,9 +143,9 @@ fn checked_replacement(
     }
     let current: String = scalars[range.start..range.end].iter().collect();
     if current != expected_text {
-        return Err(unsupported(format!(
-            "platform_linux: field changed under the replacement (found {current:?})"
-        )));
+        return Err(unsupported(
+            "platform_linux: field changed under the replacement".into(),
+        ));
     }
     checked_rebuilt_len(scalars.len(), range.end - range.start, text.chars().count())?;
     let mut updated: String = scalars[..range.start].iter().collect();
@@ -1687,15 +1687,24 @@ mod tests {
             Err(PlatformError::UnsupportedField { reason })
                 if reason == "platform_linux: range 0..9 past the field length 5"
         ));
+        let current_private = "current private field text";
+        let expected_private = "expected private field text";
+        let private_scalars: Vec<char> = current_private.chars().collect();
+        let mismatch = checked_replacement(
+            &private_scalars,
+            expected_private,
+            "x",
+            platform::CorrectionRange {
+                start: 0,
+                end: private_scalars.len(),
+            },
+        );
         assert!(matches!(
-            checked_replacement(
-                &scalars,
-                "help",
-                "x",
-                platform::CorrectionRange { start: 0, end: 4 },
-            ),
+            mismatch,
             Err(PlatformError::UnsupportedField { reason })
-                if reason == "platform_linux: field changed under the replacement (found \"hell\")"
+                if reason == "platform_linux: field changed under the replacement"
+                    && !reason.contains(current_private)
+                    && !reason.contains(expected_private)
         ));
         assert_eq!(
             checked_replacement(

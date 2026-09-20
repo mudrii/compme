@@ -175,6 +175,28 @@ tested**. Everything below is what the plan still calls for.
 
 ## Current release — v0.1.6 audit remediation
 
+### Full-codebase audit repairs — 2026-09-20
+
+The owner authorized all findings from the review of `2e25460`. Sol implements
+the code repairs with regression tests; Astra independently reviews them.
+Native CI and GUI acceptance are separate evidence requirements.
+
+| Finding | Status |
+|---|---|
+| C1: private text in Linux replacement errors | Implemented; regression failed before the fix and passes; Astra approved. Native CI pending |
+| C2: Linux selection context reconstruction | Pending |
+| C3: edits during Linux replacement preparation | Pending |
+| C4: model prompts exceeding the native batch limit | Pending |
+| C5: atomic memory insertion and retention | Pending |
+| C6: bounded Linux accessibility setup | Pending |
+| C7: cancel queued X11 callbacks | Pending |
+| D1: coverage measurement scope | Pending |
+| D2: Accessibility relaunch instructions | Pending |
+| D3: native memory-control acceptance procedure | Pending |
+| D4: completed buffered-erasure status | Pending |
+| D5: observable Linux shutdown acceptance | Pending |
+| D6: conditional structural-work sequencing | Pending |
+
 ### Authorized implementation queue — 2026-09-19
 
 The subsequent source/test/documentation review of `d6e0498` identified this
