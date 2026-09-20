@@ -96,11 +96,14 @@ LLVM_COV=$(brew --prefix llvm)/bin/llvm-cov LLVM_PROFDATA=$(brew --prefix llvm)/
   cargo llvm-cov --locked --workspace --all-targets --summary-only -- --test-threads=1
 ```
 
-Coverage counts production code only — `cargo-llvm-cov` excludes `tests/`,
-`examples/`, and the `*_tests.rs` modules — so the per-file numbers are lower,
-and more honest, than they were when the unit tests still lived inside
-`run_loop.rs` and `platform_macos/src/lib.rs`. Baseline on 2026-07-26:
-82.68% regions, 81.14% functions, 80.99% lines.
+Coverage is not a production-only workspace metric: `cargo-llvm-cov` excludes
+test/example paths and `*_tests.rs` files by default, but inline test modules
+remain in the denominator unless explicitly excluded. Splitting the two large
+test modules out of `run_loop.rs` and `platform_macos/src/lib.rs` reduced that
+distortion for those files, not for every crate. The historical 2026-07-26
+baseline was 82.68% regions, 81.14% functions, and 80.99% lines; these are not
+current coverage figures. Record the commit, host, enabled features, excluded
+paths, and ignored-test handling with each new measurement.
 
 Required for live macOS acceptance:
 
