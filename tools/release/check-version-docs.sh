@@ -150,6 +150,19 @@ MD
     *) echo "version-docs self-test failed: wrong published-release diagnostic: $out" >&2; return 1 ;;
   esac
 
+  # Even a current version on the SAME line cannot validate a stale claim.
+  write_fixtures "$root"
+  sed 's/latest published release is `v1.2.3`/latest published release is `v9.9.9`; checkout version is `v1.2.3`/' "$root/docs/DEVELOPMENT.md" >"$tmp/stale.md"
+  mv "$tmp/stale.md" "$root/docs/DEVELOPMENT.md"
+  if out="$(COMPME_VERSION_DOCS_ROOT="$root" "$0" 2>&1)"; then
+    echo "version-docs self-test failed: mixed-version published-release claim passed" >&2
+    return 1
+  fi
+  case "$out" in
+    *"docs/DEVELOPMENT.md: published-release claim"*) ;;
+    *) echo "version-docs self-test failed: wrong mixed-version diagnostic: $out" >&2; return 1 ;;
+  esac
+
   # The ROADMAP needle is the bare version: a header without the parenthesized
   # commit still passes because the anchor already pins the context.
   write_fixtures "$root"
@@ -240,7 +253,8 @@ require_doc_version "header" "docs/ROADMAP.md" "remains the latest published art
 require_doc_version "release-boundary note" "docs/ROADMAP.md" "**Release boundary:** the published" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/RELEASING.md" "latest published artifact is" "$backticked" || stale=1
 require_doc_version "repository-state note" "docs/DEVELOPMENT.md" "points to" "$backticked" || stale=1
-require_doc_version "published-release claim" "docs/DEVELOPMENT.md" "latest published release is" "$backticked" || stale=1
+# Bind the version to the claim itself, not another version on the same line.
+require_doc_version "published-release claim" "docs/DEVELOPMENT.md" "latest published release is" "latest published release is $backticked" || stale=1
 require_doc_version "release-boundary header" "docs/ACCEPTANCE.md" "latest published artifact" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/ARCHITECTURE.md" "Release boundary" "$backticked" || stale=1
 require_doc_version "validation boundary note" "docs/MANUAL-VALIDATION.md" "Validate the latest published" "$backticked" || stale=1
