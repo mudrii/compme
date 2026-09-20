@@ -154,6 +154,33 @@ fn checked_replacement(
     Ok(updated)
 }
 
+fn replacement_snapshot_is_current(
+    snapshot: &[char],
+    current: &[char],
+) -> Result<(), PlatformError> {
+    if current != snapshot {
+        return Err(unsupported(
+            "platform_linux: field changed while preparing the replacement".into(),
+        ));
+    }
+    Ok(())
+}
+
+fn dispatch_prepared_replacement<E>(
+    snapshot: &[char],
+    updated: String,
+    attempt: &MutationAttempt,
+    prepare: impl FnOnce() -> Result<E, PlatformError>,
+    read_current: impl FnOnce() -> Result<Vec<char>, PlatformError>,
+    write: impl FnOnce(E, &str) -> Result<bool, PlatformError>,
+) -> Result<(bool, String), PlatformError> {
+    let editable = prepare()?;
+    let current = read_current()?;
+    replacement_snapshot_is_current(snapshot, &current)?;
+    let replaced = attempt.dispatch("set_text_contents", || write(editable, &updated))?;
+    Ok((replaced, updated))
+}
+
 fn field_over_cap_error() -> PlatformError {
     unsupported(format!(
         "field exceeds {MAX_FIELD_SCALARS} scalars; refusing lossy read/replace"
@@ -1233,13 +1260,18 @@ fn insert_replacing_range_on(
     let id = element(field)?;
     let scalars = field_scalars_on(connection, &id)?;
     let updated = checked_replacement(&scalars, expected_text, text, range)?;
-
-    let editable = editable_text_on(connection, &id)?;
-    let replaced = attempt.dispatch("set_text_contents", || {
-        editable
-            .set_text_contents(&updated)
-            .map_err(|err| cannot_complete("set_text_contents", err))
-    })?;
+    let (replaced, updated) = dispatch_prepared_replacement(
+        &scalars,
+        updated,
+        attempt,
+        || editable_text_on(connection, &id),
+        || field_scalars_on(connection, &id),
+        |editable, updated| {
+            editable
+                .set_text_contents(updated)
+                .map_err(|err| cannot_complete("set_text_contents", err))
+        },
+    )?;
     if !replaced {
         return Err(cannot_complete(
             "set_text_contents",
@@ -1719,6 +1751,83 @@ mod tests {
             .expect("in-range swap"),
             "hio"
         );
+    }
+
+    #[test]
+    fn replacement_revalidation_refuses_edits_inside_or_outside_the_range() {
+        fn assert_refused(mutated: &str) {
+            let field = std::cell::RefCell::new("teh quick brown".to_string());
+            let snapshot: Vec<char> = field.borrow().chars().collect();
+            let writes = std::cell::Cell::new(0usize);
+            let attempt = MutationAttempt::new(Arc::new(MutationCoordinator::default()));
+            let updated = checked_replacement(
+                &snapshot,
+                "teh",
+                "the",
+                platform::CorrectionRange { start: 0, end: 3 },
+            )
+            .expect("initial snapshot matches");
+
+            let result = dispatch_prepared_replacement(
+                &snapshot,
+                updated,
+                &attempt,
+                || {
+                    *field.borrow_mut() = mutated.to_string();
+                    Ok(())
+                },
+                || Ok(field.borrow().chars().collect()),
+                |(), updated| {
+                    writes.set(writes.get() + 1);
+                    *field.borrow_mut() = updated.to_string();
+                    Ok(true)
+                },
+            );
+
+            assert!(matches!(
+                result,
+                Err(PlatformError::UnsupportedField { reason })
+                    if reason == "platform_linux: field changed while preparing the replacement"
+            ));
+            assert_eq!(writes.get(), 0, "a changed snapshot must never be written");
+            assert_eq!(
+                field.into_inner(),
+                mutated,
+                "the user's intervening edit must survive"
+            );
+        }
+
+        assert_refused("ten quick brown");
+        assert_refused("teh quick brown!");
+
+        let field = std::cell::RefCell::new("teh quick brown".to_string());
+        let snapshot: Vec<char> = field.borrow().chars().collect();
+        let writes = std::cell::Cell::new(0usize);
+        let attempt = MutationAttempt::new(Arc::new(MutationCoordinator::default()));
+        let updated = checked_replacement(
+            &snapshot,
+            "teh",
+            "the",
+            platform::CorrectionRange { start: 0, end: 3 },
+        )
+        .expect("initial snapshot matches");
+        let (replaced, updated) = dispatch_prepared_replacement(
+            &snapshot,
+            updated,
+            &attempt,
+            || Ok(()),
+            || Ok(field.borrow().chars().collect()),
+            |(), updated| {
+                writes.set(writes.get() + 1);
+                *field.borrow_mut() = updated.to_string();
+                Ok(true)
+            },
+        )
+        .expect("an unchanged prepared snapshot is written");
+        assert!(replaced);
+        assert_eq!(updated, "the quick brown");
+        assert_eq!(writes.get(), 1);
+        assert_eq!(field.into_inner(), "the quick brown");
     }
 
     /// `open()` must report a diagnosable error rather than panic when no
