@@ -145,7 +145,8 @@ the set. Walkthrough detail lives in the ledger entries.
       toggle, global toggle, and grammar-check hotkeys dispatch from physical
       keypresses without reopening Settings and persist across relaunch.
 - [ ] `nine-tab-settings-walkthrough` — all nine panes fit, hold state, and
-      live-apply.
+      live-apply; include the [Apps memory-control acceptance procedure](ACCEPTANCE.md#apps-memory-control-acceptance-procedure)
+      for mode persistence, Off-mode cleanup, and app/global/domain erasure.
 - [ ] `full-autocorrect-prose-code-look` — TextEdit receives an exact
       whole-word macOS spelling offer while a code-editor main pane remains
       fail-closed.
@@ -163,7 +164,9 @@ the set. Walkthrough detail lives in the ledger entries.
       visible, **Reveal Model in Finder** is absent, picker rows carry RAM
       verdicts, and the license gate and dest-exists skip behave.
 - [ ] `encrypted-memory-all-monitored-live` — residual legs: secure-input
-      suppression, snoozed policy transition, volatile `pid:N` adds no rows.
+      suppression, snoozed policy transition, volatile `pid:N` adds no rows;
+      also execute the linked Apps memory-control procedure, including cancel,
+      live-context clearing, and prevention of buffered-text resurrection.
 - [ ] `mirror-window-firefox-zen-look` — Firefox/Zen mirror-window placement
       keeps the ghost out of mirrored monitor captures.
 - [ ] `setup-needed-docs-arc-onboarding` — Google Docs in Arc shows setup-needed

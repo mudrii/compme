@@ -665,7 +665,8 @@ A quick LOOK pass over all nine panes:
   per-app/per-domain instruction editing is a follow-up.)
 - **Apps** — per-app On / Tab / Mid / AC / GF policy columns plus recorded-input
   counts from the encrypted memory store; count rows (`app — N`) carry a Delete
-  button, status/empty rows do not.
+  button, status/empty rows do not. Also execute the memory-control procedure
+  below for live mode changes, cleanup while Off, and app/global/domain erase.
 - **Context** — Clipboard and Screen Context switches match their current
   config-backed state; disabling either clears the cached context source and
   gates new submissions.
@@ -674,6 +675,50 @@ A quick LOOK pass over all nine panes:
 - **Shortcuts** — current bindings (glyph-labelled) + the recorder boxes above.
 - **Statistics** — shown / accepted / words / lifetime rows.
 - **About** — static version / license / no-telemetry / repo / credits text.
+
+### Apps memory-control acceptance procedure
+
+These are additional legs of `nine-tab-settings-walkthrough` and
+`encrypted-memory-all-monitored-live`, not new runner IDs. They remain
+**unverified** until recorded on a granted macOS GUI session. Use a disposable
+configuration and `COMPME_MEMORY_PATH`, harmless unique marker text, a supported
+text editor, and two supported browsers with reliably detected domains. Do not
+use personal data. Leave `COMPME_MEMORY` unset in the launch environment so it
+cannot shadow the persisted picker value. Enable previous-input context for
+the live-context checks and record only redacted diagnostics/counts.
+
+1. In Apps, select **Accepted completions**. Accept a suggestion and verify
+   its app count increases; typing without acceptance must not add a record.
+   Switch to **All monitored typing**, establish a fresh field baseline, type
+   a harmless marker and a word boundary, and verify collection without an
+   accept. Switch to **Off** and verify subsequent typing/accepts add no rows.
+   Reopen Settings and relaunch: the selected mode persists. With no configured
+   memory path, enabling must restore Off and leave collection disabled.
+2. With records already present, relaunch in Off mode. Existing counts and
+   deletion controls remain usable without recording or hydrating old inputs
+   into prompt context. In a separate disposable configuration with no store
+   or OS key, launch Off and verify it creates neither or a key-store prompt.
+3. Seed two applications. Cancel an app-row deletion and verify counts and
+   subsequent collection are unchanged. Confirm deletion for one app: its
+   records and live previous-input contribution disappear; the other app's
+   records remain. In All monitored mode, include an unfinished marker before
+   deletion; new typing and a boundary must not restore that old marker.
+4. Cancel **Erase All Recorded Inputs** and verify the counts remain. Confirm
+   **Erase All** and verify all counts and live previous-input contributions
+   clear. Continue typing: only new text may be collected. Repeat while Off,
+   where counts must remain empty after further typing and acceptance.
+5. Seed the same detected domain in two browsers plus a different domain.
+   Enter the first domain in the domain-delete control. Cancel **Delete Domain**
+   and verify records remain; confirm it and verify matching records disappear
+   across both browsers while the other domain's records remain. Check that
+   buffered pre-erase text cannot restore the erased domain after a boundary.
+   Legacy records without domain metadata require app/global erase.
+6. Record the commit, macOS/app/browser versions, mode transitions, before/after
+   counts, confirmation choices, and redacted context observations in this
+   ledger. If provider/domain identity cannot be established, mark that leg
+   unverified rather than inferring it from portable tests. Record actual
+   deletion/persistence failures separately; automated failure injection does
+   not establish native UI behavior.
 
 ## Example Acceptance Binaries
 
