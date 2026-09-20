@@ -572,27 +572,39 @@ fn complete_on_worker(
     }
 
     let to_decode = &tokens[reuse..];
-    let mut batch = LlamaBatch::new(to_decode.len().max(1), 1);
-    // saturating_sub mirrors the .max(1) above: to_decode is non-empty in
-    // practice (plan_decode reserves >=1 prompt token), but never underflow to
-    // usize::MAX if that invariant ever changes — the loop just won't flag a
-    // "last" token when empty.
-    let last = to_decode.len().saturating_sub(1);
-    for (index, token) in to_decode.iter().enumerate() {
-        let position = prompt_suffix_position(reuse, index);
-        if let Err(err) = batch.add(*token, position, &[0], index == last) {
+    let batch_capacity = (context.n_batch() as usize).max(1);
+    let mut batch = LlamaBatch::new(to_decode.len().min(batch_capacity).max(1), 1);
+    for (chunk_index, chunk) in to_decode.chunks(batch_capacity).enumerate() {
+        if let Err(err) = check_shutdown(cancellation) {
             reset_on_err(context, prev_tokens);
-            return Err(LocalModelError::new("add prompt token to batch", err));
+            return Err(err);
+        }
+
+        batch.clear();
+        let chunk_offset = chunk_index * batch_capacity;
+        let final_chunk = chunk_offset + chunk.len() == to_decode.len();
+        let final_chunk_token = chunk.len().saturating_sub(1);
+        for (index, token) in chunk.iter().enumerate() {
+            let suffix_index = chunk_offset + index;
+            let position = prompt_suffix_position(reuse, suffix_index);
+            let output_logits = final_chunk && index == final_chunk_token;
+            if let Err(err) = batch.add(*token, position, &[0], output_logits) {
+                reset_on_err(context, prev_tokens);
+                return Err(LocalModelError::new("add prompt token to batch", err));
+            }
+        }
+        if let Err(err) = context.decode(&mut batch) {
+            reset_on_err(context, prev_tokens);
+            if cancellation.is_requested() {
+                return Err(LocalModelError::shutdown_requested());
+            }
+            return Err(LocalModelError::new("decode prompt", err));
+        }
+        if let Err(err) = check_shutdown(cancellation) {
+            reset_on_err(context, prev_tokens);
+            return Err(err);
         }
     }
-    if let Err(err) = context.decode(&mut batch) {
-        reset_on_err(context, prev_tokens);
-        if cancellation.is_requested() {
-            return Err(LocalModelError::shutdown_requested());
-        }
-        return Err(LocalModelError::new("decode prompt", err));
-    }
-    check_shutdown(cancellation)?;
 
     let mut output = String::new();
     let mut decoder = encoding_rs::UTF_8.new_decoder();

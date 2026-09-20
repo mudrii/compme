@@ -263,6 +263,63 @@ fn prefix_reuse_matches_fresh_context_output() {
         return;
     }
 
+    const CHILD_MARKER: &str = "COMPME_LONG_PROMPT_TEST_COMPLETED";
+    if std::env::var_os("COMPME_LONG_PROMPT_TEST_CHILD").is_some() {
+        let reused = load_model_or_skip(&path).expect("required long-prompt model context");
+        reused.warm_up().expect("warm up long-prompt model");
+
+        // The same 3,000-repeat prompt aborts unchunked llama.cpp at its native
+        // 2,048-token batch assertion, even after warm-up/prefix reuse. With the
+        // forced 4,096-token context it therefore proves both a full first batch
+        // and a non-empty partial final chunk. Repeating the completion then takes
+        // the identical-prefix KV reuse path.
+        let long_prompt = " x".repeat(3_000);
+        let long_first = reused.complete(&long_prompt, 1).expect("long prompt");
+        let long_reused = reused
+            .complete(&long_prompt, 1)
+            .expect("long prompt with prefix reuse");
+        assert_eq!(
+            long_first, long_reused,
+            "chunked prompt decode changed deterministic prefix-reuse output"
+        );
+        Box::new(reused).shutdown();
+        println!("{CHILD_MARKER}");
+        return;
+    }
+
+    // llama.cpp aborts the process when a decode exceeds n_batch, so exercise
+    // the long-prompt path in a subprocess. The parent can then report a normal
+    // test failure instead of taking down the entire model-gate test binary.
+    {
+        let output = std::process::Command::new(std::env::current_exe().expect("test binary path"))
+            .args([
+                "--ignored",
+                "--exact",
+                "prefix_reuse_matches_fresh_context_output",
+                "--nocapture",
+                "--test-threads=1",
+            ])
+            .env("COMPME_LONG_PROMPT_TEST_CHILD", "1")
+            .env("COMPME_REQUIRE_MODEL_TESTS", "1")
+            .env("COMPME_REQUIRE_MODEL_CONTEXT", "1")
+            .env("COMPME_MODEL_CONTEXT_TOKENS", "4096")
+            .output()
+            .expect("run long-prompt model subprocess");
+        assert!(
+            output.status.success(),
+            "long-prompt model subprocess failed with {}\nstdout:\n{}\nstderr:\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+        assert!(
+            String::from_utf8_lossy(&output.stdout).contains(CHILD_MARKER),
+            "long-prompt subprocess exited without completion marker\nstdout:\n{}\nstderr:\n{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr),
+        );
+    }
+
     let Some(reused) = load_model_or_skip(&path) else {
         return;
     };
