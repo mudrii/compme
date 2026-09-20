@@ -194,6 +194,8 @@ Review follow-up (2026-09-20): the basename persistence regression now verifies
 the child-created configuration in the parent process, so a zero-test child
 cannot silently pass. A wrong-selector mutation passed the old test and failed
 the hardened assertion; all 50 configuration tests and both startup tests pass.
+The architecture guide now records app/global erasure of queued and partial
+monitored text, application scoping, and preservation on cancellation/failure.
 
 The owner requested implementation of review-list items **1–6 and 19–35**.
 The numbers below refer to that list, not the historical roadmap execution

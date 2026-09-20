@@ -351,6 +351,12 @@ the eight rendered rows. Both deletion paths also clear the matching in-process
 rings (`PreviousInputs::clear_all` / `clear_app`) — without that, records the
 user just erased would keep steering completions until the next launch, and the
 "already hydrated" check would stop any later read from refreshing them.
+Successful app/global erasure also clears the matching queued monitored text
+and partial buffers, preventing a later flush from recreating erased records.
+App erasure uses the captured persistence identity and preserves other apps'
+buffers; global erasure clears all of them. Cancellation or deletion failure
+preserves both the live rings and monitored buffers. The field tracker retains
+its observation baseline so continued typing records only newly observed text.
 Confirmed domain erase conservatively clears all live previous-input rings and
 pending monitored text. The Apps pane also controls Off, Accepted completions,
 and All monitored typing; successful changes persist `COMPME_MEMORY` and clear
