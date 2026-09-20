@@ -14,7 +14,10 @@ means the app sees what it needs.
 - **Accessibility permission is not granted.** Without it Compme cannot read
   the focused field at all. Enable Compme under System Settings → Privacy &
   Security → Accessibility, then re-check the Setup-tab checklist. (Input
-  Monitoring is not required by the production accept path.)
+  Monitoring is not required by the production accept path.) If Setup reports
+  **Relaunch required** after granting permission, quit and reopen Compme:
+  accessibility subscriptions are installed at startup, so permission alone
+  does not activate a launch that began without them.
 - **The field is secure, or Secure Input is on globally.** Password fields
   and any app that enables global Secure Input are always blocked — by
   design, with no override. Suggestions resume in normal fields.

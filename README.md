@@ -88,7 +88,9 @@ unbundled `cargo run -p app` is still fine.
 ### First run
 
 1. Grant Accessibility when prompted (System Settings → Privacy & Security →
-   Accessibility). Input Monitoring is not needed.
+   Accessibility). Input Monitoring is not needed. If Compme started without
+   permission and Setup reports **Relaunch required**, quit and reopen Compme
+   after granting it so the accessibility subscriptions can be installed.
 2. Open the menu-bar icon → **Settings…** → **Setup** tab and download a
    catalog model (the default Qwen2.5-0.5B is ~0.4 GB, one-time download; each
    row shows a RAM-fit verdict for this machine).
