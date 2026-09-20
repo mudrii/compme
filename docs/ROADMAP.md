@@ -190,12 +190,12 @@ Native CI and GUI acceptance are separate evidence requirements.
 | C5: atomic memory insertion and retention | Implemented; real SQLite trim failure now rolls back insertion; 60 memory tests pass; Astra approved. Native CI pending |
 | C6: bounded Linux accessibility setup | Pending |
 | C7: cancel queued X11 callbacks | Pending |
-| D1: coverage measurement scope | Pending |
-| D2: Accessibility relaunch instructions | Pending |
-| D3: native memory-control acceptance procedure | Pending |
-| D4: completed buffered-erasure status | Pending |
-| D5: observable Linux shutdown acceptance | Pending |
-| D6: conditional structural-work sequencing | Pending |
+| D1: coverage measurement scope | Corrected and Astra-reviewed; historical percentages are not current production-only coverage |
+| D2: Accessibility relaunch instructions | Corrected and Astra-reviewed in first-run and troubleshooting guidance |
+| D3: native memory-control acceptance procedure | Added and Astra-reviewed within existing gate IDs; native execution remains unverified |
+| D4: completed buffered-erasure status | Corrected and Astra-reviewed; Apps-pane native LOOK remains open |
+| D5: observable Linux shutdown acceptance | Corrected and Astra-reviewed; sandbox shutdown and real-desktop passthrough require separate observations |
+| D6: conditional structural-work sequencing | Corrected and Astra-reviewed; concrete testing/second-shell needs determine timing |
 
 ### Authorized implementation queue — 2026-09-19
 
@@ -1204,10 +1204,11 @@ remains of the seam work:
   first diagnostic, not before — and revisit `log` only if a dependency ever
   needs to emit into the same stream.
 
-The two structural seams are prerequisites worth doing **before** the first
-real Windows/Linux UI adapter, so native shells translate events instead of
-mirroring macOS-shaped synchronization details. The accepted latency and
-logging-choice records likewise add no current macOS blocker.
+Revisit each structural seam when the focus/caret testing or second-shell need
+described above becomes concrete; neither is a blanket prerequisite for native
+adapter work. Consolidate logging when Windows Phase 1 needs its first
+diagnostic. The accepted latency and logging-choice records add no current
+macOS blocker.
 
 ---
 
