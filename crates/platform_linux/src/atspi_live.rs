@@ -1045,10 +1045,25 @@ fn popup_anchor_on(
     Ok(screen_rect_from_extents(extents))
 }
 
+/// `EditableText.InsertText`'s `length` argument: the UTF-8 **byte** length of
+/// `text` (Atspi-2.0/Atk-1.0 GIR; GTK forwards it to `gtk_editable_insert_text`
+/// and `gtk_text_buffer_insert`), unlike the scalar-counted `position`.
+fn insert_text_length(text: &str) -> Result<i32, PlatformError> {
+    i32::try_from(text.len()).map_err(|_| {
+        unsupported(format!(
+            "platform_linux: {} insert bytes exceed the AT-SPI length range",
+            text.len()
+        ))
+    })
+}
+
 /// Insert `text` at the caret through `EditableText.InsertText`.
 ///
-/// `length` is in scalars, matching AT-SPI's own unit; the returned `chars`
-/// counts the same way so caret math on the host side stays consistent.
+/// `position` is a scalar offset and `length` a byte count
+/// ([`insert_text_length`]); the returned `chars` counts scalars so caret math
+/// on the host side stays consistent. The inserted span is read back, so a
+/// toolkit that truncates or rejects part of the text reports an unknown
+/// outcome instead of a success it never delivered.
 fn insert_on(
     connection: &Connection,
     field: &FieldHandle,
@@ -1056,18 +1071,43 @@ fn insert_on(
     attempt: &MutationAttempt,
 ) -> Result<Inserted, PlatformError> {
     let id = element(field)?;
-    let caret = caret_offset_on(connection, &id)?;
-    let editable = editable_text_on(connection, &id)?;
+    let length = insert_text_length(text)?;
     let scalars = text.chars().count();
+    let caret = caret_offset_on(connection, &id)?;
+    let end = i32::try_from(scalars)
+        .ok()
+        .and_then(|scalars| caret.checked_add(scalars))
+        .ok_or_else(|| {
+            unsupported(format!(
+                "platform_linux: insert of {scalars} scalars at {caret} overflows AT-SPI offsets"
+            ))
+        })?;
+    let editable = editable_text_on(connection, &id)?;
     let inserted = attempt.dispatch("insert_text", || {
         editable
-            .insert_text(caret, text, i32::try_from(scalars).unwrap_or(i32::MAX))
+            .insert_text(caret, text, length)
             .map_err(|err| cannot_complete("insert_text", err))
     })?;
     if !inserted {
         return Err(cannot_complete(
             "insert_text",
             "the toolkit refused the insert",
+        ));
+    }
+    let landed = text_on(connection, &id)
+        .and_then(|proxy| {
+            proxy
+                .get_text(caret, end)
+                .map_err(|err| cannot_complete("get_text", err))
+        })
+        .map_err(|err| {
+            attempt.outcome_unknown(format!(
+                "platform_linux AT-SPI insert_text succeeded, but its readback failed ({err}); the inserted text cannot be verified"
+            ))
+        })?;
+    if landed != text {
+        return Err(attempt.outcome_unknown(
+            "platform_linux AT-SPI insert_text succeeded, but readback does not match the inserted text",
         ));
     }
     Ok(Inserted {
@@ -1693,6 +1733,13 @@ mod tests {
             Err(PlatformError::UnsupportedField { reason })
                 if reason == "invalid negative field scalar count: -1"
         ));
+    }
+
+    #[test]
+    fn insert_text_length_is_the_utf8_byte_count_not_the_scalar_count() {
+        assert_eq!(insert_text_length("XY").expect("ascii"), 2);
+        assert_eq!(insert_text_length("é😀ß").expect("non-ascii"), 8);
+        assert_eq!(insert_text_length("").expect("empty"), 0);
     }
 
     #[test]

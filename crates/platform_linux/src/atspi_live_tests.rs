@@ -459,6 +459,41 @@ fn live_insert_puts_text_at_the_caret() {
     entry.set_text_contents(FIXTURE_TEXT).expect("restore");
 }
 
+/// `EditableText.InsertText`'s length is a byte count (GTK's
+/// `gtk_editable_insert_text` / `gtk_text_buffer_insert` take UTF-8 bytes), so
+/// passing the scalar count truncated or rejected every non-ASCII accept.
+#[test]
+#[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
+fn live_insert_puts_non_ascii_text_whole_at_the_caret() {
+    const INSERTED: &str = "é😀ß";
+    let session = session();
+    let entry_id = fixture_entry(&session);
+    let textview_id = fixture_sibling(&entry_id, FIXTURE_TEXTVIEW);
+    let adapter = LinuxAdapter::with_accessibility();
+
+    for (label, id, restore) in [
+        ("entry", &entry_id, FIXTURE_TEXT),
+        ("text view", &textview_id, FIXTURE_VIEW_TEXT),
+    ] {
+        let editable = editable(&session, id);
+        editable.set_text_contents("abc").expect("seed");
+        zbus_text(id).set_caret_offset(3).expect("caret to end");
+
+        let result = adapter.insert(
+            &handle(&adapter, id),
+            INSERTED,
+            InsertStrategy::NativeRangeSet,
+        );
+        let observed = zbus_text(id).get_text(0, -1).expect("read back");
+        editable.set_text_contents(restore).expect("restore");
+
+        let inserted = result.unwrap_or_else(|err| panic!("{label}: insert failed: {err:?}"));
+        assert_eq!(inserted.chars, 3, "{label}");
+        assert_eq!(inserted.bytes, INSERTED.len(), "{label}");
+        assert_eq!(observed, "abcé😀ß", "{label}: the whole text must land");
+    }
+}
+
 #[test]
 #[ignore = "needs the AT-SPI session harness: run-linux-atspi-session.sh --run-in-session"]
 fn live_xtest_insert_types_preflighted_text_and_refuses_an_unmapped_scalar() {
