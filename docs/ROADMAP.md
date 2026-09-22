@@ -179,7 +179,7 @@ tested**. Everything below is what the plan still calls for.
 
 The owner authorized all findings from the review of `2e25460`. Sol implemented
 the repairs with regression tests; Astra approved all thirteen findings and
-the combined change. The [repair record](AUDIT-REPAIRS-2026-09-20.md) records
+the combined change. The [repair record](../Qfd.md#24-full-codebase-audit-repairs--2026-09-20) records
 1,865 passing portable tests, 41 live Linux tests, and the validation boundaries.
 [Native CI](https://github.com/mudrii/compme/actions/workflows/ci.yml?query=branch%3Amain)
 records results per pushed commit. Native GUI acceptance remains separate.
