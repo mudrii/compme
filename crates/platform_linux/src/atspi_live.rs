@@ -28,6 +28,7 @@ use atspi::proxy::application::ApplicationProxyBlocking;
 use atspi::proxy::component::ComponentProxyBlocking;
 use atspi::proxy::editable_text::EditableTextProxyBlocking;
 use atspi::proxy::text::TextProxyBlocking;
+use std::collections::HashSet;
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::Duration;
@@ -238,24 +239,60 @@ const MUTATION_PREPARING: u8 = 0;
 const MUTATION_DISPATCHED: u8 = 1;
 const MUTATION_EXPIRED: u8 = 2;
 
-/// Serializes AT-SPI writes and permanently refuses later writes once one
-/// dispatched request has an unknowable outcome. A fresh `AtspiSession` is the
-/// recovery boundary: reusing this connection could otherwise turn an engine
-/// retry or a later accept into a second write while the provider is still
-/// resolving the first one.
+/// Which state an unknown write outcome makes untrustworthy. An AT-SPI method
+/// is addressed to one accessible, so only that field is poisoned. XTEST
+/// keystrokes go to whichever window holds X focus, so an uncertain synthetic
+/// insert may have landed in any field and poisons the whole session.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum MutationScope {
+    Field(String),
+    SyntheticInput(String),
+}
+
+impl MutationScope {
+    /// The encoded element id the mutation addresses.
+    fn field(&self) -> &str {
+        match self {
+            Self::Field(field) | Self::SyntheticInput(field) => field,
+        }
+    }
+}
+
+/// Serializes AT-SPI writes and permanently refuses later writes and trusted
+/// reads of a field once one dispatched request has an unknowable outcome for
+/// it ([`MutationScope`] decides whether that is one field or the session). A
+/// fresh `AtspiSession` is the recovery boundary: reusing this connection could
+/// otherwise turn an engine retry or a later accept into a second write while
+/// the provider is still resolving the first one.
 #[derive(Default)]
 struct MutationCoordinator {
     serial: Mutex<()>,
-    quarantined: AtomicBool,
+    quarantined_session: AtomicBool,
+    quarantined_fields: Mutex<HashSet<String>>,
 }
 
 impl MutationCoordinator {
-    fn is_quarantined(&self) -> bool {
-        self.quarantined.load(Ordering::Acquire)
+    fn is_quarantined(&self, field: &str) -> bool {
+        self.quarantined_session.load(Ordering::Acquire)
+            || self
+                .quarantined_fields
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .contains(field)
     }
 
-    fn outcome_unknown(&self, reason: impl Into<String>) -> PlatformError {
-        self.quarantined.store(true, Ordering::Release);
+    fn outcome_unknown(&self, scope: &MutationScope, reason: impl Into<String>) -> PlatformError {
+        match scope {
+            MutationScope::Field(field) => {
+                self.quarantined_fields
+                    .lock()
+                    .unwrap_or_else(std::sync::PoisonError::into_inner)
+                    .insert(field.clone());
+            }
+            MutationScope::SyntheticInput(_) => {
+                self.quarantined_session.store(true, Ordering::Release);
+            }
+        }
         PlatformError::MutationOutcomeUnknown {
             reason: reason.into(),
         }
@@ -267,8 +304,8 @@ impl MutationCoordinator {
         }
     }
 
-    fn require_trusted_text_state(&self) -> Result<(), PlatformError> {
-        if self.is_quarantined() {
+    fn require_trusted_text_state(&self, field: &str) -> Result<(), PlatformError> {
+        if self.is_quarantined(field) {
             Err(self.quarantine_error())
         } else {
             Ok(())
@@ -283,13 +320,15 @@ impl MutationCoordinator {
 struct MutationAttempt {
     phase: AtomicU8,
     coordinator: Arc<MutationCoordinator>,
+    scope: MutationScope,
 }
 
 impl MutationAttempt {
-    fn new(coordinator: Arc<MutationCoordinator>) -> Self {
+    fn new(coordinator: Arc<MutationCoordinator>, scope: MutationScope) -> Self {
         Self {
             phase: AtomicU8::new(MUTATION_PREPARING),
             coordinator,
+            scope,
         }
     }
 
@@ -325,7 +364,7 @@ impl MutationAttempt {
             }
         }
         write().map_err(|err| {
-            self.coordinator.outcome_unknown(format!(
+            self.coordinator.outcome_unknown(&self.scope, format!(
                 "platform_linux AT-SPI {operation} was dispatched but its D-Bus reply failed ({err}); the provider may have applied the write"
             ))
         })
@@ -346,17 +385,18 @@ impl MutationAttempt {
     }
 
     fn outcome_unknown(&self, reason: impl Into<String>) -> PlatformError {
-        self.coordinator.outcome_unknown(reason)
+        self.coordinator.outcome_unknown(&self.scope, reason)
     }
 }
 
 /// Mutation-specific counterpart to [`bounded_bus_call`]. Preparation may time
 /// out normally because the atomic expiry prevents a later write. Once the
 /// write is dispatched, timeout is reported as `MutationOutcomeUnknown` and the
-/// session is quarantined: D-Bus provides no safe cancellation or exactly-once
-/// retry primitive for these methods.
+/// attempt's [`MutationScope`] is quarantined: D-Bus provides no safe
+/// cancellation or exactly-once retry primitive for these methods.
 fn bounded_mutation_call<T, F>(
     coordinator: Arc<MutationCoordinator>,
+    scope: MutationScope,
     label: &str,
     deadline: Duration,
     call: F,
@@ -365,11 +405,11 @@ where
     T: Send + 'static,
     F: FnOnce(&MutationAttempt) -> Result<T, PlatformError> + Send + 'static,
 {
-    if coordinator.is_quarantined() {
+    if coordinator.is_quarantined(scope.field()) {
         return Err(coordinator.quarantine_error());
     }
 
-    let attempt = Arc::new(MutationAttempt::new(Arc::clone(&coordinator)));
+    let attempt = Arc::new(MutationAttempt::new(Arc::clone(&coordinator), scope));
     let worker_attempt = Arc::clone(&attempt);
     let worker_coordinator = Arc::clone(&coordinator);
     let worker_label = label.to_string();
@@ -385,7 +425,7 @@ where
                 .lock()
                 .unwrap_or_else(std::sync::PoisonError::into_inner);
             let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                if worker_coordinator.is_quarantined() {
+                if worker_coordinator.is_quarantined(worker_attempt.scope.field()) {
                     Err(worker_coordinator.quarantine_error())
                 } else if worker_attempt.expired() {
                     Err(PlatformError::Timeout)
@@ -395,7 +435,7 @@ where
             }))
             .unwrap_or_else(|_| {
                 if worker_attempt.was_dispatched() {
-                    Err(worker_coordinator.outcome_unknown(format!(
+                    Err(worker_attempt.outcome_unknown(format!(
                         "platform_linux AT-SPI {worker_label} helper panicked after dispatch; the provider may have applied the write"
                     )))
                 } else {
@@ -409,7 +449,7 @@ where
                 // The caller's receive deadline won. `sync_channel(0)` keeps us
                 // under `serial` until it drops the receiver; quarantine before
                 // this guard releases so no queued operation can enter the gap.
-                let _ = worker_coordinator.outcome_unknown(format!(
+                let _ = worker_attempt.outcome_unknown(format!(
                     "platform_linux AT-SPI {worker_label} result was not received after dispatch; the provider may have applied the write"
                 ));
             }
@@ -425,7 +465,7 @@ where
             Err(PlatformError::Timeout)
         }
         Err(mpsc::RecvTimeoutError::Timeout) => {
-            let error = coordinator.outcome_unknown(format!(
+            let error = attempt.outcome_unknown(format!(
                 "platform_linux AT-SPI {label} was dispatched before its deadline, but no reply arrived; the provider may have applied the write"
             ));
             drop(rx);
@@ -434,19 +474,20 @@ where
         Err(mpsc::RecvTimeoutError::Disconnected) if attempt.expire_before_dispatch() => Err(
             cannot_complete("mutation helper thread", "the helper exited without an answer"),
         ),
-        Err(mpsc::RecvTimeoutError::Disconnected) => Err(coordinator.outcome_unknown(format!(
+        Err(mpsc::RecvTimeoutError::Disconnected) => Err(attempt.outcome_unknown(format!(
             "platform_linux AT-SPI {label} was dispatched, but its helper exited without an answer; the provider may have applied the write"
         ))),
     }
 }
 
 /// Serialize a text/capability snapshot with mutations, then re-check the
-/// session quarantine under that same gate. This closes the race where a late
+/// `field` quarantine under that same gate. This closes the race where a late
 /// provider echo starts a read just before the mutation caller marks its
 /// dispatched write unknown: the read waits for the mutation helper, observes
 /// quarantine, and never exposes the uncertain field value to the host.
 fn bounded_trusted_read_call<T, F>(
     coordinator: Arc<MutationCoordinator>,
+    field: String,
     label: &str,
     deadline: Duration,
     call: F,
@@ -460,7 +501,7 @@ where
             .serial
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        coordinator.require_trusted_text_state()?;
+        coordinator.require_trusted_text_state(&field)?;
         call()
     })
 }
@@ -588,12 +629,13 @@ impl AtspiSession {
     /// wedged bus surfaces `Timeout`.
     pub fn field_facts(&self, id: &ElementId) -> Result<FieldFacts, PlatformError> {
         // Capabilities enable text reads and writes. After an uncertain write,
-        // neither may be advertised from this session: a delayed provider echo
+        // neither may be advertised for that field: a delayed provider echo
         // must not be mistaken for fresh user input and recorded by the host.
         let id = id.clone();
         let connection = self.connection.clone();
         bounded_trusted_read_call(
             Arc::clone(&self.mutations),
+            id.encode(),
             "field_facts",
             BUS_CALL_DEADLINE,
             move || field_facts_on(&connection, &id),
@@ -614,6 +656,7 @@ impl AtspiSession {
         let connection = self.connection.clone();
         bounded_trusted_read_call(
             Arc::clone(&self.mutations),
+            field.element_id.clone(),
             "read_context",
             BUS_CALL_DEADLINE,
             move || read_context_on(&connection, &field),
@@ -633,7 +676,7 @@ impl AtspiSession {
     /// Screen rectangle enclosing a valid half-open scalar range. AT-SPI uses
     /// Unicode-scalar offsets already, so only bounds validation and the signed
     /// wire conversion are needed. Bounded and serialized with text mutations:
-    /// geometry from a quarantined session is no longer trustworthy.
+    /// geometry from a quarantined field is no longer trustworthy.
     pub fn text_range_rect(
         &self,
         field: &FieldHandle,
@@ -643,6 +686,7 @@ impl AtspiSession {
         let connection = self.connection.clone();
         bounded_trusted_read_call(
             Arc::clone(&self.mutations),
+            field.element_id.clone(),
             "text_range_rect",
             BUS_CALL_DEADLINE,
             move || text_range_rect_on(&connection, &field, range),
@@ -683,6 +727,7 @@ impl AtspiSession {
         let connection = self.connection.clone();
         bounded_mutation_call(
             Arc::clone(&self.mutations),
+            MutationScope::Field(field.element_id.clone()),
             "insert",
             BUS_CALL_DEADLINE,
             move |attempt| insert_on(&connection, &field, &text, attempt),
@@ -704,6 +749,7 @@ impl AtspiSession {
         let connection = self.connection.clone();
         bounded_mutation_call(
             Arc::clone(&self.mutations),
+            MutationScope::SyntheticInput(field.element_id.clone()),
             "xtest_insert",
             BUS_CALL_DEADLINE,
             move |attempt| insert_synthetic_on(&connection, &field, &text, attempt),
@@ -727,6 +773,7 @@ impl AtspiSession {
         let connection = self.connection.clone();
         bounded_mutation_call(
             Arc::clone(&self.mutations),
+            MutationScope::Field(field.element_id.clone()),
             "insert_replacing_range",
             BUS_CALL_DEADLINE,
             move |attempt| {
@@ -1358,9 +1405,28 @@ fn insert_replacing_range_on(
             "platform_linux AT-SPI set_text_contents succeeded, but readback does not match the written value",
         ));
     }
+    // SetTextContents resets the toolkit caret (GTK moves it to 0). Put it
+    // just after the replacement, in scalars like every AT-SPI Text offset.
+    // The verified value already landed, so a refused caret move degrades
+    // editing comfort only and is not an unknown write outcome.
+    let chars = text.chars().count();
+    let caret = i32::try_from(range.start + chars).unwrap_or(i32::MAX);
+    match text_on(connection, &id).and_then(|proxy| {
+        proxy
+            .set_caret_offset(caret)
+            .map_err(|err| cannot_complete("set_caret_offset", err))
+    }) {
+        Ok(true) => {}
+        Ok(false) => eprintln!(
+            "compme: Linux range replace landed, but the toolkit refused the caret move to {caret}"
+        ),
+        Err(err) => {
+            eprintln!("compme: Linux range replace landed, but restoring the caret failed: {err}")
+        }
+    }
     Ok(Inserted {
         bytes: text.len(),
-        chars: text.chars().count(),
+        chars,
         strategy: InsertStrategy::NativeRangeSet,
     })
 }
@@ -1449,6 +1515,12 @@ mod tests {
         );
     }
 
+    const TEST_FIELD: &str = ":1.7|/test/field";
+
+    fn test_scope() -> MutationScope {
+        MutationScope::Field(TEST_FIELD.to_string())
+    }
+
     struct BarrierMutationTransport {
         prepare_gate: Mutex<Option<mpsc::Receiver<()>>>,
         write_gate: Mutex<Option<mpsc::Receiver<()>>>,
@@ -1524,6 +1596,7 @@ mod tests {
 
         let result = bounded_mutation_call(
             Arc::clone(&coordinator),
+            test_scope(),
             "late-preparation",
             Duration::from_millis(10),
             move |attempt| {
@@ -1540,7 +1613,7 @@ mod tests {
             .expect("expired helper must finish");
         assert_eq!(writes.load(Ordering::SeqCst), 0);
         assert!(
-            !coordinator.is_quarantined(),
+            !coordinator.is_quarantined(TEST_FIELD),
             "expiry before dispatch leaves the session safe for later writes"
         );
     }
@@ -1563,6 +1636,7 @@ mod tests {
         let first = std::thread::spawn(move || {
             bounded_mutation_call(
                 first_coordinator,
+                test_scope(),
                 "late-write-reply",
                 Duration::from_millis(80),
                 move |attempt| {
@@ -1580,6 +1654,7 @@ mod tests {
         assert_eq!(
             bounded_mutation_call(
                 Arc::clone(&coordinator),
+                test_scope(),
                 "overlap",
                 Duration::from_millis(10),
                 move |attempt| overlapping.execute(attempt),
@@ -1598,6 +1673,7 @@ mod tests {
         assert!(matches!(
             bounded_mutation_call(
                 Arc::clone(&coordinator),
+                test_scope(),
                 "after-unknown",
                 Duration::from_secs(1),
                 move |attempt| quarantined.execute(attempt),
@@ -1607,7 +1683,7 @@ mod tests {
         ));
         assert_eq!(writes.load(Ordering::SeqCst), 1);
         assert!(matches!(
-            coordinator.require_trusted_text_state(),
+            coordinator.require_trusted_text_state(TEST_FIELD),
             Err(PlatformError::MutationOutcomeUnknown { .. })
         ));
 
@@ -1616,7 +1692,11 @@ mod tests {
         // still owns `serial`, then queue a trusted read. The helper's failed
         // rendezvous send must restore quarantine before it unlocks; otherwise
         // this read executes against the uncertain late write.
-        coordinator.quarantined.store(false, Ordering::Release);
+        coordinator
+            .quarantined_fields
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clear();
         let trusted_reads = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let read_count = Arc::clone(&trusted_reads);
         let queued_read_coordinator = Arc::clone(&coordinator);
@@ -1625,6 +1705,7 @@ mod tests {
             queued_tx.send(()).expect("report queued read caller");
             bounded_trusted_read_call(
                 queued_read_coordinator,
+                TEST_FIELD.to_string(),
                 "after-late-echo",
                 Duration::from_secs(1),
                 move || {
@@ -1651,10 +1732,118 @@ mod tests {
         assert!(matches!(
             bounded_mutation_call(
                 coordinator,
+                test_scope(),
                 "after-late-reply",
                 Duration::from_secs(1),
                 move |attempt| still_quarantined.execute(attempt),
             ),
+            Err(PlatformError::MutationOutcomeUnknown { .. })
+        ));
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+    }
+
+    /// Runs one fake write that lands and then fails its readback, the shape
+    /// `insert_on` and `insert_replacing_range_on` map to an unknown outcome.
+    fn mismatched_readback_write(
+        coordinator: &Arc<MutationCoordinator>,
+        scope: MutationScope,
+        writes: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Result<(), PlatformError> {
+        let transport = immediate_transport(Arc::clone(writes), true);
+        bounded_mutation_call(
+            Arc::clone(coordinator),
+            scope,
+            "mismatched-readback",
+            Duration::from_secs(1),
+            move |attempt| {
+                transport.execute(attempt)?;
+                Err(attempt.outcome_unknown("readback does not match the written value"))
+            },
+        )
+    }
+
+    fn fake_write(
+        coordinator: &Arc<MutationCoordinator>,
+        field: &str,
+        writes: &Arc<std::sync::atomic::AtomicUsize>,
+    ) -> Result<(), PlatformError> {
+        let transport = immediate_transport(Arc::clone(writes), true);
+        bounded_mutation_call(
+            Arc::clone(coordinator),
+            MutationScope::Field(field.to_string()),
+            "fake-write",
+            Duration::from_secs(1),
+            move |attempt| transport.execute(attempt),
+        )
+    }
+
+    fn fake_trusted_read(
+        coordinator: &Arc<MutationCoordinator>,
+        field: &str,
+    ) -> Result<(), PlatformError> {
+        bounded_trusted_read_call(
+            Arc::clone(coordinator),
+            field.to_string(),
+            "fake-read",
+            Duration::from_secs(1),
+            || Ok(()),
+        )
+    }
+
+    #[test]
+    fn readback_mismatch_quarantines_only_that_field() {
+        const OTHER_FIELD: &str = ":1.7|/test/other";
+        let coordinator = Arc::new(MutationCoordinator::default());
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        assert!(matches!(
+            mismatched_readback_write(&coordinator, test_scope(), &writes),
+            Err(PlatformError::MutationOutcomeUnknown { reason })
+                if reason.contains("readback does not match")
+        ));
+        assert_eq!(writes.load(Ordering::SeqCst), 1);
+
+        assert!(matches!(
+            fake_write(&coordinator, TEST_FIELD, &writes),
+            Err(PlatformError::MutationOutcomeUnknown { reason }) if reason.contains("quarantined")
+        ));
+        assert!(matches!(
+            fake_trusted_read(&coordinator, TEST_FIELD),
+            Err(PlatformError::MutationOutcomeUnknown { .. })
+        ));
+        assert_eq!(
+            writes.load(Ordering::SeqCst),
+            1,
+            "the uncertain field must never be written again"
+        );
+
+        assert_eq!(fake_write(&coordinator, OTHER_FIELD, &writes), Ok(()));
+        assert_eq!(fake_trusted_read(&coordinator, OTHER_FIELD), Ok(()));
+        assert_eq!(writes.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn uncertain_synthetic_input_quarantines_every_field() {
+        const OTHER_FIELD: &str = ":1.7|/test/other";
+        let coordinator = Arc::new(MutationCoordinator::default());
+        let writes = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+
+        assert!(matches!(
+            mismatched_readback_write(
+                &coordinator,
+                MutationScope::SyntheticInput(TEST_FIELD.to_string()),
+                &writes,
+            ),
+            Err(PlatformError::MutationOutcomeUnknown { .. })
+        ));
+        // XTEST keystrokes follow X focus, not an accessible, so an uncertain
+        // one may have landed in any field.
+        assert!(matches!(
+            fake_write(&coordinator, OTHER_FIELD, &writes),
+            Err(PlatformError::MutationOutcomeUnknown { reason }) if reason.contains("quarantined")
+        ));
+        assert!(matches!(
+            fake_trusted_read(&coordinator, OTHER_FIELD),
             Err(PlatformError::MutationOutcomeUnknown { .. })
         ));
         assert_eq!(writes.load(Ordering::SeqCst), 1);
@@ -1668,6 +1857,7 @@ mod tests {
         assert!(matches!(
             bounded_mutation_call(
                 Arc::clone(&coordinator),
+                test_scope(),
                 "refused",
                 Duration::from_secs(1),
                 move |attempt| refused.execute(attempt),
@@ -1675,19 +1865,20 @@ mod tests {
             Err(PlatformError::CannotComplete { reason })
                 if reason.contains("provider refused")
         ));
-        assert!(!coordinator.is_quarantined());
+        assert!(!coordinator.is_quarantined(TEST_FIELD));
 
         let successful = immediate_transport(Arc::clone(&writes), true);
         assert_eq!(
             bounded_mutation_call(
                 Arc::clone(&coordinator),
+                test_scope(),
                 "successful",
                 Duration::from_secs(1),
                 move |attempt| successful.execute(attempt),
             ),
             Ok(())
         );
-        assert!(!coordinator.is_quarantined());
+        assert!(!coordinator.is_quarantined(TEST_FIELD));
         assert_eq!(writes.load(Ordering::SeqCst), 2);
     }
 
@@ -1877,7 +2068,8 @@ mod tests {
             let field = std::cell::RefCell::new("teh quick brown".to_string());
             let snapshot: Vec<char> = field.borrow().chars().collect();
             let writes = std::cell::Cell::new(0usize);
-            let attempt = MutationAttempt::new(Arc::new(MutationCoordinator::default()));
+            let attempt =
+                MutationAttempt::new(Arc::new(MutationCoordinator::default()), test_scope());
             let updated = checked_replacement(
                 &snapshot,
                 "teh",
@@ -1921,7 +2113,7 @@ mod tests {
         let field = std::cell::RefCell::new("teh quick brown".to_string());
         let snapshot: Vec<char> = field.borrow().chars().collect();
         let writes = std::cell::Cell::new(0usize);
-        let attempt = MutationAttempt::new(Arc::new(MutationCoordinator::default()));
+        let attempt = MutationAttempt::new(Arc::new(MutationCoordinator::default()), test_scope());
         let updated = checked_replacement(
             &snapshot,
             "teh",

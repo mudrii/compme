@@ -725,6 +725,9 @@ fn live_range_replace_swaps_exactly_the_range() {
     let adapter = LinuxAdapter::with_accessibility();
     let entry = editable(&session, &id);
     entry.set_text_contents(FIXTURE_TEXT).expect("seed");
+    zbus_text(&id)
+        .set_caret_offset(i32::try_from(FIXTURE_TEXT.chars().count()).unwrap())
+        .expect("caret to end");
 
     let inserted = adapter
         .insert_replacing_range(
@@ -744,8 +747,46 @@ fn live_range_replace_swaps_exactly_the_range() {
         format!("{}{}", context.left, context.right),
         "the quick brown"
     );
+    // SetTextContents resets the toolkit caret; the replacement must leave it
+    // just after the replaced text, where the user's typing continues.
+    assert_eq!(
+        context.left, "the",
+        "entry caret sits after the replacement"
+    );
 
     entry.set_text_contents(FIXTURE_TEXT).expect("restore");
+
+    // Same property on the multi-line view, with an astral replacement so the
+    // caret math is proven in scalars, not bytes.
+    let textview = fixture_sibling(&id, FIXTURE_TEXTVIEW);
+    let view = editable(&session, &textview);
+    view.set_text_contents(FIXTURE_VIEW_TEXT)
+        .expect("seed view");
+    zbus_text(&textview)
+        .set_caret_offset(i32::try_from(FIXTURE_VIEW_TEXT.chars().count()).unwrap())
+        .expect("view caret to end");
+    let replaced = adapter.insert_replacing_range(
+        &handle(&adapter, &textview),
+        "Hello",
+        "Hé😀",
+        platform::CorrectionRange { start: 0, end: 5 },
+        InsertStrategy::NativeRangeSet,
+    );
+    let caret = zbus_text(&textview).caret_offset();
+    let observed = zbus_text(&textview).get_text(0, -1);
+    view.set_text_contents(FIXTURE_VIEW_TEXT)
+        .expect("restore view");
+
+    assert_eq!(replaced.expect("view range replace").chars, 3);
+    assert_eq!(
+        observed.expect("read view"),
+        FIXTURE_VIEW_TEXT.replacen("Hello", "Hé😀", 1)
+    );
+    assert_eq!(
+        caret.expect("view caret"),
+        3,
+        "text view caret sits after the replacement"
+    );
 }
 
 #[test]
