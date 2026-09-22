@@ -2286,7 +2286,6 @@ type CorrectionPreview = (FieldHandle, String, CorrectionRange);
 struct AcceptSideEffects<'a> {
     action: AcceptAction,
     preview: Option<&'a AcceptPreview>,
-    correction_preview: Option<&'a CorrectionPreview>,
     range_preview: Option<&'a CorrectionPreview>,
     wall_ms: u64,
     context_max_chars: usize,
@@ -2311,12 +2310,7 @@ fn apply_accept_side_effects(accepted: bool, side_effects: AcceptSideEffects<'_>
         return;
     }
     let Some((field, text, replace_left)) = side_effects.preview else {
-        let range_preview = side_effects.range_preview.or_else(|| {
-            (side_effects.action == AcceptAction::Correction)
-                .then_some(side_effects.correction_preview)
-                .flatten()
-        });
-        if let Some((field, text, range)) = range_preview {
+        if let Some((field, text, range)) = side_effects.range_preview {
             side_effects
                 .tracker
                 .apply_self_replace_range(field, text, *range);
@@ -6145,7 +6139,6 @@ pub fn run() -> Result<(), String> {
                     // both the Word self-insert and the Full context record, so
                     // the two never read divergent engine snapshots.
                     let preview = engine.preview_accept_insert(action);
-                    let correction_preview = engine.preview_accept_correction();
                     let range_preview = engine.preview_accept_range(action);
                     let accept_result = engine.on_accept(action);
                     // The platform field mutation precedes overlay/tap teardown.
@@ -6158,7 +6151,6 @@ pub fn run() -> Result<(), String> {
                         AcceptSideEffects {
                             action,
                             preview: preview.as_ref(),
-                            correction_preview: correction_preview.as_ref(),
                             range_preview: range_preview.as_ref(),
                             wall_ms,
                             context_max_chars: previous_input_context_chars(&config, context_bound),

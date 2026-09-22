@@ -1037,16 +1037,6 @@ impl SuggestionMachine {
         self.showing.is_some()
     }
 
-    pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
-        let showing = self.showing.as_ref()?;
-        if showing.presentation != Presentation::Correction {
-            return None;
-        }
-        let range = showing.correction_range?;
-        let text = showing.candidates.get(showing.index)?.clone();
-        (!text.is_empty()).then(|| (showing.field.clone(), text, range))
-    }
-
     pub fn preview_accept_range(
         &self,
         action: AcceptAction,
@@ -4843,7 +4833,7 @@ mod tests {
         // later `CorrectionReady` carrying that stamp shows a correction the user can
         // accept. This end-to-end test pins arm (returns the live gen/snap and
         // cancels any armed completion debounce), `on_correction_ready` (matches the
-        // GrammarFix request and emits ShowCorrection), `preview_accept_correction`
+        // GrammarFix request and emits ShowCorrection), `preview_accept_range(Correction)`
         // (reports the pending replacement), and AcceptCorrection through the grammar
         // arming path.
         let mut machine = machine();
@@ -4878,9 +4868,14 @@ mod tests {
         );
         // The host previews the pending correction (echo absorption) before accept.
         assert_eq!(
-            machine.preview_accept_correction(),
+            machine.preview_accept_range(AcceptAction::Correction),
             Some((f.clone(), "the quick".into(), range))
         );
+        // Only the Correction accept previews a correction's range: Full/Word
+        // must not hand the host a range to absorb for an accept that does not
+        // apply it.
+        assert_eq!(machine.preview_accept_range(AcceptAction::Full), None);
+        assert_eq!(machine.preview_accept_range(AcceptAction::Word), None);
         assert_eq!(
             machine.on_event(Event::AcceptCorrection),
             vec![
@@ -4939,7 +4934,9 @@ mod tests {
             }),
             vec![]
         );
-        assert!(grammar.preview_accept_correction().is_none());
+        assert!(grammar
+            .preview_accept_range(AcceptAction::Correction)
+            .is_none());
         // Empty suggestion on the matching stamp is still dropped (no blank ghost).
         assert_eq!(
             grammar.on_event(Event::CorrectionReady {
@@ -4952,7 +4949,9 @@ mod tests {
             }),
             vec![]
         );
-        assert!(grammar.preview_accept_correction().is_none());
+        assert!(grammar
+            .preview_accept_range(AcceptAction::Correction)
+            .is_none());
 
         // Kind discriminator: a CorrectionReady arriving against a COMPLETION
         // request (armed by the debounce, not by arm_manual_grammar_request) must
@@ -4974,7 +4973,9 @@ mod tests {
             }),
             vec![]
         );
-        assert!(completion.preview_accept_correction().is_none());
+        assert!(completion
+            .preview_accept_range(AcceptAction::Correction)
+            .is_none());
     }
 
     #[test]
@@ -5007,7 +5008,9 @@ mod tests {
             vec![],
             "a matching grammar outcome is single-use even when rejected"
         );
-        assert!(machine.preview_accept_correction().is_none());
+        assert!(machine
+            .preview_accept_range(AcceptAction::Correction)
+            .is_none());
     }
 
     #[test]
@@ -5037,17 +5040,25 @@ mod tests {
             }),
             vec![]
         );
-        assert!(machine.preview_accept_correction().is_none());
+        assert!(machine
+            .preview_accept_range(AcceptAction::Correction)
+            .is_none());
         assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
     }
 
     #[test]
-    fn preview_accept_correction_is_none_unless_a_correction_is_showing() {
+    fn preview_accept_range_for_correction_is_none_unless_a_correction_is_showing() {
         // Nothing showing → nothing to preview.
-        assert_eq!(machine().preview_accept_correction(), None);
+        assert_eq!(
+            machine().preview_accept_range(AcceptAction::Correction),
+            None
+        );
         // A ghost (ordinary completion) is not a correction: the correction preview
         // must return None so the host never applies a ReplaceRange for a plain
         // completion. Pins the presentation discriminator.
-        assert_eq!(showing_three_words().preview_accept_correction(), None);
+        assert_eq!(
+            showing_three_words().preview_accept_range(AcceptAction::Correction),
+            None
+        );
     }
 }

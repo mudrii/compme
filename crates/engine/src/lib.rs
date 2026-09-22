@@ -447,10 +447,6 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.machine.has_visible_suggestion()
     }
 
-    pub fn preview_accept_correction(&self) -> Option<(FieldHandle, String, CorrectionRange)> {
-        self.machine.preview_accept_correction()
-    }
-
     pub fn preview_accept_range(
         &self,
         action: AcceptAction,
@@ -4135,7 +4131,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(
-            correction_engine.preview_accept_correction(),
+            correction_engine.preview_accept_range(AcceptAction::Correction),
             Some((field(), "the".into(), range)),
             "a showing correction previews its suggestion and range for the host"
         );
@@ -4143,14 +4139,17 @@ mod tests {
         // A plain completion ghost is NOT an accept-able correction.
         let (completion_engine, _a, _o) = showing("hi there");
         assert_eq!(
-            completion_engine.preview_accept_correction(),
+            completion_engine.preview_accept_range(AcceptAction::Correction),
             None,
             "a completion ghost must not preview as a correction"
         );
 
         // Nothing showing at all → None.
         let (cold_engine, _a, _o) = engine();
-        assert_eq!(cold_engine.preview_accept_correction(), None);
+        assert_eq!(
+            cold_engine.preview_accept_range(AcceptAction::Correction),
+            None
+        );
     }
 
     #[test]

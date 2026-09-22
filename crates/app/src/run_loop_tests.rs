@@ -3711,7 +3711,6 @@ fn failed_accept_records_no_context_memory_or_accept_stats() {
         AcceptSideEffects {
             action: AcceptAction::Full,
             preview: Some(&preview),
-            correction_preview: None,
             range_preview: None,
             wall_ms: 10_000,
             context_max_chars: 160,
@@ -3773,7 +3772,6 @@ fn committed_cleanup_failure_records_context_memory_and_accept_stats_once() {
         AcceptSideEffects {
             action: AcceptAction::Full,
             preview: Some(&preview),
-            correction_preview: None,
             range_preview: None,
             wall_ms: 10_000,
             context_max_chars: 160,
@@ -3824,7 +3822,6 @@ fn replacement_accept_absorbs_the_delete_then_insert_echo() {
         AcceptSideEffects {
             action: AcceptAction::Full,
             preview: Some(&preview),
-            correction_preview: None,
             range_preview: None,
             wall_ms: 10_000,
             context_max_chars: 160,
@@ -3885,8 +3882,7 @@ fn correction_accept_absorbs_exact_range_echo_and_records_stats() {
         AcceptSideEffects {
             action: AcceptAction::Correction,
             preview: None,
-            correction_preview: Some(&correction),
-            range_preview: None,
+            range_preview: Some(&correction),
             wall_ms: 10_000,
             context_max_chars: 160,
             cross_app_previous_inputs: false,
@@ -3948,7 +3944,6 @@ fn selection_replacement_absorbs_exact_range_echo_and_records_stats() {
         AcceptSideEffects {
             action: AcceptAction::Full,
             preview: None,
-            correction_preview: None,
             range_preview: Some(&replacement),
             wall_ms: 10_000,
             context_max_chars: 160,
@@ -4018,8 +4013,7 @@ fn correction_accept_absorbs_app_normalized_readback_as_caret_move() {
         AcceptSideEffects {
             action: AcceptAction::Correction,
             preview: None,
-            correction_preview: Some(&correction),
-            range_preview: None,
+            range_preview: Some(&correction),
             wall_ms: 10_000,
             context_max_chars: 160,
             cross_app_previous_inputs: false,
@@ -10956,11 +10950,14 @@ fn grammar_check_shortcut_routes_to_detection() {
 #[test]
 fn grammar_accept_action_routes_to_accept_correction_not_full() {
     // Asserted against the production helpers the `HostEvent::Accept(action)`
-    // arm composes: it hands `action` verbatim to `engine.on_accept(action)`
-    // and to `apply_accept_side_effects`, where only `AcceptAction::Correction`
-    // may consume the engine's correction preview (an exact-range replace).
-    // Full and Word must leave it alone, and a Correction must never be folded
-    // through the Full-accept recording path.
+    // arm composes: it hands `action` verbatim to `engine.preview_accept_range`,
+    // `engine.on_accept(action)` and `apply_accept_side_effects`. Only
+    // `AcceptAction::Correction` yields a showing correction's range preview
+    // (engine_core pins `preview_accept_range` to None for Full/Word on a
+    // correction), and `apply_accept_side_effects` consumes exactly that
+    // preview as an exact-range replace. Full and Word therefore reach it with
+    // no preview and must leave the field alone, and a Correction must never
+    // be folded through the Full-accept recording path.
     let field = field_with_app("com.apple.TextEdit");
     let range = CorrectionRange { start: 6, end: 9 };
 
@@ -10968,7 +10965,8 @@ fn grammar_accept_action_routes_to_accept_correction_not_full() {
     // consumed correction replace leaves the baseline already holding "the",
     // so the field's own readback is just a caret move. Anything else means
     // the correction preview went unused and the readback is fresh typing.
-    let absorbed_correction = |action: AcceptAction| {
+    let correction = (field.clone(), "the".to_string(), range);
+    let absorbed_correction = |action: AcceptAction, range_preview: Option<&CorrectionPreview>| {
         let previous = PreviousInputs::default();
         let store = accepted_store();
         let mut tracker = FieldTracker::new();
@@ -10980,15 +10978,13 @@ fn grammar_accept_action_routes_to_accept_correction_not_full() {
             TriggerPolicy::Automatic,
             0,
         );
-        let correction = (field.clone(), "the".to_string(), range);
 
         apply_accept_side_effects(
             true,
             AcceptSideEffects {
                 action,
                 preview: None,
-                correction_preview: Some(&correction),
-                range_preview: None,
+                range_preview,
                 wall_ms: 10_000,
                 context_max_chars: 160,
                 cross_app_previous_inputs: false,
@@ -11013,15 +11009,15 @@ fn grammar_accept_action_routes_to_accept_correction_not_full() {
     };
 
     assert!(
-        absorbed_correction(AcceptAction::Correction),
+        absorbed_correction(AcceptAction::Correction, Some(&correction)),
         "Correction routes to the correction accept: its exact-range replace is absorbed"
     );
     assert!(
-        !absorbed_correction(AcceptAction::Full),
+        !absorbed_correction(AcceptAction::Full, None),
         "Full must not consume the correction preview"
     );
     assert!(
-        !absorbed_correction(AcceptAction::Word),
+        !absorbed_correction(AcceptAction::Word, None),
         "Word must not consume the correction preview"
     );
 
