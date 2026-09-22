@@ -1382,11 +1382,21 @@ mod tests {
         let mut machine = machine();
         machine.on_event(text_changed("teh", 3, 0));
         show_correction(&mut machine, "the", CorrectionRange { start: 0, end: 3 });
+        let shown = machine.showing.clone();
+        assert_eq!(
+            shown
+                .as_ref()
+                .map(|s| (s.presentation, s.candidates.clone())),
+            Some((Presentation::Correction, vec!["the".to_string()]))
+        );
 
+        // Both no-op accepts must leave the held correction exactly as shown —
+        // same presentation, candidate, range and snapshot — not merely "some"
+        // showing state that a partial commit could have rewritten.
         assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
-        assert!(machine.showing.is_some());
+        assert_eq!(machine.showing, shown);
         assert_eq!(machine.on_event(Event::AcceptWord), vec![]);
-        assert!(machine.showing.is_some());
+        assert_eq!(machine.showing, shown);
     }
 
     #[test]

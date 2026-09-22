@@ -96,8 +96,8 @@ mod tests {
 
     #[test]
     fn lookup_is_case_insensitive_and_trims() {
-        assert!(correct("TEH").is_some());
-        assert!(correct("  teh  ").is_some());
+        assert_eq!(correct("TEH").as_deref(), Some("THE"));
+        assert_eq!(correct("  teh  ").as_deref(), Some("the"));
         assert_eq!(correct("  Teh  ").as_deref(), Some("The"));
     }
 

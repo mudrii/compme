@@ -889,6 +889,9 @@ mod tests {
             "ghp_abcdefghijklmnopqrst",
             "glpat-abcdefghijklmnopqr",
             "whsec_abcdefghijklmnopqr",
+            "xoxa-abcdefghijklmnopqr",
+            "xoxr-abcdefghijklmnopqr",
+            "xoxs-abcdefghijklmnopqr",
         ] {
             let out = redact(&format!("key {token} done"));
             assert!(out.contains("[redacted-secret]"), "{token} -> {out:?}");
@@ -1170,6 +1173,10 @@ mod tests {
             redact("access_token abcdefghijklmnop"),
             "access_token [redacted-secret]"
         );
+        assert_eq!(
+            redact("id_token abcdefghijklmnop"),
+            "id_token [redacted-secret]"
+        );
         assert_eq!(redact("api_key devkey"), "api_key devkey");
     }
 
@@ -1307,7 +1314,7 @@ mod tests {
         assert_eq!(redact("token=secret123value"), "token=[redacted-secret]");
 
         // POSITIVE — legitimate `_`-compound credential keys ARE in the
-        // alternation (`refresh[_-]?token`, `client[_-]?secret`) and their values
+        // alternation (`refresh[_-]?token`, `client[_-]?secret`, `id[_-]?token`) and their values
         // must be scrubbed regardless of value entropy.
         assert_eq!(
             redact("refresh_token=abc123secret"),
@@ -1317,6 +1324,13 @@ mod tests {
             redact("client_secret=abc123secret"),
             "client_secret=[redacted-secret]"
         );
+        assert_eq!(
+            redact("id_token=abcdefsecret"),
+            "id_token=[redacted-secret]"
+        );
+        // camelCase (OAuth/Firebase JSON) has no separator before `token`, so
+        // only the `id[_-]?token` alternative can catch it.
+        assert_eq!(redact("idToken=abcdefsecret"), "idToken=[redacted-secret]");
     }
 
     #[test]

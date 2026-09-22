@@ -8992,10 +8992,28 @@ fn grammar_fix_config_and_per_app_lists_parse() {
 fn trusted_key_parses_valid_hex_and_fails_closed_otherwise() {
     // COMPME_TRUSTED_KEY gates whether signed deep links can EVER apply;
     // the lookup→from_hex wiring is the app's security posture switch.
-    // (from_hex validates a real Ed25519 point — this is the basepoint.)
-    let valid = "5866666666666666666666666666666666666666666666666666666666666666";
-    let with_key = Config::from_lookup(lookup(&[("COMPME_TRUSTED_KEY", valid)]));
-    assert!(with_key.trusted_key.is_some());
+    // (from_hex validates a real Ed25519 point.) `TrustedKey` exposes no bytes,
+    // so the configured key is compared by what it verifies: the signed
+    // fixture from only_a_verified_signed_deep_link_reaches_confirmation_and_mutates_prefs
+    // (seed [7; 32]) passes under its own public key and fails under another
+    // valid point (the basepoint), so the config carries THESE bytes.
+    let signed = concat!(
+        "compme://setOverride?app=com.apple.TextEdit&excluded=true&exp=7258118400",
+        "&sig=5e71197071bc0a5bffb59fe5559feb1cf574afba1d0c7f7a533b8e6636bdfe3f",
+        "9e56010503f2d965dc51251b7cf60d0570bf0c10c24f37e218f4b3bfac90260c",
+    );
+    let with_key = Config::from_lookup(lookup(&[(
+        "COMPME_TRUSTED_KEY",
+        " ea4a6c63e29c520abef5507b132ec5f9954776aebebe7b92421eea691446d22c ",
+    )]));
+    let key = with_key.trusted_key.as_ref().expect("valid key parses");
+    handle_deep_link(signed, Some(key), &mut Prefs::default(), |_| true)
+        .expect("the configured key verifies its own signature");
+    let basepoint = "5866666666666666666666666666666666666666666666666666666666666666";
+    let other = Config::from_lookup(lookup(&[("COMPME_TRUSTED_KEY", basepoint)]));
+    let other_key = other.trusted_key.as_ref().expect("the basepoint parses");
+    handle_deep_link(signed, Some(other_key), &mut Prefs::default(), |_| true)
+        .expect_err("a different configured key must reject the fixture signature");
     let junk = Config::from_lookup(lookup(&[("COMPME_TRUSTED_KEY", "not-hex")]));
     assert!(junk.trusted_key.is_none(), "malformed key fails closed");
     let absent = Config::from_lookup(lookup(&[]));

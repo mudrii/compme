@@ -225,8 +225,8 @@ mod tests {
 
     #[test]
     fn lookup_is_case_insensitive_and_trims() {
-        assert!(to_british("COLOR").is_some());
-        assert!(to_british("  color  ").is_some());
+        assert_eq!(to_british("COLOR").as_deref(), Some("COLOUR"));
+        assert_eq!(to_british("  color  ").as_deref(), Some("colour"));
         assert_eq!(to_british("  Color  ").as_deref(), Some("Colour"));
     }
 
