@@ -105,7 +105,9 @@ pub struct ModelEntry {
     pub name: &'static str,
     /// Direct HTTPS download URL (Hugging Face resolve link).
     pub url: &'static str,
-    /// Approximate download size, for the picker label.
+    /// Download size in MiB: the picker label AND the hard download cap —
+    /// the fetch aborts once more than `size_mb` MiB would land on disk, so
+    /// it must round the real file size UP.
     pub size_mb: u32,
     /// Minimum unified memory required before the download is offered.
     pub min_ram_gb: u32,

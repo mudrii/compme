@@ -1316,10 +1316,20 @@ fn open_memory_store(
             load_or_create_key()
         }
     }) else {
-        eprintln!(
-            "compme: memory database exists but no matching key is available — \
-             memory unavailable"
-        );
+        // Off mode only reads an existing key for cleanup; otherwise the key
+        // was neither found nor creatable. Either way the OS key store may
+        // simply have been unreachable — do not claim a database exists.
+        if config.mode == StorageMode::Off {
+            eprintln!(
+                "compme: memory database exists but its key is missing or the OS key \
+                 store could not be read — memory unavailable"
+            );
+        } else {
+            eprintln!(
+                "compme: memory key could not be loaded from or created in the OS key \
+                 store — memory unavailable"
+            );
+        }
         return None;
     };
     // Windows analog of the store's unix 0700 dir tightening: harden the db

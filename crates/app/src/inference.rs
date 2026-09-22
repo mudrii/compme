@@ -23,9 +23,10 @@ use platform::{CorrectionRange, FieldHandle};
 
 use crate::model_select::{shape_prompt, PromptMode};
 
-/// Output budget for grammar-fix requests: the vetted result is a single word,
-/// so 8 tokens is ample. Set on the request in the run loop; the worker honors
-/// `request.max_tokens` for every request kind.
+/// Output budget for grammar-fix requests: exactly one token (strict one-token
+/// vetting — a larger budget invites explanatory text the vetter must reject;
+/// see [`model_client::GRAMMAR_GENERATION_TOKENS`]). Set on the request in the
+/// run loop; the worker honors `request.max_tokens` for every request kind.
 pub(crate) const GRAMMAR_MAX_TOKENS: usize = model_client::GRAMMAR_GENERATION_TOKENS;
 
 /// Per-app bounded rings of recent accepted completions (redacted), shared
@@ -413,8 +414,9 @@ fn context_diagnostic_line(block: &str) -> Option<String> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CompletionOutcome {
     pub request: CompletionRequest,
-    /// One or more candidate continuations (multi-candidate, A2 §16). At least
-    /// one; the engine shows the first and cycles through the rest.
+    /// Candidate continuations (multi-candidate, A2 §16); the engine shows the
+    /// first and cycles through the rest. At least one for a completion; always
+    /// empty for a grammar-fix outcome, which carries `correction` instead.
     pub candidates: Vec<String>,
     pub correction: Option<String>,
     pub correction_range: Option<CorrectionRange>,
