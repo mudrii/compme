@@ -6493,9 +6493,13 @@ pub fn run() -> Result<(), String> {
                         crate::shell::effective_accept_keys_with_mods_and_grammar();
                     // Recompose the Shortcuts text; show() re-reads it on the
                     // next open (refresh-on-show — the c121 forward trap).
-                    if let Ok(mut text) = settings_flags.shortcuts_text.lock() {
-                        *text = shortcuts_text(word, full, grammar_accept);
-                    }
+                    // Poison-recovery: skipping would leave the pane naming the
+                    // pre-rebind keys after a rebind that already succeeded.
+                    *settings_flags
+                        .shortcuts_text
+                        .lock()
+                        .unwrap_or_else(|e| e.into_inner()) =
+                        shortcuts_text(word, full, grammar_accept);
                     // The slice-4 recorder lives INSIDE the window, so it is
                     // open at exactly this moment — refresh the live label
                     // (show() only covers the reopen edge) (review-c133).
