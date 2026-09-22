@@ -178,8 +178,10 @@ are wired (D14):
 
 On a completed download (or when a model is already present, or via
 "Choose Model…") the app persists `COMPME_MODEL_PATH` to `config.env` so the
-next launch loads it; if it is unset and the configured path is missing, startup
-auto-adopts the newest `.gguf` in the models dir. Downloads use `model_fetch`
+next launch loads it. Outside stub mode, whenever the configured path (from the
+environment, `config.env`, or the default) is not a readable GGUF, startup
+auto-adopts the newest valid `.gguf` in the models dir and persists it as
+`COMPME_MODEL_PATH` in `config.env`. Downloads use `model_fetch`
 with catalog-pinned SHA-256 hashes, a catalog-derived byte ceiling, and
 verify-before-rename semantics. The same Setup pane has exactly one
 model-location action, **Show Models Folder**; there is no separate "Reveal
