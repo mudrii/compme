@@ -1,6 +1,6 @@
 //! Deterministic suggestion state machine.
 
-use context::{left_context, right_context};
+use context::{left_context, right_context, tail_chars};
 use platform::{
     ux_mode, AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, UxMode,
 };
@@ -19,6 +19,14 @@ pub type SnapshotId = u64;
 /// Completions whose repetition penalty falls below this floor (i.e. they echo
 /// text already to the left of the caret) are dropped rather than shown.
 const REPETITION_PENALTY_FLOOR: f64 = 0.5;
+
+/// How much caret-adjacent left context the repetition penalty compares a
+/// candidate against, in Unicode scalars. An echo only reads as a loop when it
+/// repeats *nearby* text; scanning the whole field would suppress common
+/// continuations ("to the") merely because they occur somewhere far back in a
+/// long document. 160 matches the app's per-source context bound
+/// (`DEFAULT_CONTEXT_MAX_CHARS`): a sentence or two of recent text.
+const REPETITION_WINDOW_CHARS: usize = 160;
 
 /// Hard cap on the buffered stat-event queue. The host drains it every loop turn
 /// (`take_stat_events`), so normal use never approaches this — the cap only bounds
@@ -855,7 +863,8 @@ impl SuggestionMachine {
         }
 
         let right = right_context(&self.value, self.caret);
-        let recent = left_context(&self.value, self.caret);
+        let left = left_context(&self.value, self.caret);
+        let recent = tail_chars(&left, REPETITION_WINDOW_CHARS);
         let mut shaped: Vec<String> = Vec::new();
         let mut seen: Vec<String> = Vec::new();
         for raw in raw_candidates {
@@ -879,7 +888,7 @@ impl SuggestionMachine {
             // needs >=3 words, but `cap_words` may have truncated a degenerate loop
             // below that floor (e.g. max_words=2), letting it slip through if checked
             // on `capped`. The repetition penalty stays on the shown (`capped`) text.
-            let fresh = repetition_penalty(&capped, &recent) >= REPETITION_PENALTY_FLOOR
+            let fresh = repetition_penalty(&capped, recent) >= REPETITION_PENALTY_FLOOR
                 && !is_degenerate_repetition(&de_overlapped)
                 && !is_degenerate_repetition(&capped);
             // Dedup on a normalized key (trim + case-fold) so near-duplicates
@@ -1920,6 +1929,59 @@ mod tests {
     fn suppresses_completion_that_repeats_recent_text() {
         let mut machine = machine();
         machine.on_event(text_changed("please repeat me ", 16, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "repeat me".into(),
+            }),
+            vec![]
+        );
+    }
+
+    #[test]
+    fn completion_of_a_common_word_seen_far_back_in_a_long_field_is_still_shown() {
+        // "to the" appears once near the start of a long field, well outside
+        // the repetition window; a fresh "to the" continuation at the caret is
+        // ordinary prose, not a loop, and must be shown.
+        let value = format!(
+            "I went to the shop. {}We walked ",
+            "Then nothing much happened. ".repeat(8)
+        );
+        let caret = value.chars().count();
+        let mut machine = machine();
+        machine.on_event(text_changed(&value, caret, 0));
+        machine.on_event(Event::Tick { now_ms: 500 });
+
+        assert_eq!(
+            machine.on_event(Event::CompletionReady {
+                generation: 1,
+                field: field("field-a"),
+                snapshot: 1,
+                text: "to the".into(),
+            }),
+            vec![Command::ShowGhost {
+                field: field("field-a"),
+                snapshot: 1,
+                text: "to the".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn completion_repeating_the_text_just_before_the_caret_in_a_long_field_is_still_dropped() {
+        // The repetition window is a caret-adjacent tail: in a long field an
+        // echo of the words immediately before the caret is still suppressed.
+        let value = format!(
+            "{}please repeat me ",
+            "Then nothing much happened. ".repeat(8)
+        );
+        let caret = value.chars().count();
+        let mut machine = machine();
+        machine.on_event(text_changed(&value, caret, 0));
         machine.on_event(Event::Tick { now_ms: 500 });
 
         assert_eq!(
