@@ -186,17 +186,19 @@ const SCHEME: &str = "compme://";
 /// Bundle ids / domains are short; cap to reject absurd inputs.
 const MAX_SCOPE_LEN: usize = 253;
 
-/// Parse and validate a `compme://setOverride?...` deep link. Returns the
-/// reversible command, or a specific [`ParseError`] — never a partial/guessed
-/// result. An `exp=` deadline is optional here (an unsigned link has no
-/// authority to expire) but is enforced against the system clock when present.
-pub fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
+/// Test shorthand: [`parse_deep_link_at`] against the system clock. Production
+/// parses every link through [`parse_deep_link_with_trust`].
+#[cfg(test)]
+fn parse_deep_link(url: &str) -> Result<OverrideCommand, ParseError> {
     parse_deep_link_at(url, now_unix_secs())
 }
 
-/// [`parse_deep_link`] with the clock injected, so the expiry rule stays pure
-/// and deterministically testable: only the two public entry points read the
-/// system clock, never the verifier below them.
+/// Parse and validate an unsigned `compme://setOverride?...` deep link. Returns
+/// the reversible command, or a specific [`ParseError`] — never a
+/// partial/guessed result. An `exp=` deadline is optional here (an unsigned
+/// link has no authority to expire) but is enforced when present. The clock is
+/// injected so the expiry rule stays pure and deterministically testable: only
+/// the public entry point reads the system clock, never the verifier below it.
 fn parse_deep_link_at(url: &str, now_unix_secs: u64) -> Result<OverrideCommand, ParseError> {
     let (command, expiry) = parse_payload(url)?;
     check_expiry(expiry, now_unix_secs)?;
@@ -284,7 +286,9 @@ pub enum LinkTrust {
     Signed,
 }
 
-/// Like [`parse_deep_link`], but signature-aware: a trailing
+/// Parse and validate a `compme://setOverride?...` deep link — the reversible
+/// command, or a specific [`ParseError`], never a partial/guessed result —
+/// signature-aware: a trailing
 /// `&sig=<128 hex>` parameter is split off and verified (Ed25519, over the
 /// exact URL bytes preceding `&sig=`) against the host's trusted key before
 /// the payload is parsed. A verified payload must also carry an `exp=` unix

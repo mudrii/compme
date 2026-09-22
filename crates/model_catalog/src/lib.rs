@@ -121,8 +121,10 @@ pub struct ModelEntry {
 }
 
 /// Provenance for a pinned catalog model artifact.
+/// Test-only: the catalog unit tests pin each entry against it.
+#[cfg(test)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModelProvenance {
+struct ModelProvenance {
     pub name: &'static str,
     pub url: &'static str,
     /// Hugging Face repository commit observed on the resolve redirect.

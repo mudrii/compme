@@ -664,7 +664,8 @@ mod tests {
 
     /// Parse a deep link and apply it — the end-to-end web-config path (§16).
     fn apply(prefs: &mut Prefs, url: &str) {
-        let cmd = webconfig::parse_deep_link(url).expect("valid deep link");
+        let (cmd, _trust) =
+            webconfig::parse_deep_link_with_trust(url, None).expect("valid deep link");
         prefs.apply_override(&cmd);
     }
 

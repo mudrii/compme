@@ -884,7 +884,7 @@ mod grammar_prompt_tests {
 /// leave at least one token of `next` to re-decode so the context produces fresh
 /// logits for the first generated token (a fully-cached prompt still needs one
 /// live decode). Returns 0 when nothing is reusable or `next` is empty.
-pub fn reusable_prefix_len<T: PartialEq>(prev: &[T], next: &[T]) -> usize {
+pub(crate) fn reusable_prefix_len<T: PartialEq>(prev: &[T], next: &[T]) -> usize {
     if next.is_empty() {
         return 0;
     }
@@ -903,7 +903,7 @@ pub fn reusable_prefix_len<T: PartialEq>(prev: &[T], next: &[T]) -> usize {
 /// the prompt is longer we drop from the *front*, keeping the caret-adjacent tail
 /// (the most relevant context). Without this, an over-long prompt makes every
 /// `decode` fail → reset → no completion at all for large-context fields.
-pub fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize) -> usize {
+pub(crate) fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize) -> usize {
     // Reserve room for the generated tokens; always leave the prompt at least one
     // token so a tiny/zero window still decodes the caret-adjacent token.
     let budget = n_ctx.saturating_sub(max_tokens).max(1);
@@ -920,7 +920,7 @@ pub fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize)
 /// `[reuse, prompt_len)` at those same positions, then generate starting at
 /// position `prompt_len`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct DecodePlan {
+pub(crate) struct DecodePlan {
     /// Leading prompt tokens to drop so prompt + generation fit the window.
     pub skip: usize,
     /// KV-cache prefix (of the clamped prompt) to reuse; the suffix is re-decoded.
@@ -942,7 +942,7 @@ pub struct DecodePlan {
 /// positions are `i32`; the cast and add saturate so the end can never wrap to a
 /// negative value and silently yield an empty (or backwards) range. The budget
 /// is bounded by `n_ctx` in practice, so saturation is a guard, not a hot path.
-pub fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
+pub(crate) fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
     let first = i32::try_from(prompt_len).unwrap_or(i32::MAX);
     let end = first.saturating_add(i32::try_from(max_tokens).unwrap_or(i32::MAX));
     (first, end)
@@ -955,13 +955,13 @@ pub fn generation_range(prompt_len: usize, max_tokens: usize) -> (i32, i32) {
 /// pathological `reuse + index` (> `i32::MAX`) would corrupt — is unit-testable
 /// without a real `LlamaContext`. llama.cpp positions are `i32`; the cast
 /// saturates so an overflowing sum can never wrap to a negative position.
-pub fn prompt_suffix_position(reuse: usize, index: usize) -> i32 {
+pub(crate) fn prompt_suffix_position(reuse: usize, index: usize) -> i32 {
     i32::try_from(reuse.saturating_add(index)).unwrap_or(i32::MAX)
 }
 
 /// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
 /// (clamped) tokens still in the KV cache.
-pub fn plan_decode<T: PartialEq>(
+pub(crate) fn plan_decode<T: PartialEq>(
     prev: &[T],
     current: &[T],
     max_tokens: usize,

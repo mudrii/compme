@@ -2,8 +2,8 @@
 //!
 //! Two halves, one crate: a PURE core (SHA-256 integrity, resume planning —
 //! unit-testable with no IO) and the blocking network half
-//! (`download_url_bounded` over ureq with resume/restart/verify semantics, plus
-//! the `ModelDownloader` worker thread). The seam stays inside this crate so
+//! (`download_with_agent` over ureq with resume/restart/verify semantics,
+//! driven by the `ModelDownloader` worker thread). The seam stays inside this crate so
 //! the protocol tests can drive the real network code against a loopback
 //! mini-server; nothing here touches AppKit or the engine.
 
@@ -11,8 +11,10 @@ use sha2::{Digest, Sha256};
 use std::io::Read as _;
 
 /// Hex SHA-256 of `bytes` (lowercase, 64 chars) — the digest format the
-/// catalog's expected-hash entries will use.
-pub fn sha256_hex(bytes: &[u8]) -> String {
+/// catalog's expected-hash entries use. Test-only: production streams files
+/// through [`read_sha256_hex`].
+#[cfg(test)]
+fn sha256_hex(bytes: &[u8]) -> String {
     hex(&Sha256::digest(bytes))
 }
 
@@ -23,7 +25,7 @@ fn hex(digest: &[u8]) -> String {
 
 /// The `Range` header value to resume a partial download of `existing_len`
 /// bytes, or `None` to start from scratch (nothing on disk yet).
-pub fn resume_range_header(existing_len: u64) -> Option<String> {
+fn resume_range_header(existing_len: u64) -> Option<String> {
     (existing_len > 0).then(|| format!("bytes={existing_len}-"))
 }
 
@@ -51,9 +53,9 @@ impl ContentRange {
 }
 
 /// Hex SHA-256 of everything `reader` yields, streamed in 64KB chunks —
-/// the fetch loop verifies multi-GB model files with this; `sha256_hex`
-/// stays the in-memory primitive for small buffers and tests.
-pub fn read_sha256_hex(mut reader: impl std::io::Read) -> std::io::Result<String> {
+/// the fetch loop and the dest-exists guard verify multi-GB model files with
+/// this; `sha256_hex` stays the in-memory primitive for tests.
+fn read_sha256_hex(mut reader: impl std::io::Read) -> std::io::Result<String> {
     let mut hasher = Sha256::new();
     let mut buf = [0u8; 64 * 1024];
     loop {
@@ -114,38 +116,6 @@ impl std::fmt::Display for FetchError {
 }
 
 impl std::error::Error for FetchError {}
-
-/// Download `url` to `dest` with resume, under an optional hard byte ceiling.
-/// Catalog-backed callers pass `max_bytes` so a broken or compromised origin
-/// cannot consume unbounded disk before the final hash check.
-///
-/// Redirects (HF resolve URLs hop to a CDN) are followed by ureq; whatever the
-/// final host does with our Range header is safe either way — a 206 is only
-/// trusted after Content-Range validation and anything else restarts from zero.
-///
-/// Strategy (banked D14 design):
-/// partial bytes live in `dest.part`; a non-empty part sends `Range:
-/// bytes=N-`. A 206 appends from N; a 200 means the server ignored Range —
-/// truncate and restart from zero. Network/protocol failures keep a safe-size
-/// part for the next resume attempt; an already-oversized part is removed to
-/// reclaim disk. Success renames part → dest. `progress` receives
-/// (bytes_so_far, total_if_known) per chunk.
-pub fn download_url_bounded(
-    url: &str,
-    dest: &std::path::Path,
-    expected_sha256: Option<&str>,
-    max_bytes: Option<u64>,
-    progress: impl Fn(u64, Option<u64>),
-) -> Result<std::path::PathBuf, FetchError> {
-    download_with_agent(
-        &production_agent(),
-        url,
-        dest,
-        expected_sha256,
-        max_bytes,
-        progress,
-    )
-}
 
 /// The agent every production download uses. Extracted so a test can pin the
 /// config shape — the timeout knobs are behavior-critical and easy to get
@@ -268,7 +238,24 @@ fn ensure_part_path_is_regular(part: &std::path::Path) -> Result<(), FetchError>
     }
 }
 
-/// Agent-injectable core — tests drive it with millisecond timeouts.
+/// Download `url` to `dest` with resume, under an optional hard byte ceiling.
+/// Catalog-backed callers pass `max_bytes` so a broken or compromised origin
+/// cannot consume unbounded disk before the final hash check.
+///
+/// Redirects (HF resolve URLs hop to a CDN) are followed by ureq; whatever the
+/// final host does with our Range header is safe either way — a 206 is only
+/// trusted after Content-Range validation and anything else restarts from zero.
+///
+/// Strategy (banked D14 design):
+/// partial bytes live in `dest.part`; a non-empty part sends `Range:
+/// bytes=N-`. A 206 appends from N; a 200 means the server ignored Range —
+/// truncate and restart from zero. Network/protocol failures keep a safe-size
+/// part for the next resume attempt; an already-oversized part is removed to
+/// reclaim disk. Success renames part → dest. `progress` receives
+/// (bytes_so_far, total_if_known) per chunk.
+///
+/// Agent-injectable: production passes `production_agent()` from the
+/// `ModelDownloader` worker; tests drive it with millisecond timeouts.
 fn download_with_agent(
     agent: &ureq::Agent,
     url: &str,
