@@ -358,23 +358,6 @@ fn host_event_invalidates_pending_request(event: &HostEvent) -> bool {
     )
 }
 
-#[cfg(test)]
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum HostEventRoute {
-    Normal,
-    ManualGrammarDetection,
-    AcceptCorrection,
-}
-
-#[cfg(test)]
-fn host_event_route(event: &HostEvent) -> HostEventRoute {
-    match event {
-        HostEvent::Shortcut(ShortcutAction::GrammarCheck) => HostEventRoute::ManualGrammarDetection,
-        HostEvent::Accept(AcceptAction::Correction) => HostEventRoute::AcceptCorrection,
-        _ => HostEventRoute::Normal,
-    }
-}
-
 /// Runtime configuration, all from the environment (full config surface is P1).
 pub(crate) struct Config {
     /// Global on/off at launch (`COMPME_ENABLED`, default on). The tray

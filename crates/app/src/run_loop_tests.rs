@@ -10625,30 +10625,187 @@ fn host_event_drain_reports_backlog() {
 
 #[test]
 fn grammar_check_shortcut_routes_to_detection() {
-    assert_eq!(
-        host_event_route(&HostEvent::Shortcut(ShortcutAction::GrammarCheck)),
-        HostEventRoute::ManualGrammarDetection
+    // Asserted against the production router, not a test-only mapping:
+    // `handle_control_event` is what the run loop feeds every
+    // `HostEvent::Shortcut`, and its `GrammarCheck` arm runs G2 detection via
+    // `handle_grammar_check_shortcut`, arming a `RequestKind::GrammarFix`
+    // request on the engine.
+    let field = field_with_app("com.apple.TextEdit");
+    let config = Config::from_lookup(lookup(&[("COMPME_GRAMMAR_FIX", "1")]));
+    // A readable, writable field: grammar detection gates on both, and the
+    // machine only arms a manual request for the field it is focused on.
+    let adapter = Arc::new(FakeAdapter::readable(
+        startup_log(),
+        text_context_with_right(&field, "teh", ""),
+        writable_axset_caps(),
+    ));
+    let mut engine = Engine::new(
+        SharedAdapter::new(Arc::clone(&adapter)),
+        FakeOverlay,
+        0,
+        8,
+        32,
     );
-    assert_eq!(
-        host_event_route(&HostEvent::Shortcut(ShortcutAction::ForceActivate)),
-        HostEventRoute::Normal
+    let _ = engine.on_focus(field.clone());
+
+    let mut suggestion = phase_pending_suggestion();
+    let mut focus = phase_focus(&field);
+    let mut prefs = Prefs::default();
+    let flags = phase_tray_flags();
+    let mut monitored = MonitoredInput::default();
+    let mut usage = UsageStats::default();
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let mut manual_grammar_request = None;
+    let mut ctx = HostEventCtx {
+        engine: &mut engine,
+        suggestion: &mut suggestion,
+        focus: &mut focus,
+        prefs: &mut prefs,
+        config: &config,
+        flags: &flags,
+        monitored: &mut monitored,
+        usage: &mut usage,
+        shell: &shell,
+        adapter: &adapter,
+        now_ms: 1_000,
+        wall_ms: 1_000,
+        manual_grammar_request: &mut manual_grammar_request,
+    };
+
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::GrammarCheck),
+    );
+
+    let armed = ctx
+        .manual_grammar_request
+        .take()
+        .expect("grammar-check must arm a manual grammar request");
+    assert!(
+        matches!(armed.kind, RequestKind::GrammarFix { .. }),
+        "grammar-check routes to grammar detection, got {:?}",
+        armed.kind
+    );
+    assert_eq!(armed.field, field);
+    assert!(
+        ctx.suggestion.latest.take().is_none(),
+        "arming detection supersedes the pending completion"
+    );
+
+    // The other shortcuts stay on the normal path: ForceActivate re-shows the
+    // held suggestion and arms no detection.
+    ctx.suggestion.latest.offer(req(9));
+    handle_control_event(
+        &mut ctx,
+        HostControlEvent::Shortcut(ShortcutAction::ForceActivate),
+    );
+    assert!(
+        ctx.manual_grammar_request.is_none(),
+        "force-activate must not route to grammar detection"
+    );
+    assert!(
+        ctx.suggestion.latest.take().is_some(),
+        "force-activate re-shows the pending suggestion instead"
     );
 }
 
 #[test]
 fn grammar_accept_action_routes_to_accept_correction_not_full() {
-    assert_eq!(
-        host_event_route(&HostEvent::Accept(AcceptAction::Correction)),
-        HostEventRoute::AcceptCorrection
+    // Asserted against the production helpers the `HostEvent::Accept(action)`
+    // arm composes: it hands `action` verbatim to `engine.on_accept(action)`
+    // and to `apply_accept_side_effects`, where only `AcceptAction::Correction`
+    // may consume the engine's correction preview (an exact-range replace).
+    // Full and Word must leave it alone, and a Correction must never be folded
+    // through the Full-accept recording path.
+    let field = field_with_app("com.apple.TextEdit");
+    let range = CorrectionRange { start: 6, end: 9 };
+
+    // Which accept landed, observed through the tracker's echo absorption: a
+    // consumed correction replace leaves the baseline already holding "the",
+    // so the field's own readback is just a caret move. Anything else means
+    // the correction preview went unused and the readback is fresh typing.
+    let absorbed_correction = |action: AcceptAction| {
+        let previous = PreviousInputs::default();
+        let store = accepted_store();
+        let mut tracker = FieldTracker::new();
+        let mut usage = stats::Stats::new();
+        let prefs = Prefs::default();
+        tracker.observe(
+            &field,
+            &text_context(&field, "I saw teh"),
+            TriggerPolicy::Automatic,
+            0,
+        );
+        let correction = (field.clone(), "the".to_string(), range);
+
+        apply_accept_side_effects(
+            true,
+            AcceptSideEffects {
+                action,
+                preview: None,
+                correction_preview: Some(&correction),
+                range_preview: None,
+                wall_ms: 10_000,
+                context_max_chars: 160,
+                cross_app_previous_inputs: false,
+                previous_inputs: &previous,
+                memory: Some(&store),
+                domain: None,
+                prefs: &prefs,
+                tracker: &mut tracker,
+                usage: &mut usage,
+            },
+        );
+
+        tracker.observe(
+            &field,
+            &text_context(&field, "I saw the"),
+            TriggerPolicy::Automatic,
+            1,
+        ) == Observation::CaretMoved {
+            field: field.clone(),
+            caret: 9,
+        }
+    };
+
+    assert!(
+        absorbed_correction(AcceptAction::Correction),
+        "Correction routes to the correction accept: its exact-range replace is absorbed"
+    );
+    assert!(
+        !absorbed_correction(AcceptAction::Full),
+        "Full must not consume the correction preview"
+    );
+    assert!(
+        !absorbed_correction(AcceptAction::Word),
+        "Word must not consume the correction preview"
+    );
+
+    // The Full-accept sinks stay closed to a correction.
+    let previous = PreviousInputs::default();
+    let store = accepted_store();
+    record_full_accept(
+        AcceptAction::Correction,
+        &field,
+        "the",
+        AcceptRecording {
+            context_max_chars: 160,
+            cross_app_previous_inputs: false,
+            previous_inputs: &previous,
+            memory: Some(&store),
+            domain: None,
+            collection_allowed: true,
+        },
     );
     assert_eq!(
-        host_event_route(&HostEvent::Accept(AcceptAction::Full)),
-        HostEventRoute::Normal
+        store.count().unwrap(),
+        0,
+        "a correction is not a full accept"
     );
-    assert_eq!(
-        host_event_route(&HostEvent::Accept(AcceptAction::Word)),
-        HostEventRoute::Normal
-    );
+    assert!(previous.recent("com.apple.TextEdit").is_empty());
 }
 
 #[test]
@@ -10736,12 +10893,15 @@ impl ShellHost for RecordingShell {
 }
 
 /// Adapter double: the three subscriptions are recorded and can be
-/// programmed to fail; every other method is inert (`Err(StaleField)`).
+/// programmed to fail. Every other method is inert (`Err(StaleField)`) unless
+/// the double is built with [`FakeAdapter::readable`], which programs the
+/// `read_context` / `capabilities` pair a grammar-check press needs.
 struct FakeAdapter {
     log: StartupLog,
     focus_error: Option<PlatformError>,
     caret_error: Option<PlatformError>,
     accept_error: Option<PlatformError>,
+    readable: Option<(platform::TextContext, Capabilities)>,
 }
 
 impl FakeAdapter {
@@ -10751,6 +10911,7 @@ impl FakeAdapter {
             focus_error: None,
             caret_error: None,
             accept_error: None,
+            readable: None,
         }
     }
 
@@ -10760,6 +10921,20 @@ impl FakeAdapter {
             focus_error: Some(err.clone()),
             caret_error: Some(err.clone()),
             accept_error: Some(err),
+            readable: None,
+        }
+    }
+
+    /// An adapter that reads `ctx` back for any field and reports `caps`, so
+    /// paths gated on a readable, writable field (grammar detection) can run
+    /// against the real production code instead of a test-only double.
+    fn readable(log: StartupLog, ctx: platform::TextContext, caps: Capabilities) -> Self {
+        Self {
+            log,
+            focus_error: None,
+            caret_error: None,
+            accept_error: None,
+            readable: Some((ctx, caps)),
         }
     }
 }
@@ -10804,10 +10979,16 @@ impl PlatformAdapter for FakeAdapter {
         None
     }
     fn capabilities(&self, _field: &FieldHandle) -> Result<Capabilities, PlatformError> {
-        Err(PlatformError::StaleField)
+        match &self.readable {
+            Some((_, caps)) => Ok(caps.clone()),
+            None => Err(PlatformError::StaleField),
+        }
     }
     fn read_context(&self, _field: &FieldHandle) -> Result<TextContext, PlatformError> {
-        Err(PlatformError::StaleField)
+        match &self.readable {
+            Some((ctx, _)) => Ok(ctx.clone()),
+            None => Err(PlatformError::StaleField),
+        }
     }
     fn caret_rect(&self, _field: &FieldHandle) -> Result<Option<ScreenRect>, PlatformError> {
         Err(PlatformError::StaleField)
@@ -10848,8 +11029,9 @@ impl PlatformAdapter for FakeAdapter {
     }
 }
 
-/// Inert overlay double — the engine is constructed but never driven by
-/// these tests, so its methods only need to exist.
+/// Inert overlay double — every presentation call succeeds, so an engine
+/// built over `FakeAdapter` can be driven (focus, arm, accept) without a
+/// real overlay.
 struct FakeOverlay;
 
 impl OverlayPresenter for FakeOverlay {
