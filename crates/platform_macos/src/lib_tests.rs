@@ -7455,18 +7455,6 @@ fn splice_text_replaces_an_astral_char_by_utf16_range() {
 }
 
 #[test]
-fn byte_index_for_utf16_units_maps_units_to_byte_boundaries() {
-    // "a😀b": a=1 byte/1 unit, 😀=4 bytes/2 units, b=1 byte/1 unit.
-    assert_eq!(byte_index_for_utf16_units("a😀b", 0), 0);
-    assert_eq!(byte_index_for_utf16_units("a😀b", 1), 1); // before 😀
-                                                          // A target that bisects the surrogate pair rounds up to the char's end.
-    assert_eq!(byte_index_for_utf16_units("a😀b", 2), 5); // mid-😀 → after 😀
-    assert_eq!(byte_index_for_utf16_units("a😀b", 3), 5); // after 😀
-    assert_eq!(byte_index_for_utf16_units("a😀b", 4), 6); // after b
-    assert_eq!(byte_index_for_utf16_units("a😀b", 99), 6); // past end → len
-}
-
-#[test]
 fn process_exists_is_false_for_non_positive_pids() {
     assert!(!process_exists(0));
     assert!(!process_exists(-1));

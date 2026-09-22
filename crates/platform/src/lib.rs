@@ -108,6 +108,33 @@ pub enum OffsetEncoding {
     GraphemeClusters,
 }
 
+/// Byte index into `value` for a [`OffsetEncoding::Utf16CodeUnits`] offset.
+/// See [`byte_index_and_scalar_count_for_utf16_units`] for the mid-surrogate
+/// and past-the-end rules.
+pub fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
+    byte_index_and_scalar_count_for_utf16_units(value, target_units).0
+}
+
+/// Byte index into `value` for the given UTF-16 unit offset, plus the Unicode
+/// scalar count up to that index. An offset that lands mid-surrogate resolves
+/// to the boundary *after* the surrogate pair (the pair is kept whole and
+/// counted from its start); an offset past the end resolves to `value.len()`.
+pub fn byte_index_and_scalar_count_for_utf16_units(
+    value: &str,
+    target_units: usize,
+) -> (usize, usize) {
+    let mut units_seen = 0usize;
+    let mut scalars_seen = 0usize;
+    for (byte_index, ch) in value.char_indices() {
+        if units_seen >= target_units {
+            return (byte_index, scalars_seen);
+        }
+        units_seen += ch.len_utf16();
+        scalars_seen += 1;
+    }
+    (value.len(), scalars_seen)
+}
+
 /// Rectangle in screen points. Whether the origin is the global screen (vs a
 /// window/display-local space) is reported per field via
 /// `Capabilities::coords_global_screen`; callers must check before placing
@@ -1315,5 +1342,42 @@ mod tests {
             "mutation outcome unknown: provider reply lost"
         );
         assert_eq!(PlatformError::StaleField.to_string(), "field is stale");
+    }
+
+    #[test]
+    fn byte_index_for_utf16_units_maps_units_to_byte_boundaries() {
+        // "a😀b": a=1 byte/1 unit, 😀=4 bytes/2 units, b=1 byte/1 unit.
+        assert_eq!(byte_index_for_utf16_units("a😀b", 0), 0);
+        assert_eq!(byte_index_for_utf16_units("a😀b", 1), 1); // before 😀
+        assert_eq!(byte_index_for_utf16_units("a😀b", 3), 5); // after 😀
+        assert_eq!(byte_index_for_utf16_units("a😀b", 4), 6); // after b
+        assert_eq!(byte_index_for_utf16_units("a😀b", 99), 6); // past end → len
+        assert_eq!(byte_index_for_utf16_units("", 0), 0);
+        assert_eq!(byte_index_for_utf16_units("", 3), 0);
+    }
+
+    #[test]
+    fn utf16_offset_mid_surrogate_resolves_after_the_pair() {
+        // Unit 2 of "a😀b" falls between 😀's two surrogates: the pair is
+        // kept whole, so the offset resolves to the byte after it (5) and
+        // counts the emoji as a scalar before it (2).
+        assert_eq!(
+            byte_index_and_scalar_count_for_utf16_units("a😀b", 2),
+            (5, 2)
+        );
+        assert_eq!(byte_index_for_utf16_units("a😀b", 2), 5);
+        // The boundaries on either side, for contrast.
+        assert_eq!(
+            byte_index_and_scalar_count_for_utf16_units("a😀b", 1),
+            (1, 1)
+        );
+        assert_eq!(
+            byte_index_and_scalar_count_for_utf16_units("a😀b", 3),
+            (5, 2)
+        );
+        assert_eq!(
+            byte_index_and_scalar_count_for_utf16_units("a😀b", 99),
+            (6, 3)
+        );
     }
 }

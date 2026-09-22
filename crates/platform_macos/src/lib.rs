@@ -44,9 +44,10 @@ use objc2_foundation::{
     NSArray, NSData, NSDate, NSDefaultRunLoopMode, NSPoint, NSProcessInfo, NSRect, NSSize, NSString,
 };
 use platform::{
-    env_flag_on, AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities,
-    CaretCallback, ContextSource, CorrectionRange, Environment, FieldHandle, FocusCallback,
-    InsertStrategy, Inserted, KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement,
+    byte_index_and_scalar_count_for_utf16_units, byte_index_for_utf16_units, env_flag_on,
+    AcceptAction, AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback,
+    ContextSource, CorrectionRange, Environment, FieldHandle, FocusCallback, InsertStrategy,
+    Inserted, KeyInterceptMode, OffsetEncoding, OperatingSystem, OverlayPlacement,
     OverlayPresenter, PlatformAdapter, PlatformError, ScreenRect, SecurityState, ShortcutAction,
     Subscription, TapControl, TextContext, TextRange, Toolkit,
 };
@@ -5619,28 +5620,6 @@ fn text_context_from_value(
         field_id: field,
         offset_encoding: OffsetEncoding::Utf16CodeUnits,
     }
-}
-
-fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
-    byte_index_and_scalar_count_for_utf16_units(value, target_units).0
-}
-
-fn byte_index_and_scalar_count_for_utf16_units(value: &str, target_units: usize) -> (usize, usize) {
-    if target_units == 0 {
-        return (0, 0);
-    }
-
-    let mut units = 0usize;
-    let mut scalars = 0usize;
-    for (byte_index, ch) in value.char_indices() {
-        units = units.saturating_add(ch.len_utf16());
-        scalars += 1;
-        if units >= target_units {
-            return (byte_index + ch.len_utf8(), scalars);
-        }
-    }
-
-    (value.len(), scalars)
 }
 
 pub fn map_ax_error(error: AXError) -> PlatformError {

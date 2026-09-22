@@ -7,7 +7,10 @@
 //! magnitude as a distance. The resulting document plus offsets then feed the
 //! pure [`TextContext`] builder below.
 
-use platform::{ContextSource, FieldHandle, OffsetEncoding, TextContext, TextRange};
+use platform::{
+    byte_index_and_scalar_count_for_utf16_units, byte_index_for_utf16_units, ContextSource,
+    FieldHandle, OffsetEncoding, TextContext, TextRange,
+};
 
 #[cfg(any(windows, test))]
 use platform::PlatformError;
@@ -184,27 +187,6 @@ pub fn text_context_from_uia_document(
         field_id: field,
         offset_encoding: OffsetEncoding::Utf16CodeUnits,
     }
-}
-
-fn byte_index_for_utf16_units(value: &str, target_units: usize) -> usize {
-    byte_index_and_scalar_count_for_utf16_units(value, target_units).0
-}
-
-/// Byte index into `value` for the given UTF-16 unit offset, plus the Unicode
-/// scalar count up to that index. An offset that lands mid-surrogate resolves
-/// to the boundary *after* the surrogate pair (the pair is kept whole and
-/// counted from its start).
-fn byte_index_and_scalar_count_for_utf16_units(value: &str, target_units: usize) -> (usize, usize) {
-    let mut units_seen = 0usize;
-    let mut scalars_seen = 0usize;
-    for (byte_index, ch) in value.char_indices() {
-        if units_seen >= target_units {
-            return (byte_index, scalars_seen);
-        }
-        units_seen += ch.len_utf16();
-        scalars_seen += 1;
-    }
-    (value.len(), scalars_seen)
 }
 
 #[cfg(test)]
