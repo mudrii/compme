@@ -6,7 +6,7 @@ verification; native provider acceptance, events, input and overlay remain
 open. Linux range geometry now has focused Xvfb/AT-SPI evidence. Optional GPU
 feature forwarding, scheduled Linux Vulkan compilation and experimental Linux
 packaging are implemented in the current work; runtime/clean-machine evidence
-is recorded separately in [the implementation record](../../IMPLEMENTATION-EVIDENCE-2026-09-19.md).
+is recorded separately in [the implementation record](../plans/2026-09-19-implementation-evidence.md).
 The [roadmap](../../ROADMAP.md) owns the current status of every remaining slice.
 
 **Date:** 2026-07-08 · **Status (2026-09-09, HEAD `1da83f5`):** Phase 0 shipped; Linux Phase 2 core shipped and live-gated (2.1–2.5, 2.7, and the desktop-free half of 2.6 — residuals: XTEST fallback, `text_range_rect`, StatusNotifierItem tray, always-on shortcuts); Windows Phase 1 has nothing beyond the fail-closed scaffold; Phases 3–6 not started (native/live acceptance target-system-gated)

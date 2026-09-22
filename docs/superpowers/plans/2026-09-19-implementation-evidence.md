@@ -2,7 +2,7 @@
 
 Scope: review-list items 1–6 and 19–35, on the working tree based on
 `6c515f1`. This is an implementation record, not a release or native acceptance
-claim. Pending-work status remains in [ROADMAP](ROADMAP.md).
+claim. Pending-work status remains in [ROADMAP](../../ROADMAP.md).
 
 Sol high agents implement the platform and memory slices. Astra reviews the
 changes independently. Its first review caught a Linux result-publication
@@ -166,7 +166,7 @@ It does not establish the physical-key baseline, GUI acceptance, strict
 hardware latency budget, or real-tag release evidence.
 
 The fresh CPU distribution and bounded thread/SIMD/profile investigation are
-recorded in [PERFORMANCE-2026-09-19.md](PERFORMANCE-2026-09-19.md). Temporary
+recorded in [PERFORMANCE-2026-09-19.md](../../PERFORMANCE-2026-09-19.md). Temporary
 model-client diagnostics were removed; no production defaults or 500 ms
 budget were changed.
 
@@ -269,6 +269,6 @@ The existing Vulkan option was then calibrated without changing model code,
 defaults or budgets. Same-binary paired medians were **1,833 ms CPU versus
 120 ms Vulkan** on Quadro RTX 4000. All six real-model tests, including
 cancellation, passed on Vulkan; the quality gate scored 20/21. See the
-[performance record](PERFORMANCE-2026-09-19.md) for samples, controls and
+[performance record](../../PERFORMANCE-2026-09-19.md) for samples, controls and
 hardware limits. The CPU default still misses 500 ms. These results do not
 replace native desktop acceptance or real-tag release evidence.
