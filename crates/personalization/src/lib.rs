@@ -28,12 +28,33 @@ fn truncate_chars(s: &str, max: usize) -> &str {
     }
 }
 
-/// Cap to `MAX_INSTRUCTION_CHARS` then neutralize any `"""` fence inside. The
-/// cap is applied BEFORE fence-escaping, so the returned block can run a few
-/// chars longer than the cap (each escaped fence adds 2) — fine, since the cap
-/// is a runaway-abuse guard, not an exact output-length contract.
+/// Fit instruction sections (in steering order) into `MAX_INSTRUCTION_CHARS`
+/// total. The budget is spent on the most specific scope first — per-domain,
+/// then per-app, then global — so a long global instruction yields to the
+/// supplements instead of truncating them away; steering order is preserved.
+fn budget_sections<'a>(sections: &[&'a str]) -> Vec<&'a str> {
+    let mut remaining = MAX_INSTRUCTION_CHARS;
+    let mut kept: Vec<&str> = sections
+        .iter()
+        .rev()
+        .map(|section| {
+            let text = truncate_chars(section, remaining);
+            remaining -= text.chars().count();
+            text
+        })
+        .filter(|text| !text.is_empty())
+        .collect();
+    kept.reverse();
+    kept
+}
+
+/// Neutralize any `"""` fence inside an already-capped instruction block. The
+/// cap ([`budget_sections`]) is applied BEFORE fence-escaping, so the returned
+/// block can run a few chars longer than the cap (each escaped fence adds 2,
+/// each section separator 1) — fine, since the cap is a runaway-abuse guard,
+/// not an exact output-length contract.
 fn instruction_block_text(s: &str) -> String {
-    let mut text = truncate_chars(s, MAX_INSTRUCTION_CHARS).to_string();
+    let mut text = s.to_string();
     // Replace to a fixed point: a single pass over a run of 3k+2 quotes (e.g.
     // `"""""`) leaves the replacement's trailing quote adjacent to the leftover
     // pair, reconstructing a live fence. Each pass shortens the longest quote
@@ -132,6 +153,11 @@ impl PersonalizationProfile {
     /// global, then the per-app supplement, then the per-domain supplement. Empty
     /// sections are skipped; surrounding whitespace is trimmed.
     pub fn resolve_instructions(&self, app: Option<&str>, domain: Option<&str>) -> String {
+        self.instruction_sections(app, domain).join("\n")
+    }
+
+    /// The non-empty, trimmed sections behind [`Self::resolve_instructions`].
+    fn instruction_sections(&self, app: Option<&str>, domain: Option<&str>) -> Vec<&str> {
         let mut sections: Vec<&str> = Vec::new();
         let global = self.global_instructions.trim();
         if !global.is_empty() {
@@ -153,7 +179,7 @@ impl PersonalizationProfile {
                 }
             }
         }
-        sections.join("\n")
+        sections
     }
 
     /// Resolve the per-domain instruction for `host`, matching the exact host or
@@ -190,7 +216,7 @@ impl PersonalizationProfile {
         if self.strength == Strength::Off {
             return String::new();
         }
-        let instructions = self.resolve_instructions(app, domain);
+        let instructions = budget_sections(&self.instruction_sections(app, domain)).join("\n");
         let sender_line = self.sender.line();
         if instructions.is_empty() && sender_line.is_none() {
             return String::new();
@@ -831,6 +857,27 @@ mod tests {
         // The wrapper fences are still present and the embedded fence neutralized
         // (if any survived truncation, it would have been rewritten).
         assert!(preamble.matches(INSTRUCTION_FENCE).count() >= 2);
+    }
+
+    #[test]
+    fn per_domain_supplement_survives_a_max_length_global_instruction() {
+        // A global instruction already at the cap must not crowd out the more
+        // specific per-app and per-domain supplements: specific scopes are
+        // budgeted first and the global text yields the remainder.
+        let mut p = profile();
+        p.global_instructions = "z".repeat(MAX_INSTRUCTION_CHARS);
+        p.per_app.insert("mail".into(), "Sign as Ion.".into());
+        p.per_domain
+            .insert("example.com".into(), "Be terse.".into());
+        let preamble = p.build_preamble(Some("mail"), Some("example.com"));
+
+        assert!(preamble.contains("Sign as Ion."), "{preamble:?}");
+        assert!(preamble.contains("Be terse."), "{preamble:?}");
+        let global_kept = preamble.matches('z').count();
+        assert!(
+            global_kept + "Sign as Ion.".len() + "Be terse.".len() <= MAX_INSTRUCTION_CHARS,
+            "overall instruction cap still holds, kept {global_kept} global chars"
+        );
     }
 
     #[test]
