@@ -14,7 +14,9 @@ const ESCAPED_VALUE_PREFIX: &str = "__COMPME_ESCAPED__:";
 ///
 /// Rules: blank lines and `#` comment lines are ignored; surrounding whitespace
 /// on the key and value is trimmed; the first `=` splits key from value (so
-/// values may contain `=`); lines without `=`, or with an empty key, are skipped.
+/// values may contain `=`); exactly one matching pair of surrounding `"` or `'`
+/// is stripped from the value; lines without `=`, or with an empty key, are
+/// skipped.
 pub fn parse_env_file(contents: &str) -> Vec<(String, String)> {
     let mut pairs = Vec::new();
     for line in contents.lines() {
@@ -34,11 +36,28 @@ pub fn parse_env_file(contents: &str) -> Vec<(String, String)> {
     pairs
 }
 
+/// The inside of exactly one matching pair of surrounding `"` or `'`, or `None`
+/// when the value is not quote-wrapped. Both quote characters are ASCII, so the
+/// `[1..len - 1]` slice always lands on char boundaries; the `len >= 2` guard
+/// excludes a lone quote character, and `ends_with(quote)` excludes a mismatched
+/// pair.
+fn surrounding_quotes(value: &str) -> Option<&str> {
+    let quote = value
+        .chars()
+        .next()
+        .filter(|ch| *ch == '"' || *ch == '\'')?;
+    (value.len() >= 2 && value.ends_with(quote)).then(|| &value[1..value.len() - 1])
+}
+
 fn encode_env_value(value: &str) -> String {
     if !value
         .chars()
         .any(|ch| matches!(ch, '\\' | '\n' | '\r' | '\t'))
         && !value.starts_with(ESCAPED_VALUE_PREFIX)
+        // A quote-wrapped value would come back UNQUOTED from
+        // `decode_env_value`, so it must take the escaped form to survive a
+        // persist/reload round trip byte-for-byte.
+        && surrounding_quotes(value).is_none()
     {
         return value.to_string();
     }
@@ -56,9 +75,20 @@ fn encode_env_value(value: &str) -> String {
     out
 }
 
+/// Turn one stored file value back into the setting's value.
+///
+/// The escaped form written by [`encode_env_value`] is unescaped verbatim and
+/// never unquoted. A hand-written value follows the dotenv convention: exactly
+/// one matching pair of surrounding quotes is stripped, so
+/// `KEY="/path with spaces/a.gguf"` yields that path rather than the quoted
+/// string (which fails every downstream suffix and existence check with the
+/// quote still inside it).
 fn decode_env_value(value: &str) -> String {
     let Some(value) = value.strip_prefix(ESCAPED_VALUE_PREFIX) else {
-        return value.to_string();
+        return match surrounding_quotes(value) {
+            Some(inner) => inner.to_string(),
+            None => value.to_string(),
+        };
     };
     let mut out = String::with_capacity(value.len());
     let mut chars = value.chars();
@@ -608,6 +638,98 @@ mod tests {
         assert_eq!(
             parse_env_file(&updated),
             vec![("COMPME_INSTRUCTIONS".to_string(), value.to_string())]
+        );
+    }
+
+    #[test]
+    fn strips_one_pair_of_surrounding_quotes_from_a_file_value() {
+        // dotenv convention: `KEY="/path with spaces/a.gguf"` MEANS the
+        // unquoted path. Keeping the quotes handed them to every consumer — a
+        // quoted COMPME_MODEL_PATH failed the `.gguf` extension check with the
+        // quote still inside the path, and the real binary reported:
+        //   compme: model unavailable at startup: model file not found: "/tmp/x.gguf"
+        assert_eq!(
+            parse_env_file("COMPME_MODEL_PATH=\"/tmp/My Models/a.gguf\""),
+            vec![(
+                "COMPME_MODEL_PATH".to_string(),
+                "/tmp/My Models/a.gguf".to_string()
+            )]
+        );
+        assert_eq!(
+            parse_env_file("COMPME_INSTRUCTIONS='be brief'"),
+            vec![("COMPME_INSTRUCTIONS".to_string(), "be brief".to_string())]
+        );
+        // Exactly ONE pair: a doubly-wrapped value keeps its inner quotes.
+        assert_eq!(
+            parse_env_file("K=\"'inner'\""),
+            vec![("K".to_string(), "'inner'".to_string())]
+        );
+        // An empty quoted value is an empty value.
+        assert_eq!(
+            parse_env_file("K=\"\""),
+            vec![("K".to_string(), String::new())]
+        );
+        // Mismatched and lone quotes are not a wrapper.
+        assert_eq!(
+            parse_env_file("K=\"mismatched'"),
+            vec![("K".to_string(), "\"mismatched'".to_string())]
+        );
+        assert_eq!(
+            parse_env_file("K=\""),
+            vec![("K".to_string(), "\"".to_string())]
+        );
+    }
+
+    #[test]
+    fn leaves_a_quote_inside_a_value_untouched() {
+        // Only a SURROUNDING pair is stripped; an interior quote is data.
+        assert_eq!(
+            parse_env_file("COMPME_INSTRUCTIONS=say \"hi\" now"),
+            vec![(
+                "COMPME_INSTRUCTIONS".to_string(),
+                "say \"hi\" now".to_string()
+            )]
+        );
+        assert_eq!(
+            parse_env_file("MODEL=/path/it's-here.gguf"),
+            vec![("MODEL".to_string(), "/path/it's-here.gguf".to_string())]
+        );
+    }
+
+    #[test]
+    fn escaped_prefix_values_are_never_unquoted() {
+        // The escaped form is machine-written and its payload must reach the
+        // reader byte-for-byte, quotes included — the unquoting rule applies
+        // only to the hand-written branch.
+        assert_eq!(
+            parse_env_file("COMPME_INSTRUCTIONS=__COMPME_ESCAPED__:\"quoted\"\\nline"),
+            vec![(
+                "COMPME_INSTRUCTIONS".to_string(),
+                "\"quoted\"\nline".to_string()
+            )]
+        );
+    }
+
+    #[test]
+    fn a_persisted_quote_wrapped_value_round_trips_with_its_quotes() {
+        // `encode_env_value` writes a value verbatim unless it needs escaping.
+        // A value that is ITSELF quote-wrapped would otherwise come back
+        // unquoted under the new decode rule, silently losing the user's
+        // characters — so the encoder must escape it.
+        let value = "\"quoted instruction\"";
+        let updated = update_env_file_contents("", "COMPME_INSTRUCTIONS", value);
+        assert!(
+            updated.starts_with("COMPME_INSTRUCTIONS=__COMPME_ESCAPED__:"),
+            "a quote-wrapped value must be written escaped: {updated:?}"
+        );
+        assert_eq!(
+            parse_env_file(&updated),
+            vec![("COMPME_INSTRUCTIONS".to_string(), value.to_string())]
+        );
+        // A value with a merely INTERIOR quote still writes verbatim.
+        assert_eq!(
+            update_env_file_contents("", "K", "say \"hi\""),
+            "K=say \"hi\"\n"
         );
     }
 
