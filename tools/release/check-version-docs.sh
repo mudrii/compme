@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Fail when a documented version surface lags the workspace version (AGENTS.md
-# lesson #2). The version is single-sourced in the root Cargo.toml
+# release lesson). The version is single-sourced in the root Cargo.toml
 # [workspace.package] table; the README status line and release boundary, the
 # SECURITY supported release, the ROADMAP header and release boundary, and the
 # release-boundary notes in RELEASING,

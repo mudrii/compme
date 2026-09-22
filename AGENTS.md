@@ -1,100 +1,90 @@
 # compme — Agent Brief
 
 Inline text-completion engine (Rust). macOS ships first; Windows and Linux are
-committed deliverables behind the shared `PlatformAdapter` contract.
-
-Follow YAGNI principles.
+committed deliverables behind the shared `PlatformAdapter` contract. YAGNI:
+minimal diffs, stdlib first; non-trivial logic ships with a test.
 
 ## Orientation
 
-- `docs/ROADMAP.md` — **docs/ROADMAP.md is the single source of truth** for
-  pending work and status. Read it before non-trivial work; update it when you
-  ship.
-- `docs/DEVELOPMENT.md` — prerequisites, commands, and the canonical gate list.
-- `docs/ARCHITECTURE.md` — crate responsibilities and runtime design.
-- `docs/ACCEPTANCE.md` — the live macOS gate ledger (22 runner-pinned IDs) and
-  where evidence is recorded.
-- `docs/RELEASING.md` — tag → sign → notarize → publish → cask runbook.
+- **docs/ROADMAP.md is the single source of truth** for pending work and
+  status: read it before non-trivial work, update it when you ship.
+- `docs/DEVELOPMENT.md` — commands and the canonical gate list.
+- `docs/ARCHITECTURE.md` — crates and runtime design.
+- `docs/ACCEPTANCE.md` — live macOS gate ledger and where evidence goes.
+- `docs/RELEASING.md` — tag → sign → notarize → publish → cask runbook; read
+  it before any release step.
 - `Qfd.md` — audit findings and their remediation record.
-
-This repo is CodeGraph-indexed (`.codegraph/`): `codegraph explore "<symbols or
-question>"` returns the relevant source plus callers and blast radius in one
-call. Reach for it before grep/find when locating or understanding code.
+- CodeGraph-indexed: `codegraph explore "<symbols or question>"` before
+  grep/find.
 
 ## Workflow
 
-- Work from `main`; commit directly to `main` — no branches, no PRs.
-- Minimal diffs, stdlib first, no speculative abstraction. Non-trivial logic
-  ships with a test.
-- Every gate green before you commit. The gate set is the `sh` fence under
-  "Full Local Gate" in `docs/DEVELOPMENT.md`; run it in order with:
-
-  ```sh
-  tools/dev/check.sh      # runs that fence, skipping tools missing from PATH
-  ```
-
-  `fmt` + `clippy` + `test` alone are **not** the gate: the policy checker
-  (`tools/release/check-model-gates.sh`), the doc/version checkers, and ~20
-  script self-tests catch what the compiler cannot see.
-- Report honestly: paste failing output, name what you skipped and why, and
-  never claim a gate you did not run. Confirm your own edits landed (`git diff`)
-  before reporting them.
+- Commit directly to `main` — no branches, no PRs.
+- Gate every commit with `tools/dev/check.sh` (runs the "Full Local Gate"
+  fence in `docs/DEVELOPMENT.md`). `fmt` + `clippy` + `test` alone miss the
+  policy, doc/version, and script self-test checkers.
+- Report with evidence: paste failing output, name each skipped gate and why,
+  and `git diff` your edits before reporting them.
+- A lane you can't run isn't green: a change touching `#[cfg(target_os)]` code
+  or its tests is done only when the pushed CI run is green on the lane that
+  compiles it.
 
 ## Tripwires
 
 Each of these has broken a real run here.
 
-- **Machine-pinned docs.** `check-model-gates.sh` pins workspace test counts,
-  crate counts, action SHAs, workflow step shapes, and named test symbols to
-  exact doc lines. Change a count, rename a pinned test, or move a test file →
-  re-stamp the doc or checker **in the same commit**.
-- **Version anchors.** `check-version-docs.sh` gates eight documented version
-  surfaces against the root `Cargo.toml`, matched on exact anchor phrases. A
-  reword fails loudly by design; fix the anchor in the checker, same commit.
-- **Test lanes.** `platform_macos` and `app` share process-global state — run
-  them with `-- --test-threads=1`. The other crates run in parallel.
-- **Where tests live.** `run_loop`'s and `platform_macos/lib.rs`'s unit tests
-  are in sibling `run_loop_tests.rs` / `lib_tests.rs` (`#[path]` modules), not
-  inline. Add tests there.
-- **`tools/spike` is outside the workspace** — separate `Cargo.lock`, separate
-  gates; workspace commands do not cover it.
-- **One brief only.** `AGENTS.md` is canonical; `CLAUDE.md`, `GEMINI.md`, and
-  `QWEN.md` are symlinks to it. Adding `CURSOR.md`, `.cursorrules`,
-  `.github/copilot-instructions.md`, `.cursor/rules/*`, etc. fails
-  `check-agent-briefs.sh` — put shared guidance here instead.
-- **Platform truth.** `platform_windows` remains the honest fail-closed
-  platform-I/O scaffold. `platform_linux` is wired for AT-SPI2 and X11 but
-  retains explicit unsupported surfaces; document each boundary exactly.
-- **Evidence you cannot synthesize.** The 22 live macOS gates need a granted
-  GUI session, Windows/Linux acceptance needs that hardware, and the release
-  `post_verify` job needs a real tag. Never mark one passed from a headless
-  run — record real results in `docs/ACCEPTANCE.md`.
+- **Machine-pinned docs.** `check-model-gates.sh` pins test/crate counts,
+  action SHAs, workflow step shapes, and named tests to exact doc lines —
+  re-stamp the doc or checker in the same commit.
+- **Version anchors.** `check-version-docs.sh` matches eight version surfaces
+  on exact anchor phrases; a reword fails by design — fix the anchor in the
+  checker, same commit.
+- **Test lanes.** `platform_macos` and `app` share process-global state: run
+  them with `-- --test-threads=1`.
+- **Test location.** `run_loop` and `platform_macos/lib.rs` unit tests live in
+  sibling `run_loop_tests.rs` / `lib_tests.rs` (`#[path]` modules).
+- **`tools/spike`** is outside the workspace: own `Cargo.lock`, own gates, own
+  `[patch.crates-io]` (a patch applies only to the workspace declaring it).
+- **One brief.** `CLAUDE.md`, `GEMINI.md`, `QWEN.md` are symlinks to this file;
+  `check-agent-briefs.sh` rejects any other harness rule file.
+- **Platform truth.** `platform_windows` is the fail-closed platform-I/O
+  scaffold; `platform_linux` is wired for AT-SPI2 and X11 with explicit
+  unsupported surfaces — document each boundary exactly.
+- **Host-neutral platform crates.** `platform_linux`/`platform_windows` build
+  on all three hosts: encode POSIX rules on the string (`starts_with('/')`),
+  never build-host `std` semantics (`Path::is_absolute`).
+- **macOS CI bash 3.2.** A heredoc inside `$(...)` dies there; use
+  `ruby -e '<single-quoted script>' args`.
+- **Evidence you cannot synthesize.** The 22 live macOS gates, Windows/Linux
+  acceptance, and release `post_verify` need a GUI session, that hardware, or a
+  real tag; record only real results in `docs/ACCEPTANCE.md`.
 - **ABI-pinned deps.** `llama-cpp-2` is exact-pinned twice in
-  `crates/model_client` (one entry per target) and again in `tools/spike`;
-  both the root workspace **and** `tools/spike` carry a `[patch.crates-io]`
-  pointing at `vendor/llama-cpp-2` (the same release plus the safe
-  abort-lifetime extension). Bump all three version pins, rebase the vendored
-  copy, and regenerate both lockfiles together, then run
-  `tools/release/run-model-gates.sh`. Dependabot excludes it for this reason.
+  `crates/model_client` and once in `tools/spike`, both patched to
+  `vendor/llama-cpp-2`: bump all three pins, rebase the vendored copy,
+  regenerate both lockfiles, run `tools/release/run-model-gates.sh`.
+- **Previous-input gate.** New previous-input readers gate on
+  `previous_input_context_chars`, not `context_bound` (floored nonzero even
+  with the feature off).
+- **User-data erase.** Every delete path also clears the live copies seeded
+  from the store (`PreviousInputs` rings) in the same edge.
+- **Memory key.** Read/delete-only store opens use `load_existing_memory_key`;
+  `load_or_create_memory_key` mints an OS key-store entry.
 
-# Self-Learning
+## Lessons
 
-When the user corrects you or catches a mistake, add the lesson as a one-line
-rule under `# Lessons` before continuing, so it cannot happen twice.
+When the user corrects you or catches a mistake, add the lesson here as a
+one-line rule before continuing.
 
-# Lessons
-
-- Distinguish intentional explicit test duplication and separately commissioned verification hardening from actionable defects; confirm provenance before prescribing deduplication or labeling scope drift.
-- A release is not done until the workflow's final job (cask finalization) has run: after pushing a tag, follow the run through every environment approval and verify the published cask/checksum consistency end-to-end before reporting success.
-- Cutting a release includes reconciling every doc that names the published version (README status/boundary, SECURITY supported release, ROADMAP anchors, release-boundary notes) in the same flow as the version bump — not as a follow-up when someone notices.
-- Do not quote a metric that inline test code inflates: file line counts and per-file coverage here were 56-63% test code, so measure the production surface (or split the tests out) before calling a file large or well covered.
-- Prove a "verbatim" refactor instead of asserting it: a normalized token-sequence diff of the old function against the new function plus its extracted callees catches a dropped branch that green tests and clippy will not.
-- `platform_linux`/`platform_windows` are compiled and tested on all three hosts, so their logic must not use `std` APIs whose semantics follow the *build* host: `Path::is_absolute("/home/u")` is false on the Windows lane. Encode POSIX rules on the string (`starts_with('/')`), and run a non-mac lane before claiming a platform-crate change is green.
-- Never trust a lane you can't run: a change that touches `#[cfg(target_os)]` code or its tests is not done until the pushed CI run is green on the lane that actually compiles and executes it — local "all gates green" on this Linux host says nothing about the macOS/Windows lanes' cfg branches (this let four red runs stack on main).
-- A `[patch.crates-io]` applies only to the workspace that declares it: workspace-excluded trees with their own `Cargo.lock` (`tools/spike`) resolve from crates.io unless they carry the same patch section.
-- macOS CI runs shell steps under /bin/bash 3.2: a heredoc inside `$(...)` command substitution parses on bash 5 (local, Linux lanes) but dies on the mac lane ("unexpected EOF while looking for matching `)`"). Use `ruby -e '<single-quoted script>' args` instead, and treat "parses locally" as no evidence for the mac lane.
-- Never state a CLI flag or option from memory: run `<tool> --help` (and `pi --list-models` for model IDs) and confirm the exact spelling before telling the user a command; an invented `pi -m <model>` was suggested twice (the real flag is `--model <pattern>`) before anyone checked.
-- `context_bound` is NOT "previous-input context is on": `settings_context_bound_chars` floors it to `DEFAULT_CONTEXT_MAX_CHARS` so a clipboard/screen source enabled after launch still has a budget, so it is nonzero with `COMPME_PREVIOUS_INPUT_CONTEXT` unset. Any new previous-input reader must gate on `previous_input_context_chars` (the shared record/retrieve gate), or it silently enables the feature for users who left it off.
-- Deleting persisted user data is only half an erase: the volatile mirrors of it (`PreviousInputs` rings, and anything else seeded from the store) keep feeding prompts until relaunch, and a "already hydrated" guard stops them ever being refreshed. Every delete path must clear the live copy in the same edge.
-- Opening the memory store in a mode that records nothing is not free: `load_or_create_memory_key` MINTS an OS key-store entry on first use, so merely having a leftover database path would create a keychain item (and prompt) on a launch with memory disabled. A read/delete-only open needs a load-without-create key API first.
-- A number inside a dated record section is a citation, not a live claim: check it against the document the sentence attributes it to before calling it stale. `docs/ROADMAP.md`'s "1,865 passing portable tests" correctly quotes `AUDIT-REPAIRS-2026-09-20.md`; "correcting" it to today's count would make the roadmap misdescribe that record.
+- Confirm provenance before calling test duplication a defect or hardening
+  scope drift — both can be intentional or separately commissioned.
+- A release is done when cask finalization has run and the published
+  cask/checksum verify end-to-end; reconcile every doc naming the version in
+  the same flow as the bump.
+- Measure the production surface before calling a file large or well covered:
+  inline tests are 56–63% of some files.
+- Prove a "verbatim" refactor with a normalized token diff of old vs new plus
+  extracted callees.
+- Verify CLI flags with `<tool> --help` (model IDs: `pi --list-models`) before
+  quoting a command.
+- A number in a dated record section is a citation: check it against its
+  source document, not today's value.
