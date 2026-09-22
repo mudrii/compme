@@ -5546,6 +5546,45 @@ fn memory_off_never_creates_a_missing_key_for_an_existing_database() {
 }
 
 #[test]
+fn submit_gated_request_submits_only_what_passes_the_field_gates() {
+    // The step-5 edge both `run()` branches share: a gated-out request is
+    // never submitted (only its rejected line is logged); a passing one
+    // reaches `submit` with a log context carrying the gate inputs.
+    let mut prefs = Prefs::default();
+    prefs.excluded_domains.insert("bank.example".into());
+    let gate = |domain: Option<&'static str>| SubmitGate {
+        app_key: Some("com.apple.Safari".into()),
+        assistant_field: false,
+        domain,
+        prefs: &prefs,
+        now_ms: 0,
+        acceptance_prompt_marker: Some("MARK"),
+    };
+    let mut submitted = Vec::new();
+    submit_gated_request(
+        req_with_prompt("Dear team"),
+        gate(Some("bank.example")),
+        |request, log_context| submitted.push((request, log_context)),
+    );
+    assert!(submitted.is_empty(), "an excluded domain must not submit");
+    submit_gated_request(
+        req_with_prompt("Dear team"),
+        gate(Some("other.example")),
+        |request, log_context| submitted.push((request, log_context)),
+    );
+    let [(request, log_context)] = submitted.as_slice() else {
+        panic!("exactly one submit: {submitted:?}");
+    };
+    assert_eq!(request.prompt, "Dear team");
+    assert_eq!(log_context.app_key.as_deref(), Some("com.apple.Safari"));
+    assert_eq!(log_context.domain.as_deref(), Some("other.example"));
+    assert_eq!(
+        log_context.acceptance_prompt_marker.as_deref(),
+        Some("MARK")
+    );
+}
+
+#[test]
 fn latency_sample_computes_elapsed_and_prunes_older_generations() {
     let mut submit = HashMap::new();
     submit.insert(1u64, 100u64);

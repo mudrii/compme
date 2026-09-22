@@ -1950,6 +1950,55 @@ fn latency_sample(
     Some(u32::try_from(now_ms.saturating_sub(submit_ms)).unwrap_or(u32::MAX))
 }
 
+/// Everything the step-5 submit edge gates a request on, resolved by the
+/// caller for the request's field.
+struct SubmitGate<'a> {
+    app_key: Option<String>,
+    assistant_field: bool,
+    domain: Option<&'a str>,
+    prefs: &'a Prefs,
+    now_ms: u64,
+    acceptance_prompt_marker: Option<&'a str>,
+}
+
+/// The step-5 submit edge shared by the manual grammar-check and suggestion
+/// branches of `run()`: gate `request` for its field (A2 §8); on pass build its
+/// [`RequestLogContext`] and hand both to `submit`, otherwise log the
+/// rejected-request line. The branches differ only in how they submit.
+fn submit_gated_request(
+    request: CompletionRequest,
+    gate: SubmitGate<'_>,
+    submit: impl FnOnce(CompletionRequest, RequestLogContext),
+) {
+    let app = SuggestionApp {
+        app_key: gate.app_key.as_deref(),
+        assistant_field: gate.assistant_field,
+    };
+    if request_passes_submit_gates_for_field(&request, app, gate.domain, gate.prefs, gate.now_ms) {
+        let log_context = RequestLogContext {
+            app_key: gate.app_key,
+            assistant_field: gate.assistant_field,
+            domain: gate.domain.map(str::to_owned),
+            prefs: gate.prefs.clone(),
+            acceptance_prompt_marker: gate.acceptance_prompt_marker.map(str::to_owned),
+        };
+        submit(request, log_context);
+    } else {
+        eprintln!(
+            "{}",
+            request_log_line_for_field(
+                &request,
+                app,
+                gate.domain,
+                gate.prefs,
+                gate.now_ms,
+                gate.acceptance_prompt_marker,
+                true,
+            )
+        );
+    }
+}
+
 fn submit_request_and_track(
     submit_times: &mut HashMap<u64, u64>,
     mut request: CompletionRequest,
@@ -6791,49 +6840,27 @@ pub fn run() -> Result<(), String> {
         } else if status.suggestions_allowed() {
             if let Some(request) = manual_grammar_request.take() {
                 let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
-                let domain = cached_domain(&focus.last_domain, app_key.as_deref());
-                if request_passes_submit_gates_for_field(
-                    &request,
-                    SuggestionApp {
-                        app_key: app_key.as_deref(),
-                        assistant_field: focus.current_assistant_field,
-                    },
-                    domain,
-                    &prefs,
-                    now_ms,
-                ) {
-                    let log_context = RequestLogContext {
+                submit_gated_request(
+                    request,
+                    SubmitGate {
+                        domain: cached_domain(&focus.last_domain, app_key.as_deref()),
                         app_key,
                         assistant_field: focus.current_assistant_field,
-                        domain: domain.map(str::to_owned),
-                        prefs: prefs.clone(),
-                        acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
-                    };
-                    let submitted_line = submit_request_and_track(
-                        &mut suggestion.submit_times,
-                        request,
+                        prefs: &prefs,
                         now_ms,
-                        log_context,
-                        |request| inference.submit(request),
-                    );
-                    eprintln!("{submitted_line}");
-                } else {
-                    eprintln!(
-                        "{}",
-                        request_log_line_for_field(
-                            &request,
-                            SuggestionApp {
-                                app_key: app_key.as_deref(),
-                                assistant_field: focus.current_assistant_field,
-                            },
-                            domain,
-                            &prefs,
+                        acceptance_prompt_marker: config.acceptance_prompt_marker.as_deref(),
+                    },
+                    |request, log_context| {
+                        let submitted_line = submit_request_and_track(
+                            &mut suggestion.submit_times,
+                            request,
                             now_ms,
-                            config.acceptance_prompt_marker.as_deref(),
-                            true,
-                        )
-                    );
-                }
+                            log_context,
+                            |request| inference.submit(request),
+                        );
+                        eprintln!("{submitted_line}");
+                    },
+                );
                 suggestion.latest.clear();
             }
             if let Some(request) = suggestion.latest.take() {
@@ -6844,80 +6871,58 @@ pub fn run() -> Result<(), String> {
                 // The domain comes from the Focus arm's cache, guarded on the same
                 // app key (c131).
                 let app_key = effective_app_key(&request.field, |pid| shell.bundle_id_for_pid(pid));
-                if request_passes_submit_gates_for_field(
-                    &request,
-                    SuggestionApp {
-                        app_key: app_key.as_deref(),
-                        assistant_field: focus.current_assistant_field,
-                    },
-                    cached_domain(&focus.last_domain, app_key.as_deref()),
-                    &prefs,
-                    now_ms,
-                ) {
-                    let domain =
-                        cached_domain(&focus.last_domain, app_key.as_deref()).map(str::to_owned);
-                    let log_context = RequestLogContext {
+                submit_gated_request(
+                    request,
+                    SubmitGate {
+                        domain: cached_domain(&focus.last_domain, app_key.as_deref()),
                         app_key,
                         assistant_field: focus.current_assistant_field,
-                        domain,
-                        prefs: prefs.clone(),
-                        acceptance_prompt_marker: config.acceptance_prompt_marker.clone(),
-                    };
-                    // Refresh clipboard and dispatch screen OCR immediately before
-                    // submitting this exact request. The worker reads auxiliary
-                    // cells after coalescing, so this order prevents stale
-                    // clipboard/screen context from a prior gated request.
-                    let screen_enabled = config.screen_context && screen_ocr.is_some();
-                    let (clipboard_diag, submitted_line) = submit_request_with_auxiliary_context(
-                        request,
-                        SubmitRequestContext {
-                            submit_times: &mut suggestion.submit_times,
-                            now_ms,
-                            log_context,
-                        },
-                        AuxiliarySubmitContext {
-                            clipboard_enabled: config.clipboard_context,
-                            diag_context: config.diag_context,
-                            diag_clipboard_marker: config.diag_clipboard_marker.as_deref(),
-                            clipboard_cell: &clipboard_cell,
-                            screen_enabled,
-                        },
-                        || shell.read_clipboard_text(),
-                        // A fresh AX caret_rect read on the AppKit thread. Bounded:
-                        // submits are debounced (not per-keystroke) and the heavy
-                        // OCR is offloaded to ScreenOcr's own thread — only this
-                        // rect read is inline. If a sluggish AX server ever makes it
-                        // stall the heartbeat, reuse the rect from the Caret host
-                        // event instead of reading afresh here.
-                        |request| adapter.caret_rect(&request.field).ok().flatten(),
-                        |submission| {
-                            if let Some(ocr) = &screen_ocr {
-                                submission.send_to(ocr);
-                            }
-                        },
-                        |request| inference.submit(request),
-                    );
-                    if let Some(line) = clipboard_diag {
-                        eprintln!("compme: clipboard_context={line}");
-                    }
-                    eprintln!("{submitted_line}");
-                } else {
-                    eprintln!(
-                        "{}",
-                        request_log_line_for_field(
-                            &request,
-                            SuggestionApp {
-                                app_key: app_key.as_deref(),
-                                assistant_field: focus.current_assistant_field,
-                            },
-                            cached_domain(&focus.last_domain, app_key.as_deref()),
-                            &prefs,
-                            now_ms,
-                            config.acceptance_prompt_marker.as_deref(),
-                            true,
-                        )
-                    );
-                }
+                        prefs: &prefs,
+                        now_ms,
+                        acceptance_prompt_marker: config.acceptance_prompt_marker.as_deref(),
+                    },
+                    |request, log_context| {
+                        // Refresh clipboard and dispatch screen OCR immediately before
+                        // submitting this exact request. The worker reads auxiliary
+                        // cells after coalescing, so this order prevents stale
+                        // clipboard/screen context from a prior gated request.
+                        let screen_enabled = config.screen_context && screen_ocr.is_some();
+                        let (clipboard_diag, submitted_line) =
+                            submit_request_with_auxiliary_context(
+                                request,
+                                SubmitRequestContext {
+                                    submit_times: &mut suggestion.submit_times,
+                                    now_ms,
+                                    log_context,
+                                },
+                                AuxiliarySubmitContext {
+                                    clipboard_enabled: config.clipboard_context,
+                                    diag_context: config.diag_context,
+                                    diag_clipboard_marker: config.diag_clipboard_marker.as_deref(),
+                                    clipboard_cell: &clipboard_cell,
+                                    screen_enabled,
+                                },
+                                || shell.read_clipboard_text(),
+                                // A fresh AX caret_rect read on the AppKit thread. Bounded:
+                                // submits are debounced (not per-keystroke) and the heavy
+                                // OCR is offloaded to ScreenOcr's own thread — only this
+                                // rect read is inline. If a sluggish AX server ever makes it
+                                // stall the heartbeat, reuse the rect from the Caret host
+                                // event instead of reading afresh here.
+                                |request| adapter.caret_rect(&request.field).ok().flatten(),
+                                |submission| {
+                                    if let Some(ocr) = &screen_ocr {
+                                        submission.send_to(ocr);
+                                    }
+                                },
+                                |request| inference.submit(request),
+                            );
+                        if let Some(line) = clipboard_diag {
+                            eprintln!("compme: clipboard_context={line}");
+                        }
+                        eprintln!("{submitted_line}");
+                    },
+                );
             }
         } else if manual_grammar_request.take().is_some() {
             // A one-shot GrammarCheck shortcut arms `manual_grammar_request`,
