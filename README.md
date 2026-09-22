@@ -383,8 +383,9 @@ validation.
 
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
 over inline `run:` steps) and runs native Windows/Linux portability jobs:
-workspace fmt, portable-workspace clippy/tests excluding `platform_macos`, and
-an app-binary build through each target facade. A Model-backed smoke gate runs
+portable-workspace clippy/tests excluding `platform_macos` and an app-binary
+build through each target facade (workspace fmt runs only in the macOS `check`
+job). A Model-backed smoke gate runs
 `bash tools/release/run-model-gates.sh` with `COMPME_REQUIRE_LATENCY_BUDGET=0`
 per push against the cached, pinned GGUF, so real load/complete/shutdown
 inference breakage cannot ship green (the strict latency budget stays a
