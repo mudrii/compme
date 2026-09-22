@@ -109,6 +109,7 @@ fn screen_context_text_with_zero_max_chars_returns_none_before_any_ffi() {
 }
 use std::sync::atomic::AtomicUsize;
 use std::thread;
+use std::time::Instant;
 
 #[derive(Debug)]
 struct TestPasteboardProviderIvars {
@@ -561,39 +562,28 @@ fn test_adapter_with_dynamic_frontmost_and_install_hook(
     )
 }
 
-/// Upper bound for the test polling waits below. Generous on purpose: the
+/// Upper bound for [`wait_until`], the test polling wait below. Generous on purpose: the
 /// full `cargo test --workspace --all-targets` run launches many test
 /// binaries in parallel, oversubscribing the cores, so the 250 ms
 /// (`APP_REBIND_POLL_INTERVAL`) rebind-poll thread can be scheduled slowly.
-/// Each waiter returns the instant the count is reached, so a large ceiling
+/// The wait returns the instant its condition holds, so a large ceiling
 /// costs nothing on green and only bounds genuine hangs. (The historical
 /// `focus_subscription_rebinds_*` flake was a synchronization race on the
 /// binding swap, fixed by waiting on the teardown signal — not a deadline
 /// timeout; this ceiling is defensive insurance against load, not that fix.)
 const WAIT_DEADLINE: Duration = Duration::from_secs(10);
 
-fn wait_for_install_count(installs: &Arc<Mutex<Vec<FakeObserverInstall>>>, expected: usize) {
-    let deadline = SystemTime::now() + WAIT_DEADLINE;
-    while SystemTime::now() < deadline {
-        if installs.lock().unwrap().len() >= expected {
-            return;
-        }
+/// Poll `done` every 20 ms until it holds; fail the test if it still does
+/// not after [`WAIT_DEADLINE`].
+fn wait_until(mut done: impl FnMut() -> bool) {
+    let deadline = Instant::now() + WAIT_DEADLINE;
+    while !done() {
+        assert!(
+            Instant::now() < deadline,
+            "condition still false after {WAIT_DEADLINE:?}"
+        );
         thread::sleep(Duration::from_millis(20));
     }
-
-    assert_eq!(installs.lock().unwrap().len(), expected);
-}
-
-fn wait_for_accept_tap_count(installs: &Arc<Mutex<Vec<FakeAcceptTapInstall>>>, expected: usize) {
-    let deadline = SystemTime::now() + WAIT_DEADLINE;
-    while SystemTime::now() < deadline {
-        if installs.lock().unwrap().len() >= expected {
-            return;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    assert_eq!(installs.lock().unwrap().len(), expected);
 }
 
 fn count_drop_events(events: &Arc<Mutex<Vec<String>>>) -> usize {
@@ -603,30 +593,6 @@ fn count_drop_events(events: &Arc<Mutex<Vec<String>>>) -> usize {
         .iter()
         .filter(|e| e.as_str() == "drop")
         .count()
-}
-
-fn wait_for_drop_events(events: &Arc<Mutex<Vec<String>>>, expected: usize) {
-    let deadline = SystemTime::now() + WAIT_DEADLINE;
-    while SystemTime::now() < deadline {
-        if count_drop_events(events) >= expected {
-            return;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    assert_eq!(count_drop_events(events), expected);
-}
-
-fn wait_for_vec_count<T>(items: &Arc<Mutex<Vec<T>>>, expected: usize) {
-    let deadline = SystemTime::now() + WAIT_DEADLINE;
-    while SystemTime::now() < deadline {
-        if items.lock().unwrap().len() >= expected {
-            return;
-        }
-        thread::sleep(Duration::from_millis(20));
-    }
-
-    assert_eq!(items.lock().unwrap().len(), expected);
 }
 
 fn write_test_pasteboard_items(
@@ -5884,7 +5850,7 @@ fn subscribe_accept_installs_shortcut_and_transient_consumer_tap() {
         }))
         .expect("subscribe accept");
     // The always-on Shortcut registration is the sole process-lifetime tap.
-    wait_for_accept_tap_count(&accept_tap_installs, 1);
+    wait_until(|| !accept_tap_installs.lock().unwrap().is_empty());
     assert_eq!(
         accept_tap_installs.lock().unwrap()[0].kind,
         AcceptTapKind::Shortcut
@@ -5893,7 +5859,7 @@ fn subscribe_accept_installs_shortcut_and_transient_consumer_tap() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 2);
     assert_eq!(
         accept_tap_installs.lock().unwrap()[1].kind,
         AcceptTapKind::Consumer
@@ -5938,7 +5904,7 @@ fn subscribe_accept_installs_shortcut_and_transient_consumer_tap() {
     subscription
         .set_suggestion_visible(true)
         .expect("reactivate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 3);
     assert_eq!(
         accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
@@ -5963,7 +5929,7 @@ fn subscribe_accept_shortcut_resource_dispatches_configured_grammar_check() {
             action_tx.send(action).expect("action send");
         }))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 1);
+    wait_until(|| !accept_tap_installs.lock().unwrap().is_empty());
     assert_eq!(
         accept_tap_installs.lock().unwrap()[0].kind,
         AcceptTapKind::Shortcut
@@ -5995,7 +5961,7 @@ fn subscribe_accept_shortcut_handler_stops_after_subscription_drop() {
             action_tx.send(action).expect("action send");
         }))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 1);
+    wait_until(|| !accept_tap_installs.lock().unwrap().is_empty());
     let shortcut_handler = Arc::clone(&accept_tap_installs.lock().unwrap()[0].handler);
 
     drop(subscription);
@@ -6033,10 +5999,10 @@ fn rearm_while_armed_reinstalls_the_consumer_and_keeps_the_armed_value() {
         .expect("activate consumer");
     // [Shortcut, Consumer] — the process-lifetime shortcut installs before
     // the first consumer arm (finding C).
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 2);
 
     subscription.rearm_accept_tap().expect("rearm");
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 3);
     assert_eq!(
         accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
@@ -6084,7 +6050,7 @@ fn rearm_while_unarmed_is_a_successful_noop() {
     let subscription = adapter
         .subscribe_accept(Arc::new(|_| {}))
         .expect("subscribe accept");
-    wait_for_accept_tap_count(&accept_tap_installs, 1); // shortcut only
+    wait_until(|| !accept_tap_installs.lock().unwrap().is_empty()); // shortcut only
 
     subscription
         .rearm_accept_tap()
@@ -6108,7 +6074,7 @@ fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 2);
 
     let drops_before = count_drop_events(&accept_tap_events);
     subscription
@@ -6119,12 +6085,12 @@ fn accept_subscription_delayed_hide_tears_down_consumer_tap() {
     // thread can be scheduled later than any fixed interval, making the
     // reactivate below a visible->visible no-op and stranding the install
     // count at 3 (live CI flake 2026-07-08).
-    wait_for_drop_events(&accept_tap_events, drops_before + 1);
+    wait_until(|| count_drop_events(&accept_tap_events) > drops_before);
     subscription
         .set_suggestion_visible(true)
         .expect("reactivate after delayed hide");
 
-    wait_for_accept_tap_count(&accept_tap_installs, 3);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 3);
     assert_eq!(
         accept_tap_installs.lock().unwrap()[2].kind,
         AcceptTapKind::Consumer
@@ -6144,7 +6110,7 @@ fn accept_subscription_visible_update_cancels_delayed_hide() {
     subscription
         .set_suggestion_visible(true)
         .expect("activate consumer");
-    wait_for_accept_tap_count(&accept_tap_installs, 2);
+    wait_until(|| accept_tap_installs.lock().unwrap().len() >= 2);
 
     subscription
         .hide_suggestion_after(Duration::from_millis(30))
@@ -8040,14 +8006,14 @@ fn focus_subscription_rebinds_to_new_frontmost_pid_and_ignores_old_events() {
             focused_in_cb.lock().unwrap().push(field);
         }))
         .expect("focus subscription");
-    wait_for_install_count(&installs, 1);
+    wait_until(|| !installs.lock().unwrap().is_empty());
 
     *frontmost_pid.lock().unwrap() = Some(99);
-    wait_for_install_count(&installs, 2);
+    wait_until(|| installs.lock().unwrap().len() >= 2);
     // The poller records install #1 before it drops the old pid-42 binding.
     // The teardown is the deterministic happens-after signal that the
     // binding lifecycle completed before the post-rebind assertions.
-    wait_for_vec_count(&teardowns, 1);
+    wait_until(|| !teardowns.lock().unwrap().is_empty());
     assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
     let installs_snapshot = installs.lock().unwrap().clone();
     assert_eq!(installs_snapshot[0].pid, 42);
@@ -8106,7 +8072,7 @@ fn caret_subscription_rebinds_and_does_not_reuse_same_pointer_across_pids() {
             carets_in_cb.lock().unwrap().push((field, rect));
         }))
         .expect("caret subscription");
-    wait_for_install_count(&installs, 1);
+    wait_until(|| !installs.lock().unwrap().is_empty());
     let first_dispatch = installs.lock().unwrap()[0].dispatch.clone();
     first_dispatch(observer_event_for_pid(
         42,
@@ -8140,7 +8106,7 @@ fn caret_subscription_rebinds_and_does_not_reuse_same_pointer_across_pids() {
     ));
     let delivered_before_binding_swap = carets.lock().unwrap().len();
     release_install_tx.send(()).expect("release second install");
-    wait_for_vec_count(&teardowns, 1);
+    wait_until(|| !teardowns.lock().unwrap().is_empty());
     assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
 
     let carets = carets.lock().unwrap();
@@ -8185,14 +8151,14 @@ fn focus_subscription_clears_binding_when_no_app_is_frontmost_then_rebinds() {
             focused_in_cb.lock().unwrap().push(field);
         }))
         .expect("focus subscription");
-    wait_for_install_count(&installs, 1);
+    wait_until(|| !installs.lock().unwrap().is_empty());
     let first_dispatch = installs.lock().unwrap()[0].dispatch.clone();
 
     *frontmost_pid.lock().unwrap() = None;
     // Wait until the rebind poller has actually torn down the pid-42 binding
     // (deterministic), rather than sleeping a fixed interval and hoping the
     // poll thread ran — that fixed sleep flaked under heavy parallel load.
-    wait_for_vec_count(&teardowns, 1);
+    wait_until(|| !teardowns.lock().unwrap().is_empty());
     assert_eq!(teardowns.lock().unwrap().as_slice(), [42]);
     first_dispatch(observer_event_for_pid(
         42,
