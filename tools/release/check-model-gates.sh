@@ -4806,9 +4806,15 @@ require_test_symbol "$repo_root/crates/app/src/inference.rs" 'grammar_fix_reject
 require_test_symbol "$repo_root/crates/engine/src/lib.rs" 'on_correction_shows_correction_with_range_anchor' "engine correction show test"
 require_test_symbol "$repo_root/crates/engine/src/lib.rs" 'accept_correction_emits_replace_range' "engine correction accept test"
 require_test_symbol "$repo_root/crates/engine_core/src/lib.rs" 'accept_full_and_word_do_not_commit_correction_presentation' "engine_core correction accept isolation test"
-require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_caret_returns_whole_word_and_scalar_range_at_end' "context word-at-caret end test"
-require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_caret_returns_whole_word_and_scalar_range_mid_word' "context word-at-caret midword test"
-require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_caret_handles_astral_prefix_without_utf16_offset_drift' "context word-at-caret astral test"
+# The `#[cfg(test)]` single-string `word_at_caret` helper these three pins were
+# stamped against is gone: `word_at_split_caret` is the only word-at-caret seam
+# (production calls it from `run_loop::grammar_fix_request`), so the pins follow
+# the split-caret tests that carry the same properties. The midword and astral
+# pins share one symbol because that test asserts a midword scalar range across
+# an astral prefix in a single case.
+require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_split_caret_returns_whole_word_and_scalar_range_at_end' "context word-at-caret end test"
+require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_split_caret_finds_a_midword_range_without_joining_the_field' "context word-at-caret midword test"
+require_test_symbol "$repo_root/crates/context/src/lib.rs" 'word_at_split_caret_finds_a_midword_range_without_joining_the_field' "context word-at-caret astral test"
 require_test_symbol "$repo_root/crates/platform_macos/src/lib_tests.rs" 'correction_range_splice_replaces_midword_without_left_fragment_leak' "platform_macos range splice test"
 require_test_symbol "$repo_root/crates/platform_macos/src/lib_tests.rs" 'correction_range_expected_text_guard_rejects_changed_live_text' "platform_macos stale range guard test"
 require_test_symbol "$repo_root/crates/app/src/run_loop_tests.rs" 'grammar_trigger_dispatches_word_at_caret_scalar_range' "run_loop grammar dispatch test"

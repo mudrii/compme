@@ -23,12 +23,6 @@ pub struct WordRange {
     pub end: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct WordAtCaret<'a> {
-    pub word: &'a str,
-    pub range: WordRange,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct OwnedWordAtCaret {
     pub word: String,
@@ -90,47 +84,6 @@ pub fn word_at_split_caret(
         return None;
     }
     Some(OwnedWordAtCaret {
-        word,
-        range: WordRange { start, end },
-    })
-}
-
-#[cfg(test)]
-fn word_at_caret(value: &str, caret: usize) -> Option<WordAtCaret<'_>> {
-    let chars: Vec<(usize, char)> = value.char_indices().collect();
-    if chars.is_empty() {
-        return None;
-    }
-    let len = chars.len();
-    let caret = caret.min(len);
-
-    if caret == len && !is_word_char(chars[len - 1].1) {
-        return None;
-    }
-    let seed = if caret < len && is_word_char(chars[caret].1) {
-        caret
-    } else {
-        caret.checked_sub(1)?
-    };
-    if !is_word_char(chars[seed].1) {
-        return None;
-    }
-
-    let mut start = seed;
-    while start > 0 && is_word_char(chars[start - 1].1) {
-        start -= 1;
-    }
-    let mut end = seed + 1;
-    while end < len && is_word_char(chars[end].1) {
-        end += 1;
-    }
-    let byte_start = chars[start].0;
-    let byte_end = chars.get(end).map(|(idx, _)| *idx).unwrap_or(value.len());
-    let word = &value[byte_start..byte_end];
-    if !has_alphanumeric_edges(word) {
-        return None;
-    }
-    Some(WordAtCaret {
         word,
         range: WordRange { start, end },
     })
@@ -437,25 +390,33 @@ Recent: green blue\n"
     }
 
     #[test]
-    fn word_at_caret_returns_whole_word_and_scalar_range_at_end() {
+    fn word_at_split_caret_returns_whole_word_and_scalar_range_at_end() {
+        // Caret at the very end of the field: the trailing word resolves whole,
+        // with its absolute scalar range, from the split halves alone (the right
+        // half is empty, so only the left scan runs).
         assert_eq!(
-            word_at_caret("please fix teh", 14),
-            Some(WordAtCaret {
-                word: "teh",
+            word_at_split_caret("please fix teh", "", 14, 32),
+            Some(OwnedWordAtCaret {
+                word: "teh".into(),
                 range: WordRange { start: 11, end: 14 },
             })
         );
     }
 
     #[test]
-    fn word_at_caret_returns_whole_word_and_scalar_range_mid_word() {
+    fn word_at_split_caret_returns_whole_word_and_scalar_range_at_offset_zero() {
+        // Caret 0 on a word's first char: there is no left half to scan, and the
+        // range start floors at 0 (`left_scalar_count.saturating_sub(0)`) rather
+        // than underflowing.
         assert_eq!(
-            word_at_caret("please fix teh now", 12),
-            Some(WordAtCaret {
-                word: "teh",
-                range: WordRange { start: 11, end: 14 },
+            word_at_split_caret("", "hi there", 0, 32),
+            Some(OwnedWordAtCaret {
+                word: "hi".into(),
+                range: WordRange { start: 0, end: 2 },
             })
         );
+        // Caret 0 before a non-word char has no word on either side.
+        assert_eq!(word_at_split_caret("", " x", 0, 32), None);
     }
 
     #[test]
@@ -524,65 +485,10 @@ Recent: green blue\n"
             "world"
         );
         assert_eq!(word_at_split_caret(" ", " ", 1, 32), None);
-    }
-
-    #[test]
-    fn word_at_caret_handles_astral_prefix_without_utf16_offset_drift() {
-        assert_eq!(
-            word_at_caret("😀teh", 2),
-            Some(WordAtCaret {
-                word: "teh",
-                range: WordRange { start: 1, end: 4 },
-            })
-        );
-    }
-
-    #[test]
-    fn word_at_caret_returns_previous_word_at_boundary_and_none_for_empty_field() {
-        assert_eq!(word_at_caret("", 0), None);
-        assert_eq!(
-            word_at_caret("hello world", 5),
-            Some(WordAtCaret {
-                word: "hello",
-                range: WordRange { start: 0, end: 5 },
-            })
-        );
-        assert_eq!(
-            word_at_caret("hello world", 6),
-            Some(WordAtCaret {
-                word: "world",
-                range: WordRange { start: 6, end: 11 },
-            })
-        );
-        assert_eq!(word_at_caret("  ", 1), None);
-    }
-
-    #[test]
-    fn word_at_caret_treats_apostrophe_as_a_word_char() {
-        // is_word_char allows `'` so contractions stay whole: the
-        // caret inside "don't" must return the entire "don't", not a fragment
-        // split at the apostrophe.
-        assert_eq!(
-            word_at_caret("don't", 5),
-            Some(WordAtCaret {
-                word: "don't",
-                range: WordRange { start: 0, end: 5 },
-            })
-        );
-    }
-
-    #[test]
-    fn word_at_caret_rejects_standalone_and_edge_apostrophes() {
-        for value in ["'", "’", "'hello", "hello'", "’hello", "hello’"] {
-            assert_eq!(
-                word_at_caret(value, value.chars().count()),
-                None,
-                "apostrophes may join a contraction but may not form a word edge: {value:?}"
-            );
-        }
-
-        assert_eq!(word_at_caret("don't", 5).unwrap().word, "don't");
-        assert_eq!(word_at_caret("i’m", 3).unwrap().word, "i’m");
+        // No word on either side of the caret: an empty field, and a caret
+        // parked after trailing whitespace with nothing to its right.
+        assert_eq!(word_at_split_caret("", "", 0, 32), None);
+        assert_eq!(word_at_split_caret("hi ", "", 3, 32), None);
     }
 
     #[test]
@@ -603,44 +509,14 @@ Recent: green blue\n"
         }
 
         assert_eq!(
-            word_at_split_caret("don'", "t", 4, 32).unwrap().word,
-            "don't"
+            word_at_split_caret("don'", "t", 4, 32),
+            Some(OwnedWordAtCaret {
+                word: "don't".into(),
+                range: WordRange { start: 0, end: 5 },
+            }),
+            "an ASCII apostrophe joins a contraction and the range spans it whole"
         );
         assert_eq!(word_at_split_caret("i’", "m", 2, 32).unwrap().word, "i’m");
-    }
-
-    #[test]
-    fn word_at_caret_past_end_caret_clamps_to_len() {
-        // A past-end caret is clamped to the scalar count (the `caret.min(len)`
-        // at lib.rs L38), so a wild caret still resolves the trailing word
-        // instead of panicking or missing it...
-        assert_eq!(
-            word_at_caret("please fix teh", 99),
-            Some(WordAtCaret {
-                word: "teh",
-                range: WordRange { start: 11, end: 14 },
-            })
-        );
-        // ...and clamping onto trailing whitespace still yields None (the
-        // clamped end-of-text char is not a word char).
-        assert_eq!(word_at_caret("hi ", 99), None);
-    }
-
-    #[test]
-    fn word_at_caret_at_offset_zero_on_nonempty_field() {
-        // caret 0 on a non-empty field is only tested on "" today. When the first
-        // char is a word char the caret sits at a word's start and the whole word
-        // is returned (the `caret < len && is_word_char(chars[caret])` seed arm at
-        // offset 0). When the first char is NOT a word char there is nothing to the
-        // left, so `caret.checked_sub(1)?` yields None rather than underflow-panicking.
-        assert_eq!(
-            word_at_caret("hi there", 0),
-            Some(WordAtCaret {
-                word: "hi",
-                range: WordRange { start: 0, end: 2 },
-            })
-        );
-        assert_eq!(word_at_caret(" x", 0), None);
     }
 
     #[test]
