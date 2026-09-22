@@ -22,7 +22,8 @@ else
   echo "pre-push: cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets"
   cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
 
-  # platform_macos (NSPasteboard) and app (shortcut/pasteboard globals) share
+  # platform_macos (hotkey globals: ACCEPT_KEYMAP, TAB_HOTKEY_SUPPRESSED,
+  # SHORTCUT_BINDINGS) and app (process env + its shortcut-binding global) share
   # process-wide state, so only these two crates run serialized.
   echo "pre-push: cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1"
   cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1

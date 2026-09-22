@@ -328,10 +328,12 @@ root workspace — root commands do not validate it, so it carries its own gate.
 `tools/dev/check.sh` parses the fence above and runs it as one command.
 The full gate splits tests into a parallel run over the 24 portable crates and
 a serial run over `platform_macos` and `app` only: the `platform_macos` example
-regression tests are part of the acceptance surface and several macOS
-pasteboard checks share process-wide OS state, and `app` tests share
-shortcut/pasteboard globals, so the serial command keeps `--test-threads=1`
-while the other 24 crates no longer pay the serial cost.
+regression tests are part of the acceptance surface and several of them swap the
+process-global hotkey state (`ACCEPT_KEYMAP`, `TAB_HOTKEY_SUPPRESSED`,
+`SHORTCUT_BINDINGS`), and `app` tests mutate the process environment
+(`COMPME_CONFIG`) and their own shortcut-binding global, so the serial command
+keeps `--test-threads=1` while the other 24 crates no longer pay the serial
+cost.
 The `shellcheck` line needs a local shellcheck install (CI gates on it
 regardless); skip it when unavailable. For the cargo half of the gate, an
 opt-in pre-push hook runs `cargo fmt --check`, clippy, and the workspace tests
@@ -523,11 +525,14 @@ The macOS example tests are important because they verify behavior used by live
 acceptance binaries. Compile them via the `--all-targets` gate; run them with
 `cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1`.
 
-**Known flake.** A small number of `platform_macos` tests share the process-wide
-general `NSPasteboard`, so running them in parallel can intermittently fail when
-two tests touch the clipboard at once. They pass when run isolated (single test
-thread / a focused `cargo test`). This is a test-harness artifact, not a product
-bug.
+**Known flake.** A small number of `platform_macos` tests swap the process-global
+hotkey state (`ACCEPT_KEYMAP`, `TAB_HOTKEY_SUPPRESSED`, `SHORTCUT_BINDINGS`), so
+running them in parallel can intermittently fail when two tests swap it at once.
+They pass when run isolated (single test thread / a focused `cargo test`). This
+is a test-harness artifact, not a product bug. The pasteboard is not implicated:
+all nine pasteboard tests use `NSPasteboard::pasteboardWithUniqueName()`, never
+the general pasteboard. The four hotkey-global tests now also take a shared test
+lock, so the serial lane is defence-in-depth rather than the only guard.
 
 Spike coverage includes:
 
