@@ -47,6 +47,11 @@ means the app sees what it needs.
 - **The model is already on disk.** A dest-exists guard skips re-downloading
   an existing model whose SHA-256 matches the catalog pin (a file with the
   wrong hash is re-fetched); delete it first if you meant to fetch it again.
+- **The model loaded but its warm-up failed.** The tray shows
+  **Blocked: model unavailable** and stderr carries
+  `compme: warm-up failed: …`. This state is sticky: a failed warm-up decode
+  is treated as a model that will keep failing, so suggestions stay blocked
+  until you relaunch Compme (after fixing or replacing the model file).
 
 ## Requirements mismatch
 
