@@ -85,18 +85,6 @@ impl Default for Prefs {
     }
 }
 
-/// Whether `host` is `rule` or a subdomain of it, matched on a dot boundary.
-/// Both must already be lowercased. `google.com` matches `google.com` and
-/// `www.google.com`, but never `notgoogle.com`/`evilgoogle.com` (no dot before
-/// the rule) or `google.com.evil.com` (a different registrable domain that
-/// merely contains the rule).
-fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
-    host == rule
-        || (host.len() > rule.len()
-            && host.ends_with(rule)
-            && host.as_bytes()[host.len() - rule.len() - 1] == b'.')
-}
-
 impl Prefs {
     /// Whether suggestions may fire for a focus context now. False if snoozed, if
     /// the app or domain is excluded, or if the per-app/global policy is off.
@@ -122,7 +110,7 @@ impl Prefs {
             if self
                 .excluded_domains
                 .iter()
-                .any(|rule| host_matches_domain_rule(&host, rule))
+                .any(|rule| webconfig::host_matches_domain_rule(&host, rule))
             {
                 return false;
             }
@@ -243,7 +231,8 @@ impl Prefs {
         let domain = webconfig::normalize_domain(domain);
         self.excluded_domains.retain(|rule| {
             let rule = webconfig::normalize_domain(rule);
-            !host_matches_domain_rule(&domain, &rule) && !host_matches_domain_rule(&rule, &domain)
+            !webconfig::host_matches_domain_rule(&domain, &rule)
+                && !webconfig::host_matches_domain_rule(&rule, &domain)
         });
     }
 
@@ -317,38 +306,6 @@ impl Prefs {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The single shared decision table for the two independent
-    /// `host_matches_domain_rule` matchers (`prefs` here, `personalization` in its
-    /// own crate). The two modules document that they "must never drift apart";
-    /// this table is duplicated verbatim into `personalization::tests`
-    /// (`DOMAIN_MATCHER_SHARED_CASES`) so an edit to EITHER matcher that changes a
-    /// decision fails one crate's test. The expected column is the decision BOTH
-    /// matchers currently make (verified empirically).
-    ///
-    /// NOTE: these matchers take ALREADY-lowercased input (callers fold case
-    /// upstream — `should_suggest` / `per_domain_instruction`). So `GOOGLE.COM`
-    /// does NOT match here; both agree on that raw-matcher contract.
-    const DOMAIN_MATCHER_SHARED_CASES: &[(&str, &str, bool)] = &[
-        ("www.google.com", "google.com", true),
-        ("evilgoogle.com", "google.com", false),
-        ("google.com.evil.com", "google.com", false),
-        ("google.com", "google.com", true),
-        ("GOOGLE.COM", "google.com", false),
-        ("", "google.com", false),
-        ("google.com", "", false),
-    ];
-
-    #[test]
-    fn domain_matcher_agrees_on_shared_case_table() {
-        for &(host, rule, expected) in DOMAIN_MATCHER_SHARED_CASES {
-            assert_eq!(
-                host_matches_domain_rule(host, rule),
-                expected,
-                "prefs matcher disagrees on ({host:?}, {rule:?})"
-            );
-        }
-    }
 
     #[test]
     fn per_app_feature_overrides_inherit_the_global_default() {

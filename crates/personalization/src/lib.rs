@@ -185,7 +185,7 @@ impl PersonalizationProfile {
     /// Resolve the per-domain instruction for `host`, matching the exact host or
     /// the most-specific parent-domain rule on a dot boundary (a `google.com`
     /// rule applies to `www.google.com`, but never to `evilgoogle.com`). This
-    /// mirrors the subdomain-aware matching `prefs` uses for domain exclusions,
+    /// shares `webconfig::host_matches_domain_rule` with `prefs` domain exclusions,
     /// so a user who configures both surfaces sees consistent scoping. The
     /// longest matching rule wins, making the choice deterministic.
     ///
@@ -204,7 +204,7 @@ impl PersonalizationProfile {
         let host = webconfig::normalize_domain(host);
         self.per_domain
             .iter()
-            .filter(|(rule, _)| host_matches_domain_rule(&host, rule))
+            .filter(|(rule, _)| webconfig::host_matches_domain_rule(&host, rule))
             .max_by_key(|(rule, _)| rule.len())
             .map(|(_, text)| text)
     }
@@ -243,57 +243,9 @@ impl PersonalizationProfile {
     }
 }
 
-/// True when `host` is matched by a domain `rule`: either an exact match or a
-/// subdomain on a dot boundary (`www.google.com` matches `google.com`, but
-/// `evilgoogle.com` does not). Kept in sync with the prefs domain-exclusion
-/// matcher so per-domain steering and per-domain exclusions scope alike.
-fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
-    if host == rule {
-        return true;
-    }
-    host.strip_suffix(rule)
-        .is_some_and(|prefix| prefix.ends_with('.'))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    /// The single shared decision table for the two independent
-    /// `host_matches_domain_rule` matchers (`personalization` here, `prefs` in its
-    /// own crate). Both modules document that they "must never drift apart"; this
-    /// table is duplicated verbatim into `prefs::tests` so an edit to EITHER
-    /// matcher that changes any decision fails one crate's test. The expected
-    /// column is the decision BOTH matchers currently make (verified empirically),
-    /// so the table is the contract, not either implementation.
-    ///
-    /// NOTE: these matchers take ALREADY-lowercased input (callers fold case
-    /// upstream — `per_domain_instruction` / `should_suggest`). So a mixed-case
-    /// host like `GOOGLE.COM` does NOT match here: that is the raw-matcher
-    /// contract, and both agree on it.
-    pub(crate) const DOMAIN_MATCHER_SHARED_CASES: &[(&str, &str, bool)] = &[
-        ("www.google.com", "google.com", true),
-        ("evilgoogle.com", "google.com", false),
-        ("google.com.evil.com", "google.com", false),
-        ("google.com", "google.com", true),
-        // Case: raw matcher does not fold case (callers do), so this misses.
-        ("GOOGLE.COM", "google.com", false),
-        // Empty host never matches a non-empty rule.
-        ("", "google.com", false),
-        // Empty rule: both agree it does not match a non-empty host.
-        ("google.com", "", false),
-    ];
-
-    #[test]
-    fn domain_matcher_agrees_on_shared_case_table() {
-        for &(host, rule, expected) in DOMAIN_MATCHER_SHARED_CASES {
-            assert_eq!(
-                host_matches_domain_rule(host, rule),
-                expected,
-                "personalization matcher disagrees on ({host:?}, {rule:?})"
-            );
-        }
-    }
 
     #[test]
     fn truncate_chars_keeps_exactly_max_and_cuts_on_a_char_boundary() {
@@ -558,9 +510,8 @@ mod tests {
         assert_eq!(p.resolve_instructions(None, Some("evilgoogle.com")), "");
         // Nor when the rule appears as a non-boundary suffix substring inside a
         // different registrable domain (the classic `google.com.evil.com`
-        // over-match). `prefs::host_matches_domain_rule` pins this exact
-        // negative; personalization's independent matcher must agree so the two
-        // never drift apart.
+        // over-match). Pins the shared `webconfig::host_matches_domain_rule`
+        // negative at the personalization boundary.
         assert_eq!(
             p.resolve_instructions(None, Some("google.com.evil.com")),
             ""

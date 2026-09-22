@@ -74,6 +74,20 @@ pub fn normalize_domain(domain: &str) -> String {
     normalized
 }
 
+/// Whether `host` is `rule` or a subdomain of it, matched on a dot boundary.
+/// Both must already be canonical ([`normalize_domain`]). `google.com` matches
+/// `google.com` and `www.google.com`, but never `evilgoogle.com` (no dot before
+/// the rule) or `google.com.evil.com` (a different registrable domain that
+/// merely contains the rule). The single matcher behind `prefs` domain
+/// exclusions and `personalization` per-domain steering, so both scope alike.
+pub fn host_matches_domain_rule(host: &str, rule: &str) -> bool {
+    if host == rule {
+        return true;
+    }
+    host.strip_suffix(rule)
+        .is_some_and(|prefix| prefix.ends_with('.'))
+}
+
 /// The reversible per-scope action. Exactly one per command.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OverrideAction {
@@ -526,6 +540,31 @@ mod tests {
         assert_eq!(normalize_domain("BANK.EXAMPLE"), "bank.example");
         assert_eq!(normalize_domain("example.com.."), "example.com.");
         assert_eq!(normalize_domain("."), "");
+    }
+
+    #[test]
+    fn domain_rule_matches_subdomain_on_dot_boundary_only() {
+        // The one matcher behind prefs domain exclusions and personalization
+        // per-domain steering. Inputs are already canonical (callers fold case
+        // via `normalize_domain`), so a mixed-case host does not match here.
+        let cases: &[(&str, &str, bool)] = &[
+            ("www.google.com", "google.com", true),
+            ("a.b.google.com", "google.com", true),
+            ("google.com", "google.com", true),
+            ("evilgoogle.com", "google.com", false),
+            ("google.com.evil.com", "google.com", false),
+            ("google.com", "www.google.com", false),
+            ("GOOGLE.COM", "google.com", false),
+            ("", "google.com", false),
+            ("google.com", "", false),
+        ];
+        for &(host, rule, expected) in cases {
+            assert_eq!(
+                host_matches_domain_rule(host, rule),
+                expected,
+                "({host:?}, {rule:?})"
+            );
+        }
     }
 
     #[test]

@@ -56,9 +56,41 @@ impl CasePattern {
     }
 }
 
+/// Look `word` up case-insensitively in a lowercase `(from, to)` table and
+/// return the mapped text re-cased to match how `word` was typed (surrounding
+/// whitespace ignored). `None` for a blank word or no entry. Shared by the
+/// single-answer replacement lookups (`autocorrect::correct`,
+/// `localize::to_british`).
+pub fn lookup_preserving_case(word: &str, table: &[(&str, &str)]) -> Option<String> {
+    let key = word.trim().to_lowercase();
+    if key.is_empty() {
+        return None;
+    }
+    let mapped = table
+        .iter()
+        .find_map(|(from, to)| (*from == key).then_some(*to))?;
+    Some(CasePattern::of(word.trim()).apply(mapped))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn lookup_preserving_case_matches_case_insensitively_and_reapplies_typed_case() {
+        let table: &[(&str, &str)] = &[("teh", "the"), ("color", "colour")];
+        assert_eq!(lookup_preserving_case("teh", table).as_deref(), Some("the"));
+        assert_eq!(
+            lookup_preserving_case(" Teh ", table).as_deref(),
+            Some("The")
+        );
+        assert_eq!(
+            lookup_preserving_case("COLOR", table).as_deref(),
+            Some("COLOUR")
+        );
+        assert_eq!(lookup_preserving_case("hello", table), None);
+        assert_eq!(lookup_preserving_case("   ", table), None);
+    }
 
     #[test]
     fn classifies_lower_title_upper() {

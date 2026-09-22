@@ -16,8 +16,6 @@
 //! *when* to apply (a host toggle, `COMPME_BRITISH_ENGLISH`, off by
 //! default) are the host's job, mirroring the `autocorrect`/`thesaurus` split.
 
-use textcase::CasePattern;
-
 /// `(american, british)` — all lowercase. Each key is American-only (never a
 /// valid British spelling), so a correctly-spelled British or shared word is
 /// never altered. Common inflections are listed explicitly because lookup is
@@ -138,15 +136,7 @@ const US_TO_UK: &[(&str, &str)] = &[
 /// query's capitalization applied; `None` for a word that is already British,
 /// shared, or unknown.
 pub fn to_british(word: &str) -> Option<String> {
-    let key = word.trim().to_lowercase();
-    if key.is_empty() {
-        return None;
-    }
-    let british = US_TO_UK
-        .iter()
-        .find(|(us, _)| *us == key)
-        .map(|(_, uk)| *uk)?;
-    Some(CasePattern::of(word.trim()).apply(british))
+    textcase::lookup_preserving_case(word, US_TO_UK)
 }
 
 #[cfg(test)]

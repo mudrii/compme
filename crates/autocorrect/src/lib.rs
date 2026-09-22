@@ -11,8 +11,6 @@
 //! requirement is a host gate (don't run in code editors); this core only proposes
 //! a correction for a known typo and never touches anything else.
 
-use textcase::CasePattern;
-
 /// `(misspelling, correction)` — all lowercase. Only unambiguous typos: each key
 /// is NOT itself a valid English word, so a correct word is never altered.
 const TYPOS: &[(&str, &str)] = &[
@@ -53,19 +51,13 @@ const TYPOS: &[(&str, &str)] = &[
 /// The correction for `word` if it is a known typo, with the query's
 /// capitalization applied; `None` for a correctly-spelled (or unknown) word.
 pub fn correct(word: &str) -> Option<String> {
-    let key = word.trim().to_lowercase();
-    if key.is_empty() {
-        return None;
-    }
-    let correction = TYPOS
-        .iter()
-        .find_map(|(typo, fix)| (*typo == key).then_some(*fix))?;
-    Some(CasePattern::of(word.trim()).apply(correction))
+    textcase::lookup_preserving_case(word, TYPOS)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use textcase::CasePattern;
 
     #[test]
     fn corrects_a_known_typo() {
