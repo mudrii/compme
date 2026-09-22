@@ -118,6 +118,18 @@ fn tail_start_byte(s: &str, max: usize) -> (usize, usize) {
     (byte_idx, scanned)
 }
 
+/// The context block's header line and per-source line labels, exactly as
+/// [`build_context_block`] emits them. Public so a consumer that summarizes a
+/// built block (the app's `prompt_context` diagnostic) parses what this
+/// builder writes instead of a private copy of the strings.
+pub const CONTEXT_HEADER: &str = "Context (for reference only):";
+/// Label of the clipboard line.
+pub const CLIPBOARD_LABEL: &str = "Clipboard:";
+/// Label of the on-screen (OCR) line.
+pub const SCREEN_LABEL: &str = "On screen:";
+/// Label of each previous-input line.
+pub const RECENT_LABEL: &str = "Recent:";
+
 /// Assemble an opt-in context block to prepend to the completion prompt (A2 §16
 /// context augmentation): optional clipboard/pasteboard text plus recent
 /// previous inputs. Each source is trimmed and bounded to `max_chars` (keeping
@@ -149,25 +161,28 @@ pub fn build_context_block(
     if let Some(clip) = pasteboard {
         let clip = one_line(clip);
         if !clip.is_empty() {
-            lines.push(format!("Clipboard: {}", tail_chars(&clip, max_chars)));
+            lines.push(format!(
+                "{CLIPBOARD_LABEL} {}",
+                tail_chars(&clip, max_chars)
+            ));
         }
     }
     if let Some(screen) = screen {
         let screen = one_line(screen);
         if !screen.is_empty() {
-            lines.push(format!("On screen: {}", tail_chars(&screen, max_chars)));
+            lines.push(format!("{SCREEN_LABEL} {}", tail_chars(&screen, max_chars)));
         }
     }
     for input in previous_inputs {
         let input = one_line(input);
         if !input.is_empty() {
-            lines.push(format!("Recent: {}", tail_chars(&input, max_chars)));
+            lines.push(format!("{RECENT_LABEL} {}", tail_chars(&input, max_chars)));
         }
     }
     if lines.is_empty() {
         return String::new();
     }
-    format!("Context (for reference only):\n{}\n", lines.join("\n"))
+    format!("{CONTEXT_HEADER}\n{}\n", lines.join("\n"))
 }
 
 #[cfg(test)]

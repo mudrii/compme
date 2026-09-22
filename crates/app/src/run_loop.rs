@@ -2107,9 +2107,11 @@ fn record_full_accept(
         return;
     }
     if recording.context_max_chars > 0 {
+        // Raw text: `record_with_cross_app` is the ring's single redaction
+        // owner, redacting at the store boundary like the memory store below.
         recording.previous_inputs.record_with_cross_app(
             &field.app,
-            redaction::redact(text),
+            text.to_string(),
             recording.cross_app_previous_inputs,
         );
     }

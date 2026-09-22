@@ -7018,6 +7018,34 @@ fn full_accept_collects_cross_app_history_only_while_the_opt_in_is_on() {
 }
 
 #[test]
+fn full_accept_previous_input_is_redacted_once_at_the_ring_boundary() {
+    // record_full_accept hands the ring the raw accepted text: PreviousInputs
+    // (record_with_cross_app) is the single redaction owner, so a secret is
+    // scrubbed exactly at the store boundary in both scopes.
+    let prev = PreviousInputs::default();
+    let token = "sk-abcdEFGH0123456789abcdEFGH0123";
+    record_full_accept(
+        AcceptAction::Full,
+        &field_with_app("com.apple.TextEdit"),
+        &format!("my key {token}"),
+        AcceptRecording {
+            context_max_chars: 160,
+            cross_app_previous_inputs: true,
+            previous_inputs: &prev,
+            memory: None,
+            domain: None,
+            collection_allowed: true,
+        },
+    );
+    for cross_app in [false, true] {
+        let recent = prev.recent_for_scope("com.apple.TextEdit", cross_app);
+        assert_eq!(recent.len(), 1);
+        assert!(!recent[0].contains(token), "raw secret stored: {recent:?}");
+        assert!(recent[0].contains("[redacted-secret]"), "{recent:?}");
+    }
+}
+
+#[test]
 fn word_accept_records_nothing() {
     let prev = PreviousInputs::default();
     let store = accepted_store();

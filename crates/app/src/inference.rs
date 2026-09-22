@@ -350,20 +350,20 @@ fn context_diagnostic_line(block: &str) -> Option<String> {
     let mut unknown_chars = 0usize;
 
     for line in block.lines().map(str::trim).filter(|line| !line.is_empty()) {
-        if line == "Context (for reference only):" {
+        if line == context::CONTEXT_HEADER {
             continue;
         }
-        if let Some(value) = line.strip_prefix("Clipboard:") {
+        if let Some(value) = line.strip_prefix(context::CLIPBOARD_LABEL) {
             has_clipboard = true;
             let count = value.trim_start().chars().count();
             clipboard_chars += count;
             chars += count;
-        } else if let Some(value) = line.strip_prefix("On screen:") {
+        } else if let Some(value) = line.strip_prefix(context::SCREEN_LABEL) {
             has_screen = true;
             let count = value.trim_start().chars().count();
             screen_chars += count;
             chars += count;
-        } else if let Some(value) = line.strip_prefix("Recent:") {
+        } else if let Some(value) = line.strip_prefix(context::RECENT_LABEL) {
             has_recent = true;
             let count = value.trim_start().chars().count();
             recent_chars += count;
@@ -1695,6 +1695,22 @@ mod tests {
         );
         assert!(outcome.candidates[0].contains("typing"));
         assert!(!inference.shutdown().timed_out());
+    }
+
+    #[test]
+    fn context_diagnostic_line_parses_every_source_the_builder_emits() {
+        // The diagnostic re-reads the block `context::build_context_block`
+        // wrote; both sides share the builder's labels, so every source is
+        // attributed and nothing falls through to "unknown".
+        let block =
+            context::build_context_block(Some("copied"), Some("seen"), &["accepted", "older"], 160);
+        assert_eq!(
+            context_diagnostic_line(&block).as_deref(),
+            Some(
+                "sources=clipboard,screen,recent chars=23 clipboard_chars=6 screen_chars=4 \
+                 recent_chars=13"
+            )
+        );
     }
 
     #[test]
