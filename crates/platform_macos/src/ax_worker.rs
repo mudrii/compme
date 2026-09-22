@@ -1332,7 +1332,16 @@ struct RawAxElement {
 }
 
 impl RawAxElement {
-    /// The caller must keep the underlying AX element valid for the observer registration.
+    /// Wrap `element` without retaining it.
+    ///
+    /// # Safety
+    /// `element` must be a valid `AXUIElementRef` for as long as the returned
+    /// value is used — in practice, until the `AxObserverRegistration` holding
+    /// it has dropped, because that `Drop` passes it to
+    /// `AXObserverRemoveNotification`. The wrapper owns no retain, so the
+    /// caller must hold one (`install_worker_observer_resource` keeps the
+    /// element's owners in the same `WorkerObserverResource`, dropped after
+    /// the registration).
     unsafe fn borrowed(element: AXUIElementRef) -> Self {
         Self { element }
     }
@@ -1340,6 +1349,20 @@ impl RawAxElement {
 
 type RawAxObserverRegistration = AxObserverRegistration<RawAxObserverBackend>;
 
+/// Register `notifications` for `element` on an AX observer bound to the
+/// calling thread's run loop.
+///
+/// # Safety
+/// - `element` must satisfy [`RawAxElement::borrowed`]: valid until the
+///   returned registration has dropped.
+/// - `refcon` is handed back to `ax_observer_callback`, which dereferences it
+///   as `*const ObserverCallbackState` when non-null. It must be null or point
+///   to an `ObserverCallbackState` that stays alive and unmoved until the
+///   returned registration has dropped.
+/// - The call, every pump of the calling thread's run loop, and the drop of
+///   the returned registration must happen on the same thread, so no callback
+///   can be in flight while the registration (and then `refcon`) is torn
+///   down.
 unsafe fn register_raw_ax_observer_with_refcon(
     pid: i32,
     element: AXUIElementRef,
@@ -1437,6 +1460,12 @@ impl ObserverBackend for RawAxObserverBackend {
         refcon: *mut c_void,
     ) -> Result<(), PlatformError> {
         let notification = CFString::new(notification.name());
+        // SAFETY: `observer.as_ref()` is the live `AXObserverRef` owned by the
+        // observer's `CFType`; `element.element` is valid per the
+        // `RawAxElement::borrowed` contract; `notification` is a live local
+        // `CFString`, valid for the call. `refcon` is stored
+        // opaquely by AX and only dereferenced by `ax_observer_callback` —
+        // its validity is `register_raw_ax_observer_with_refcon`'s contract.
         unsafe {
             let err = AXObserverAddNotification(
                 observer.as_ref(),
@@ -1459,6 +1488,10 @@ impl ObserverBackend for RawAxObserverBackend {
         notification: ObserverNotification,
     ) {
         let notification = CFString::new(notification.name());
+        // SAFETY: as in `add_notification` — a live observer, a live local
+        // `CFString`, and an element valid per `RawAxElement::borrowed`. Both
+        // callers — `register_with_refcon`'s rollback, before it returns, and
+        // the registration's `Drop` — run inside that validity window.
         unsafe {
             let _ = AXObserverRemoveNotification(
                 observer.as_ref(),
@@ -1539,6 +1572,11 @@ fn dispatch_observer_event(dispatch: ObserverDispatch, event: ObserverEvent) {
     }));
 }
 
+/// Map an AX notification name to the [`ObserverNotification`] it names.
+///
+/// # Safety
+/// `notification` must be null or a valid `CFStringRef` for the duration of
+/// the call (it is wrapped under the get rule, which retains it).
 unsafe fn decode_observer_notification(notification: CFStringRef) -> Option<ObserverNotification> {
     if notification.is_null() {
         return None;

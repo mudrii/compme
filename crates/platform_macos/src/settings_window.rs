@@ -2068,6 +2068,13 @@ fn build_window(
         if selected < flags.apps_memory_mode_titles.len() {
             mode_popup.selectItemAtIndex(selected as isize);
         }
+        // SAFETY: `setTarget` stores the target unretained, so it must stay
+        // alive while the control can send its action. `target` is stored in
+        // `MacosSettingsWindow::target` in the same `show()` step that stores
+        // the window, is never replaced or cleared (the window is built once),
+        // and that field is declared after `window`, so it is released after
+        // the window reference. `selectMemoryMode:` is a `SettingsTarget`
+        // method.
         unsafe {
             let any: &AnyObject = target.as_ref();
             mode_popup.setTarget(Some(any));
@@ -2202,6 +2209,9 @@ fn build_window(
         domain_field.setPlaceholderString(Some(&NSString::from_str("example.com")));
         apps.addSubview(&domain_field);
         *target.ivars().apps_domain_field.borrow_mut() = Some(domain_field);
+        // SAFETY: the button keeps `target` unretained; it stays alive for
+        // the same reason as the memory-mode popup's target above.
+        // `deleteDomainInputs:` is a `SettingsTarget` method.
         let delete_domain = unsafe {
             NSButton::buttonWithTitle_target_action(
                 &NSString::from_str("Delete"),
