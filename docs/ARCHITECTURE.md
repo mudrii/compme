@@ -438,6 +438,8 @@ Important events:
 - `Tick`
 - `CompletionReady`
 - `CompletionReadyMulti` (multi-candidate cycling)
+- `CorrectionReady` (grammar-fix result for a scalar range; shown via
+  `ShowCorrection`)
 - `Cycle` (advance to the next candidate)
 - `ForceShow` (always-on force-show hotkey)
 - `SecureStateChanged`
