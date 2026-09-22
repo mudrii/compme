@@ -1,9 +1,9 @@
 //! Model download support (engine-macos §15 D14).
 //!
 //! Two halves, one crate: a PURE core (SHA-256 integrity, resume planning —
-//! unit-testable with no IO) and the blocking network half (`download_url`
-//! over ureq with resume/restart/verify semantics, plus the
-//! `ModelDownloader` worker thread). The seam stays inside this crate so
+//! unit-testable with no IO) and the blocking network half
+//! (`download_url_bounded` over ureq with resume/restart/verify semantics, plus
+//! the `ModelDownloader` worker thread). The seam stays inside this crate so
 //! the protocol tests can drive the real network code against a loopback
 //! mini-server; nothing here touches AppKit or the engine.
 
@@ -69,9 +69,11 @@ pub fn read_sha256_hex(mut reader: impl std::io::Read) -> std::io::Result<String
     Ok(hex(&hasher.finalize()))
 }
 
-/// Why a download failed. Kept to the variants this slice can produce —
-/// HashMismatch arrives with the catalog-hash slice, Cancelled with the
-/// progress-cancel slice (banked D14 design trims to YAGNI per tick).
+/// Why a download failed. Kept to the variants this slice can produce
+/// (banked D14 design trims to YAGNI per tick). There is deliberately no
+/// cancellation variant: nothing here aborts a download in flight —
+/// `ModelDownloader`'s `Drop` only closes the queue, and the worker finishes
+/// the item it already took, leaving a resumable `.part` behind.
 #[derive(Debug)]
 pub enum FetchError {
     /// Connect/transport failure (DNS, TLS, timeout, mid-body IO).
@@ -113,10 +115,13 @@ impl std::fmt::Display for FetchError {
 
 impl std::error::Error for FetchError {}
 
-/// Download `url` to `dest` with resume. Redirects (HF resolve URLs hop to
-/// a CDN) are followed by ureq; whatever the final host does with our Range
-/// header is safe either way — a 206 is only trusted after Content-Range
-/// validation and anything else restarts from zero.
+/// Download `url` to `dest` with resume, under an optional hard byte ceiling.
+/// Catalog-backed callers pass `max_bytes` so a broken or compromised origin
+/// cannot consume unbounded disk before the final hash check.
+///
+/// Redirects (HF resolve URLs hop to a CDN) are followed by ureq; whatever the
+/// final host does with our Range header is safe either way — a 206 is only
+/// trusted after Content-Range validation and anything else restarts from zero.
 ///
 /// Strategy (banked D14 design):
 /// partial bytes live in `dest.part`; a non-empty part sends `Range:
@@ -125,18 +130,6 @@ impl std::error::Error for FetchError {}
 /// part for the next resume attempt; an already-oversized part is removed to
 /// reclaim disk. Success renames part → dest. `progress` receives
 /// (bytes_so_far, total_if_known) per chunk.
-pub fn download_url(
-    url: &str,
-    dest: &std::path::Path,
-    expected_sha256: Option<&str>,
-    progress: impl Fn(u64, Option<u64>),
-) -> Result<std::path::PathBuf, FetchError> {
-    download_url_bounded(url, dest, expected_sha256, None, progress)
-}
-
-/// [`download_url`] with an optional hard byte ceiling. Catalog-backed callers
-/// use this so a broken or compromised origin cannot consume unbounded disk
-/// before the final hash check.
 pub fn download_url_bounded(
     url: &str,
     dest: &std::path::Path,
@@ -1512,7 +1505,7 @@ mod tests {
         // 192.0.2.1 is RFC 5737 TEST-NET-1: guaranteed non-routable, so the
         // connect stalls deterministically and a short timeout_connect must
         // surface it as a typed Network error rather than blocking. The
-        // production agent in `download_url` carries a 10s timeout_connect; a
+        // production agent (`production_agent`) carries a 10s timeout_connect; a
         // millisecond one here proves the abort without a long test.
         let agent = test_agent(
             ureq::Agent::config_builder()
@@ -2533,10 +2526,11 @@ mod tests {
 
     #[test]
     fn same_host_redirect_keeps_the_range_header_and_resumes() {
-        // HF resolve URLs 302 to a CDN; the doc contract in `download_url`
-        // says the Range header rides along with the redirect. Pin it on a
-        // same-host hop: the follow-up request carries `Range: bytes=N-`,
-        // the validated 206 appends from N, and the part is completed.
+        // HF resolve URLs 302 to a CDN; the doc contract in
+        // `download_url_bounded` says the Range header rides along with the
+        // redirect. Pin it on a same-host hop: the follow-up request carries
+        // `Range: bytes=N-`, the validated 206 appends from N, and the part is
+        // completed.
         let body: &'static [u8] = b"0123456789abcdef";
         let (url, heads) = serve_redirect(body, "302 Found", |_| "/real.bin".to_string());
         let dest = temp_dest("redirect-resume");
