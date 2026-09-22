@@ -137,11 +137,38 @@ fn email_re() -> &'static Regex {
     })
 }
 
+/// Matches `code=<value>`, the OAuth authorization-code assignment.
+///
+/// Kept separate from [`credential_re`] because `code` is the one credential key
+/// that must NOT accept `_` as a left separator: `_` is a word character, so
+/// widening the boundary to catch `DB_PASSWORD=` would also start matching
+/// `error_code=500`, `postal_code=12345` and `status_code=404`, which are
+/// ordinary data. This pattern runs first so a swallowed `_code=` span cannot
+/// mask a real credential sitting inside its value.
+fn code_credential_re() -> &'static Regex {
+    static RE: OnceLock<Regex> = OnceLock::new();
+    RE.get_or_init(|| {
+        Regex::new(
+            r#"(?i)\b(code\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+        )
+        .expect("code credential regex")
+    })
+}
+
+/// Matches `<key>[:=] <value>` credential assignments.
+///
+/// The leading `(^|[^A-Za-z0-9])` replaces the previous `\b`: `_` is a word
+/// character in the `regex` crate, so `\b` never fired for the compound
+/// environment-variable keys that carry most real secrets (`DB_PASSWORD=`,
+/// `POSTGRES_PASSWORD=`, `SLACK_TOKEN=`) and they were stored verbatim. The
+/// separator is captured because the crate has no lookbehind, and the caller
+/// re-emits it. Alphanumerics are still excluded, so `mypassword=` and
+/// `xtoken=` keep surviving mid-word.
 fn credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-        r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization|code)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+        r#"(?i)(^|[^A-Za-z0-9])((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key|authorization)\b["'“”‘’«»]?\s*[:=]\s*(?:bearer\s+)?)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
         )
         .expect("credential assignment regex")
     })
@@ -151,11 +178,13 @@ fn credential_re() -> &'static Regex {
 // the `code` key: assignment-shaped `code=abc123` is an OAuth credential, but
 // space-separated "code 404" / "area code 212" / "status code 500" is everyday
 // prose and would be corrupted by the digit-bearing-value heuristic below.
+// The leading `(^|[^A-Za-z0-9])` is shared by both branches (hence the `(?:…)`
+// wrapper) for the same `_`-compound-key reason as `credential_re`.
 fn whitespace_credential_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
         Regex::new(
-            r#"(?i)\b((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|\b(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)"#,
+            r#"(?i)(^|[^A-Za-z0-9])(?:((?:password|passwd|secret|access[_-]?token|id[_-]?token|refresh[_-]?token|token|client[_-]?secret|api[_-]?key)\b["'“”‘’«»]?\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+)|(authorization\b["'“”‘’«»]?\s+bearer\s+)("[^"]*"|'[^']*'|“[^”]*”|‘[^’]*’|«[^»]*»|"[^\n;&]*|'[^\n;&]*|“[^\n;&]*|‘[^\n;&]*|[^\s,;&]+))"#,
         )
         .expect("whitespace credential regex")
     })
@@ -216,7 +245,7 @@ pub fn redact(input: &str) -> String {
     //    Already-redacted values pass through untouched (idempotency) — but
     //    ONLY when the value is exactly placeholder+closers; anything glued on
     //    re-redacts so a placeholder-shaped prefix can't mask a real secret.
-    let stage2 = credential_re().replace_all(&stage1, |caps: &regex::Captures| {
+    let stage2_code = code_credential_re().replace_all(&stage1, |caps: &regex::Captures| {
         let (prefix, value) = (&caps[1], &caps[2]);
         if already_redacted(value) {
             caps[0].to_string()
@@ -224,8 +253,17 @@ pub fn redact(input: &str) -> String {
             format!("{prefix}[redacted-secret]")
         }
     });
+    let stage2 = credential_re().replace_all(&stage2_code, |caps: &regex::Captures| {
+        let (left, prefix, value) = (&caps[1], &caps[2], &caps[3]);
+        if already_redacted(value) {
+            caps[0].to_string()
+        } else {
+            format!("{left}{prefix}[redacted-secret]")
+        }
+    });
     let stage2b = whitespace_credential_re().replace_all(&stage2, |caps: &regex::Captures| {
-        let (prefix, value) = match (caps.get(1), caps.get(2), caps.get(3), caps.get(4)) {
+        let left = &caps[1];
+        let (prefix, value) = match (caps.get(2), caps.get(3), caps.get(4), caps.get(5)) {
             (Some(prefix), Some(value), _, _) => (prefix.as_str(), value.as_str()),
             (_, _, Some(prefix), Some(value)) => (prefix.as_str(), value.as_str()),
             _ => return caps[0].to_string(),
@@ -235,7 +273,7 @@ pub fn redact(input: &str) -> String {
         } else if prefix.to_ascii_lowercase().contains("authorization")
             || should_redact_whitespace_credential(prefix, value)
         {
-            format!("{prefix}[redacted-secret]")
+            format!("{left}{prefix}[redacted-secret]")
         } else {
             caps[0].to_string()
         }
@@ -1140,17 +1178,50 @@ mod tests {
     }
 
     #[test]
+    fn underscore_compound_credential_keys_are_redacted() {
+        // `_` is a word character in the `regex` crate, so the old leading `\b`
+        // never fired for the compound environment-variable keys that carry most
+        // real secrets. Probe before the fix:
+        //   redact("DB_PASSWORD=hunter2 POSTGRES_PASSWORD=root mypassword=abc")
+        //     -> unchanged, nothing redacted.
+        // The left separator is captured and re-emitted, so the key name survives
+        // verbatim and only the value is scrubbed.
+        assert_eq!(
+            redact("DB_PASSWORD=hunter2"),
+            "DB_PASSWORD=[redacted-secret]"
+        );
+        assert_eq!(
+            redact("POSTGRES_PASSWORD: root"),
+            "POSTGRES_PASSWORD: [redacted-secret]"
+        );
+        assert_eq!(redact("SLACK_TOKEN=abc"), "SLACK_TOKEN=[redacted-secret]");
+        assert_eq!(
+            redact("DB_PASSWORD=hunter2 POSTGRES_PASSWORD=root"),
+            "DB_PASSWORD=[redacted-secret] POSTGRES_PASSWORD=[redacted-secret]"
+        );
+
+        // The widened boundary accepts only non-alphanumerics, so a key name
+        // glued to a preceding letter still survives mid-word.
+        assert_eq!(redact("mypassword=hunter2value"), "mypassword=hunter2value");
+
+        // `code` keeps the strict `\b`: widening it would corrupt ordinary data.
+        assert_eq!(redact("error_code=500"), "error_code=500");
+    }
+
+    #[test]
     fn token_secret_keys_respect_word_boundary() {
         // The higher-frequency credential keys (`token`, `secret`, …) anchor their
-        // key NAME with `\b`, same as the `code` key pinned separately. Only `code`
-        // had a word-boundary pin; this covers the common keys that otherwise ride
-        // on inference. Two directions:
+        // key NAME with a captured `(^|[^A-Za-z0-9])` left separator — the `\b`
+        // they used to use, widened to also accept `_` (see `credential_re`). Only
+        // `code` kept a strict word-boundary pin, in its own pattern; this covers
+        // the common keys that otherwise ride on inference. Two directions:
         //
-        // NEGATIVE — the leading `\b` must NOT fire mid-word. Here the credential
-        // key name is glued to a non-boundary prefix AND sits directly adjacent to
+        // NEGATIVE — the left separator must NOT accept an alphanumeric. Here the
+        // credential key name is glued to a letter AND sits directly adjacent to
         // `=`, so the `\s*[:=]` adjacency requirement does NOT save us — only the
-        // leading `\b` does. Dropping it makes `token=`/`password=` match the tail
-        // of `xtoken`/`mypassword` and wrongly redact. These must survive verbatim.
+        // separator does. Widening it (or dropping it) makes `token=`/`password=`
+        // match the tail of `xtoken`/`mypassword` and wrongly redact. These must
+        // survive verbatim.
         assert_eq!(redact("xtoken=secret123value"), "xtoken=secret123value");
         assert_eq!(redact("mypassword=hunter2value"), "mypassword=hunter2value");
 
@@ -1173,12 +1244,13 @@ mod tests {
 
     #[test]
     fn code_key_requires_word_boundary_so_compound_keys_survive() {
-        // NEGATIVE direction: the `code` key alternation is `\bcode\b`, so the
-        // leading `\b` must NOT fire mid-word. Compound keys whose suffix is
+        // NEGATIVE direction: `code` lives in its own `code_credential_re` pattern
+        // anchored `\bcode\b`, deliberately NOT behind the `_`-tolerant left
+        // separator the other credential keys use. Compound keys whose suffix is
         // `code` (preceded by a word char like `_` or a letter) are legitimate
         // data and must pass through verbatim — value preserved unchanged.
-        // A regression dropping the `\b` (e.g. `\bcode\b` -> `code`) would
-        // silently start redacting these and corrupt the data.
+        // Folding `code` back into `credential_re`'s alternation would silently
+        // start redacting these and corrupt the data.
         assert_eq!(redact("error_code=500"), "error_code=500");
         assert_eq!(redact("postal_code=12345"), "postal_code=12345");
         assert_eq!(redact("status_code=404"), "status_code=404");
