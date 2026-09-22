@@ -78,6 +78,10 @@ unless main_ruleset["missing"]
     failures << "main ruleset must restrict #{required.tr("_", " ")}" unless rule_types.include?(required)
   end
   failures << "main ruleset must not have bypass actors" unless Array(main_ruleset["bypass_actors"]).empty?
+  # Classic protection, when readable, already requires strict checks above.
+  if (branch["missing"] || branch["unknown"]) && !rule_types.include?("required_status_checks")
+    warnings << "main ruleset requires no status checks (accepted gap: direct-to-main workflow)"
+  end
 end
 
 review_rule = Array(environment["protection_rules"]).find { |rule| rule["type"] == "required_reviewers" }
@@ -199,12 +203,38 @@ JSON
   cat >"$tmp/actions-caveat.json" <<'JSON'
 {"enabled":true,"allowed_actions":"all","sha_pinning_required":false}
 JSON
-  validate \
+  # The ruleset requires no status checks: an accepted gap under the
+  # direct-to-main workflow, so it must surface as a caveat, not pass silently.
+  out="$(validate \
     "$tmp/branch-missing.json" \
     "$tmp/environment-caveat.json" \
     "$tmp/actions-caveat.json" \
     "$tmp/ruleset-caveat.json" \
-    "$tmp/main-ruleset-good.json" >/dev/null
+    "$tmp/main-ruleset-good.json" 2>&1)" || {
+    echo "self-test failed: documented governance baseline was rejected" >&2
+    echo "$out" >&2
+    return 1
+  }
+  case "$out" in
+    *"main ruleset requires no status checks (accepted gap: direct-to-main workflow)"*) ;;
+    *) echo "self-test failed: expected the main required-checks caveat, got: $out" >&2; return 1 ;;
+  esac
+  # A ruleset that does require status checks carries no such caveat.
+  cat >"$tmp/main-ruleset-checks.json" <<'JSON'
+{"target":"branch","enforcement":"active","conditions":{"ref_name":{"include":["~DEFAULT_BRANCH"]}},"rules":[{"type":"deletion"},{"type":"non_fast_forward"},{"type":"required_status_checks","parameters":{"required_status_checks":[{"context":"CI"}]}}],"bypass_actors":[]}
+JSON
+  out="$(validate \
+    "$tmp/branch-missing.json" \
+    "$tmp/environment-caveat.json" \
+    "$tmp/actions-caveat.json" \
+    "$tmp/ruleset-caveat.json" \
+    "$tmp/main-ruleset-checks.json" 2>&1)"
+  case "$out" in
+    *"requires no status checks"*)
+      echo "self-test failed: main ruleset with required status checks still warned" >&2
+      return 1
+      ;;
+  esac
 
   printf '%s\n' '{"missing":true}' >"$tmp/bad.json"
   if validate "$tmp/bad.json" "$tmp/bad.json" "$tmp/bad.json" "$tmp/bad.json" "$tmp/bad.json" >/dev/null 2>&1; then
