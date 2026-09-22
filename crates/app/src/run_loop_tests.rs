@@ -2224,12 +2224,16 @@ fn env_shadow_warnings_name_only_set_switch_keys() {
     );
     assert!(env_shadow_warnings(|_| false).is_empty());
     let every_warning = env_shadow_warnings(|_| true);
-    for key in [
+    // Mirror of `SWITCH_KEYS`, in its order.
+    let expected = [
         "COMPME_ENABLED",
         "COMPME_MIDLINE",
         "COMPME_AUTOCORRECT",
+        "COMPME_FULL_AUTOCORRECT",
+        "COMPME_THESAURUS_SELECTION",
         "COMPME_GRAMMAR_FIX",
         "COMPME_TRAILING_SPACE",
+        "COMPME_CROSS_APP_PREVIOUS_INPUTS",
         "COMPME_CLIPBOARD_CONTEXT",
         "COMPME_SCREEN_CONTEXT",
         "COMPME_MEMORY",
@@ -2260,13 +2264,25 @@ fn env_shadow_warnings_name_only_set_switch_keys() {
         "COMPME_GRAMMAR_ACCEPT_KEY",
         "COMPME_GRAMMAR_CHECK_KEY",
         "COMPME_MODEL_PATH",
-    ] {
+    ];
+    for key in expected {
         assert!(
             every_warning.iter().any(|warning| warning.starts_with(key)),
             "{key} must warn when env shadows persisted config"
         );
     }
-    assert_eq!(every_warning.len(), 38);
+    // The loop above proves every listed key really is in `SWITCH_KEYS` (the
+    // warnings are generated from it); the length equality proves the array has
+    // no key missing from this list. Together they pin the mirror exactly —
+    // `COMPME_FULL_AUTOCORRECT`, `COMPME_THESAURUS_SELECTION` and
+    // `COMPME_CROSS_APP_PREVIOUS_INPUTS` had already silently drifted out of a
+    // test that claimed to be complete.
+    assert_eq!(
+        expected.len(),
+        crate::settings_runtime::SWITCH_KEYS.len(),
+        "this list must mirror SWITCH_KEYS exactly"
+    );
+    assert_eq!(every_warning.len(), expected.len());
 }
 
 #[test]
