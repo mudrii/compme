@@ -1292,6 +1292,51 @@ mod tests {
     }
 
     #[test]
+    fn delete_domain_erases_that_domains_ciphertext_from_disk() {
+        let path = temp_db_path();
+        let drop_blob: Vec<u8> = {
+            let store = MemoryStore::open(&path, &key(24), StorageMode::AcceptedOnly).unwrap();
+            store
+                .remember_for_domain("browser", Some("keep.example"), "stay encrypted")
+                .unwrap();
+            store
+                .remember_for_domain("browser", Some("drop.example"), "erase this domain")
+                .unwrap();
+            let conn = Connection::open(&path).unwrap();
+            conn.query_row(
+                "SELECT blob FROM memories WHERE domain = 'drop.example' LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap()
+        };
+        assert!(drop_blob.len() >= 16, "sanity: a real ciphertext blob");
+
+        {
+            let store = MemoryStore::open(&path, &key(24), StorageMode::AcceptedOnly).unwrap();
+            assert_eq!(store.delete_domain("drop.example").unwrap(), 1);
+            assert_eq!(store.count().unwrap(), 1);
+            assert_eq!(
+                store
+                    .recent_for_domain("browser", Some("keep.example"), 10)
+                    .unwrap(),
+                vec!["stay encrypted"]
+            );
+        }
+
+        let raw = std::fs::read(&path).unwrap();
+        // Scan past the nonce, as the per-app sibling does: the secret-bearing
+        // ciphertext body must be gone, not merely a zeroed prefix.
+        let body = &drop_blob[NONCE_LEN..];
+        let found = raw.windows(body.len()).any(|w| w == body);
+        let _ = std::fs::remove_file(&path);
+        assert!(
+            !found,
+            "per-domain deleted ciphertext must be zeroed on disk (secure_delete)"
+        );
+    }
+
+    #[test]
     fn accepted_only_mode_stores_accepted_but_not_monitored() {
         let store = MemoryStore::open_in_memory(&key(9), StorageMode::AcceptedOnly).unwrap();
         store.remember("app", "accepted").unwrap();

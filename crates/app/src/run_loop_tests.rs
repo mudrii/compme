@@ -12632,6 +12632,184 @@ fn apps_row_delete_phase_also_drops_that_apps_live_ring() {
     );
 }
 
+// apps_domain_delete_phase
+
+/// `example.com` recorded by two browsers, `other.org` by one of them, and a
+/// non-browser row, so a domain erase has rows to keep on every axis.
+fn phase_memory_with_domains() -> memory::MemoryStore {
+    let store = memory::MemoryStore::open_in_memory(
+        &memory::StaticKey([48u8; 32]),
+        memory::StorageMode::AllMonitored,
+    )
+    .expect("store");
+    store
+        .remember_for_domain("com.browser.one", Some("example.com"), "one on example")
+        .unwrap();
+    store
+        .remember_for_domain("com.browser.two", Some("example.com"), "two on example")
+        .unwrap();
+    store
+        .remember_for_domain("com.browser.one", Some("other.org"), "one on other")
+        .unwrap();
+    store.remember("com.editor", "editor prose").unwrap();
+    store
+}
+
+/// A partial buffer plus a queued boundary, both scoped to `example.com`.
+fn phase_monitored_on_example_domain(field: &FieldHandle) -> MonitoredInput {
+    let mut monitored = MonitoredInput::default();
+    monitored.monitored_buffers.insert(
+        field.clone(),
+        MonitoredBuffer::Collecting {
+            text: "partial ".into(),
+            app_key: Some(field.app.clone()),
+            domain: Some("example.com".into()),
+        },
+    );
+    let pending = typed_change_after_baseline(field, "", "queued on example ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some(field.app.clone()),
+        Some("example.com".into()),
+    );
+    monitored
+}
+
+#[test]
+fn apps_domain_delete_phase_confirmed_erases_that_domain_across_apps_and_live_state() {
+    let home = PhaseConfigHome::new("apps-domain-ok");
+    let mut fx = AppsPhaseFixture::with_store(Some(home), true, phase_memory_with_domains());
+    assert_eq!(fx.settings.apps_ids.len(), 3);
+    fx.previous
+        .record_with_cross_app("com.browser.one", "seeded from example.com".into(), true);
+    let field = field_with_app("com.browser.one");
+    let mut monitored = phase_monitored_on_example_domain(&field);
+    // Raw pane input: the phase trims and canonicalises it before matching.
+    *fx.flags.apps_delete_domain.lock().unwrap() = Some("  Example.COM. ".into());
+
+    fx.run(apps_domain_delete_phase, &mut monitored);
+
+    assert!(
+        fx.flags.apps_delete_domain.lock().unwrap().is_none(),
+        "edge consumed"
+    );
+    assert_eq!(
+        fx.shell.calls(),
+        vec!["confirm:Delete recorded domain inputs?"]
+    );
+    assert_eq!(
+        fx.store().count_by_domain().unwrap(),
+        vec![("other.org".to_string(), 1)],
+        "example.com erased from both browsers, other.org kept"
+    );
+    assert_eq!(
+        fx.store()
+            .recent_for_domain("com.browser.one", Some("other.org"), 10)
+            .unwrap(),
+        vec!["one on other"]
+    );
+    assert_eq!(
+        fx.store().recent("com.editor", 10).unwrap(),
+        vec!["editor prose"],
+        "non-browser rows are untouched"
+    );
+    // com.browser.two recorded only example.com, so its row is gone.
+    assert_eq!(
+        fx.settings.apps_ids,
+        vec!["com.browser.one".to_string(), "com.editor".to_string()],
+        "rows recomposed"
+    );
+    assert_eq!(
+        fx.flags.apps_policy_bits.lock().unwrap().len(),
+        2,
+        "policy bits re-seeded against the recomposed rows"
+    );
+    assert!(
+        fx.previous.recent("com.browser.one").is_empty(),
+        "erased domain text must not keep steering completions"
+    );
+    assert!(fx
+        .previous
+        .recent_for_scope("com.browser.one", true)
+        .is_empty());
+
+    fx.flush(&mut monitored, 1_000);
+    assert!(
+        fx.store()
+            .recent_for_domain("com.browser.one", Some("example.com"), 10)
+            .unwrap()
+            .is_empty(),
+        "text queued before the erase must not recreate the domain"
+    );
+}
+
+#[test]
+fn apps_domain_delete_phase_cancel_keeps_every_record_and_live_state() {
+    let home = PhaseConfigHome::new("apps-domain-cancel");
+    let mut fx = AppsPhaseFixture::with_store(Some(home), false, phase_memory_with_domains());
+    let ids = fx.settings.apps_ids.clone();
+    fx.previous
+        .record("com.browser.one", "seeded from example.com".into());
+    let field = field_with_app("com.browser.one");
+    let mut monitored = phase_monitored_on_example_domain(&field);
+    *fx.flags.apps_delete_domain.lock().unwrap() = Some("example.com".into());
+
+    fx.run(apps_domain_delete_phase, &mut monitored);
+
+    assert!(fx.flags.apps_delete_domain.lock().unwrap().is_none());
+    assert_eq!(
+        fx.shell.calls(),
+        vec!["confirm:Delete recorded domain inputs?"]
+    );
+    assert_eq!(fx.store().count().unwrap(), 4, "nothing erased");
+    assert_eq!(fx.settings.apps_ids, ids, "rows unchanged");
+    assert!(
+        fx.flags.apps_lines.lock().unwrap().is_empty(),
+        "no re-render"
+    );
+    assert_eq!(
+        fx.previous.recent("com.browser.one"),
+        vec!["seeded from example.com"],
+        "cancel keeps the live ring"
+    );
+    fx.flush(&mut monitored, 1_000);
+    assert_eq!(
+        fx.store()
+            .recent_for_domain("com.browser.one", Some("example.com"), 10)
+            .unwrap(),
+        vec!["partial queued on example ", "one on example"],
+        "cancel keeps both queued and partial text available to the normal flush"
+    );
+}
+
+#[test]
+fn apps_domain_delete_phase_blank_domain_or_missing_store_never_prompts() {
+    // A domain that normalises to empty is ignored before any prompt.
+    let mut fx = AppsPhaseFixture::new("apps-domain-inert", true);
+    let ids = fx.settings.apps_ids.clone();
+    fx.previous.record("com.a", "live prose".into());
+    *fx.flags.apps_delete_domain.lock().unwrap() = Some(" . ".into());
+    fx.run(apps_domain_delete_phase, &mut MonitoredInput::default());
+    assert!(
+        fx.flags.apps_delete_domain.lock().unwrap().is_none(),
+        "edge consumed"
+    );
+    assert!(fx.shell.calls().is_empty(), "blank domain never prompts");
+    assert_eq!(fx.store().count().unwrap(), 2);
+    assert_eq!(fx.previous.recent("com.a"), vec!["live prose"]);
+
+    // A real domain but memory is off: consume the edge, prompt for nothing.
+    (fx.shell, fx.host) = phase_shell(PhaseShell::new().confirming(true));
+    fx.memory = None;
+    *fx.flags.apps_delete_domain.lock().unwrap() = Some("example.com".into());
+    fx.run(apps_domain_delete_phase, &mut MonitoredInput::default());
+    assert!(fx.flags.apps_delete_domain.lock().unwrap().is_none());
+    assert!(fx.shell.calls().is_empty());
+    assert_eq!(fx.settings.apps_ids, ids);
+    assert_eq!(fx.previous.recent("com.a"), vec!["live prose"]);
+}
+
 // previous_input_context_chars
 
 #[test]
