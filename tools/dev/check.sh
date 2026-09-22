@@ -1,25 +1,35 @@
 #!/usr/bin/env bash
-# Run the Full Local Gate exactly as documented: extract the ```sh fence under
-# "## Full Local Gate" in docs/DEVELOPMENT.md and run each non-empty,
-# non-comment line in order, from the repo root, in this one shell so the
-# mid-block `cd tools/spike` persists across lines. Commands whose tool is
-# missing from PATH (shellcheck, cargo-audit on a fresh machine) are skipped
-# with a note; the first failing command stops the gate.
-# Usage: check.sh [--file DEVELOPMENT.md]
+# Run a documented gate exactly as written: extract the ```sh fence under a
+# "## <heading>" in docs/DEVELOPMENT.md (default "## Full Local Gate"; e.g.
+# `--fence "Linux Host Gate"`) and run each non-empty, non-comment line in
+# order, from the repo root, in this one shell so a mid-block `cd tools/spike`
+# persists across lines. Only the documented-optional tools (shellcheck,
+# cargo-audit; CI gates both regardless) may be absent: their commands are
+# skipped with a note. Any other tool missing from PATH (cargo, go, ruby, ...)
+# fails the gate with `required tool missing: <tool>` before any command
+# runs. The first failing command stops the gate.
+# Usage: check.sh [--file DEVELOPMENT.md] [--fence HEADING]
 #        check.sh --self-test
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
+default_fence="Full Local Gate"
+# Tools whose absence skips a line instead of failing the gate. go stays
+# required: its actionlint line is the only pre-push workflow lint on the
+# direct-to-main workflow.
+optional_tools=" shellcheck cargo-audit "
 
 usage() {
-  echo "usage: $0 [--file DEVELOPMENT.md] | --self-test" >&2
+  echo "usage: $0 [--file DEVELOPMENT.md] [--fence HEADING] | --self-test" >&2
 }
 
 extract_gate() {
-  # Print the body of the ```sh fence under "## Full Local Gate": every line
-  # between the opening fence after the heading and its closing fence.
-  awk '
-    /^## Full Local Gate[[:space:]]*$/ { in_section = 1; next }
+  # Print the body of the ```sh fence under the literal heading "## $2":
+  # every line between the opening fence after the heading and its closing
+  # fence. The heading is compared as a string, never as a regex.
+  awk -v heading="## $2" '
+    { line = $0; sub(/[[:space:]]+$/, "", line) }
+    !in_section && line == heading { in_section = 1; next }
     in_section && /^## / { exit }
     in_section && !in_fence && /^```sh[[:space:]]*$/ { in_fence = 1; next }
     in_fence && /^```[[:space:]]*$/ { exit }
@@ -92,14 +102,15 @@ probe_missing_tool() {
 
 run_gate() {
   local file="$1"
+  local fence="$2"
   if [[ ! -r "$file" ]]; then
     echo "check.sh: cannot read gate file: $file" >&2
     return 2
   fi
   local extracted
-  extracted="$(extract_gate "$file")"
+  extracted="$(extract_gate "$file" "$fence")"
   if [[ -z "$extracted" ]]; then
-    echo "check.sh: no Full Local Gate sh-fence found in: $file" >&2
+    echo "check.sh: no $fence sh-fence found in: $file" >&2
     return 2
   fi
 
@@ -113,20 +124,38 @@ run_gate() {
   done <<<"$extracted"
   local total="${#cmds[@]}"
   if [[ "$total" -eq 0 ]]; then
-    echo "check.sh: Full Local Gate fence has no commands in: $file" >&2
+    echo "check.sh: $fence fence has no commands in: $file" >&2
     return 2
+  fi
+
+  # Probe every line before running any: a missing optional tool marks its
+  # line skipped; a missing required tool refuses the whole gate up front.
+  local -a missing_tools=()
+  local i missing required_missing=0
+  for ((i = 0; i < total; i++)); do
+    missing=""
+    if ! missing="$(probe_missing_tool "${cmds[$i]}")"; then
+      if [[ "$optional_tools" != *" $missing "* ]]; then
+        printf 'check.sh: required tool missing: %s (needed by: %s)\n' "$missing" "${cmds[$i]}" >&2
+        required_missing=1
+      fi
+    fi
+    missing_tools+=("$missing")
+  done
+  if [[ "$required_missing" -ne 0 ]]; then
+    return 1
   fi
 
   # An inherited CDPATH could redirect the fence's relative `cd tools/spike`.
   unset CDPATH
   cd "$repo_root"
 
-  local n=0 run=0 skipped=0 i
-  local missing
+  local n=0 run=0 skipped=0
   for ((i = 0; i < total; i++)); do
     line="${cmds[$i]}"
+    missing="${missing_tools[$i]}"
     n=$((n + 1))
-    if missing="$(probe_missing_tool "$line")"; then
+    if [[ -z "$missing" ]]; then
       printf '==> [%d/%d] %s\n' "$n" "$total" "$line"
       if ! eval "$line"; then
         printf 'check.sh: FAILED [%d/%d]: %s\n' "$n" "$total" "$line" >&2
@@ -276,6 +305,42 @@ EOF
   grep -q 'check.sh: gate complete: 3 run, 2 skipped of 5 commands' "$tmp/min.out"
   grep -q 'check.sh: note: 2 command(s) skipped for missing tools' "$tmp/min.out"
 
+  # bin-nocargo: a missing required tool is not an optional skip. The gate
+  # refuses to start, names the tool, and runs nothing.
+  if PATH="$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/nocargo.log" \
+    "$script" --file "$fixture" >"$tmp/nocargo.out" 2>"$tmp/nocargo.err"; then
+    echo "check.sh self-test failed: a gate without cargo on PATH was accepted" >&2
+    return 1
+  fi
+  grep -q '^check.sh: required tool missing: cargo (needed by: cargo fmt --all -- --check)$' "$tmp/nocargo.err"
+  if [[ -e "$tmp/nocargo.log" ]] || grep -q '==> \|gate complete' "$tmp/nocargo.out"; then
+    echo "check.sh self-test failed: gate ran commands despite a missing required tool" >&2
+    return 1
+  fi
+
+  # --fence runs a different documented fence: only that section's commands,
+  # matched as a literal heading (parentheses are not regex syntax).
+  cat >>"$fixture" <<'MD'
+
+## Host Gate (Linux)
+
+```sh
+cargo test --locked -p app
+```
+MD
+  PATH="$bin_min:$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/fence.log" \
+    "$script" --fence "Host Gate (Linux)" --file "$fixture" >"$tmp/fence.out"
+  cat >"$tmp/fence.expected" <<EOF
+cargo|test --locked -p app|$repo_root
+EOF
+  diff "$tmp/fence.expected" "$tmp/fence.log"
+  grep -q 'check.sh: gate complete: 1 run, 0 skipped of 1 commands' "$tmp/fence.out"
+  if "$script" --file "$fixture" --fence "Missing Gate" >/dev/null 2>"$tmp/fence-missing.err"; then
+    echo "check.sh self-test failed: an absent --fence heading was accepted" >&2
+    return 1
+  fi
+  grep -q 'check.sh: no Missing Gate sh-fence found' "$tmp/fence-missing.err"
+
   # A failing command stops the gate: echoed before running, named on failure,
   # later commands never run, no completion summary.
   if PATH="$bin_full:$runtime_bin" COMPME_CHECK_FAKE_LOG="$tmp/fail.log" \
@@ -322,7 +387,7 @@ MD
     echo "check.sh self-test failed: extra --self-test argument was accepted" >&2
     return 1
   fi
-  grep -q '^usage: .*check\.sh \[--file DEVELOPMENT\.md\] | --self-test$' "$tmp/self-test-argc.err"
+  grep -q '^usage: .*check\.sh \[--file DEVELOPMENT\.md\] \[--fence HEADING\] | --self-test$' "$tmp/self-test-argc.err"
   if "$script" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
     echo "check.sh self-test failed: extra normal argument was accepted" >&2
     return 1
@@ -347,19 +412,34 @@ if [[ "${1:-}" == "--self-test" ]]; then
 fi
 
 gate_file="$repo_root/docs/DEVELOPMENT.md"
-case "$#" in
-  0) ;;
-  2)
-    if [[ "$1" != "--file" ]]; then
+fence="$default_fence"
+file_seen=0
+fence_seen=0
+while [[ "$#" -gt 0 ]]; do
+  case "$1" in
+    --file)
+      if [[ "$#" -lt 2 || "$file_seen" -ne 0 ]]; then
+        usage
+        exit 2
+      fi
+      gate_file="$2"
+      file_seen=1
+      shift 2
+      ;;
+    --fence)
+      if [[ "$#" -lt 2 || -z "$2" || "$fence_seen" -ne 0 ]]; then
+        usage
+        exit 2
+      fi
+      fence="$2"
+      fence_seen=1
+      shift 2
+      ;;
+    *)
       usage
       exit 2
-    fi
-    gate_file="$2"
-    ;;
-  *)
-    usage
-    exit 2
-    ;;
-esac
+      ;;
+  esac
+done
 
-run_gate "$gate_file"
+run_gate "$gate_file" "$fence"

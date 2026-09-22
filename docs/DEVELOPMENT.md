@@ -334,8 +334,14 @@ process-global hotkey state (`ACCEPT_KEYMAP`, `TAB_HOTKEY_SUPPRESSED`,
 (`COMPME_CONFIG`) and their own shortcut-binding global, so the serial command
 keeps `--test-threads=1` while the other 24 crates no longer pay the serial
 cost.
-The `shellcheck` line needs a local shellcheck install (CI gates on it
-regardless); skip it when unavailable. For the cargo half of the gate, an
+When a tool is missing from PATH, `check.sh` skips only the lines that need
+the two documented-optional tools, `shellcheck` and `cargo-audit` (CI gates
+on both regardless), and prints a skip note plus a final count. Any other
+missing tool — `cargo`, `go`, `ruby`, and so on — fails the gate before a
+single command runs, with `check.sh: required tool missing: <tool>`; `go`
+stays required because its actionlint line is the only workflow lint before
+a direct-to-`main` push. `--fence "<heading>"` runs another documented fence
+the same way (see [Linux Host Gate](#linux-host-gate)). For the cargo half of the gate, an
 opt-in pre-push hook runs `cargo fmt --check`, clippy, and the workspace tests
 on every push: `git config core.hooksPath tools/dev` installs
 `tools/dev/pre-push` (`COMPME_PREPUSH_SKIP_TESTS=1` skips the tests,
@@ -462,6 +468,70 @@ is available:
 
 ```sh
 tools/acceptance/run-a1b-live-gates.sh
+```
+
+## Linux Host Gate
+
+The Full Local Gate needs macOS (`platform_macos` tests, the bundle smoke,
+and Swift icon helper). On a Linux host, run this portable subset instead:
+`tools/dev/check.sh --fence "Linux Host Gate"`. It mirrors the `ci.yml` Linux
+lane (portable-workspace clippy, tests, doc tests, and rustdoc excluding
+`platform_macos`; `app` tests stay serial), adds a compile-only
+`platform_macos` cross-check, and runs every host-agnostic script check. The
+cross-check needs the Darwin std (`rustup target add aarch64-apple-darwin`);
+it type-checks but never links or runs the macOS code (see "Type-checking
+another platform's code" above). Not covered here, so still owed to a Mac or
+to CI: `platform_macos` tests and examples, the Swift icon generator and
+bundle smoke, the live `check-model-gates.sh`, the A1b runner self-test (its
+fixture expectations are macOS-shaped), the model-backed gates, and the
+`tools/spike` gate.
+
+```sh
+cargo fmt --all -- --check
+cargo clippy --locked --workspace --exclude platform_macos --all-targets -- -D warnings
+cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
+cargo test --locked -p app --all-targets -- --test-threads=1
+cargo test --locked --doc --workspace --exclude platform_macos
+RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace --exclude platform_macos
+cargo check --locked -p platform_macos --target aarch64-apple-darwin --all-targets
+
+find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 -n1 bash -n
+find tools -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 shellcheck --severity=error
+go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color
+tools/release/validate-version.sh --self-test
+tools/release/check-version-docs.sh --self-test
+tools/release/check-version-docs.sh
+tools/bundle/check-bundle-metadata.sh
+tools/bundle/check-bundle-metadata.sh --self-test
+ruby -c Casks/compme.rb
+tools/bundle/make-app.sh --self-test
+tools/bundle/make-appimage.sh --self-test
+tools/acceptance/e2e-complete-me.sh --self-test
+tools/acceptance/missing-model-startup.sh --self-test
+tools/acceptance/run-ui-assisted-session.sh --self-test
+tools/acceptance/run-linux-atspi-session.sh --self-test
+tools/release/check-linux-live-test-count.sh --self-test
+tools/release/check-linux-live-test-count.sh
+tools/release/check-model-client-features.sh
+tools/release/check-model-client-features.sh --self-test
+tools/release/check-vendor-drift.sh
+tools/release/check-vendor-drift.sh --self-test
+tools/release/check-agent-briefs.sh
+tools/release/check-agent-briefs.sh --self-test
+tools/release/check-privacy-policy.sh
+tools/release/check-privacy-policy.sh --self-test
+tools/release/check-github-governance.sh --self-test
+bash tools/release/check-model-gates.sh --self-test
+tools/dev/check.sh --self-test
+tools/dev/benchmark-model.sh --self-test
+tools/release/run-model-gates.sh --self-test
+tools/release/check-quality.sh --self-test
+tools/release/update-cask.sh --self-test
+tools/release/prepare-draft-release.sh --self-test
+tools/release/scrub-git-credentials.sh --self-test
+tools/release/finalize-cask.sh --self-test
+tools/release/notarize-app.sh --self-test
+tools/release/write-update-manifest.sh --self-test
 ```
 
 ## Repeatable Linux model benchmarks
