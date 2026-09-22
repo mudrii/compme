@@ -104,18 +104,15 @@ pub fn tail_chars(s: &str, max: usize) -> &str {
     if max == 0 {
         return "";
     }
-    let (byte_idx, _) = tail_start_byte(s, max);
-    &s[byte_idx..]
+    &s[tail_start_byte(s, max)..]
 }
 
-fn tail_start_byte(s: &str, max: usize) -> (usize, usize) {
+fn tail_start_byte(s: &str, max: usize) -> usize {
     let mut byte_idx = 0;
-    let mut scanned = 0;
     for (index, _) in s.char_indices().rev().take(max) {
         byte_idx = index;
-        scanned += 1;
     }
-    (byte_idx, scanned)
+    byte_idx
 }
 
 /// The context block's header line and per-source line labels, exactly as
@@ -335,10 +332,10 @@ Clipboard: a日本\n",
     }
 
     #[test]
-    fn tail_chars_scans_only_the_requested_suffix() {
+    fn tail_chars_cuts_a_long_string_at_the_requested_multibyte_suffix() {
         let source = format!("{}日本cd", "x".repeat(10_000));
-        let (start, scanned) = tail_start_byte(&source, 4);
-        assert_eq!(scanned, 4);
+        let start = tail_start_byte(&source, 4);
+        assert_eq!(start, 10_000);
         assert_eq!(&source[start..], "日本cd");
         assert_eq!(tail_chars(&source, 4), "日本cd");
     }

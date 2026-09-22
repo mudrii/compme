@@ -491,27 +491,6 @@ impl MemoryStore {
     /// The most recent `limit` decryptable records for `app`, newest first.
     /// Records that fail to decrypt (e.g. a different key) are skipped.
     pub fn recent(&self, app: &str, limit: usize) -> Result<Vec<String>> {
-        self.recent_scoped(app, None, false, limit)
-    }
-
-    /// Most recent decryptable records for exactly one app/domain scope.
-    /// `domain = None` selects only non-domain and migrated version-1 rows.
-    pub fn recent_for_domain(
-        &self,
-        app: &str,
-        domain: Option<&str>,
-        limit: usize,
-    ) -> Result<Vec<String>> {
-        self.recent_scoped(app, domain.filter(|domain| !domain.is_empty()), true, limit)
-    }
-
-    fn recent_scoped(
-        &self,
-        app: &str,
-        domain: Option<&str>,
-        exact_domain: bool,
-        limit: usize,
-    ) -> Result<Vec<String>> {
         Self::validate_app_aad(app)?;
         if limit == 0 {
             return Ok(Vec::new());
@@ -519,7 +498,6 @@ impl MemoryStore {
         let mut stmt = self.conn.prepare(
             "SELECT blob, domain FROM memories
              WHERE app = ?1
-               AND (?4 = 0 OR (?4 = 1 AND domain IS NULL) OR (?4 = 2 AND domain = ?5))
              ORDER BY id DESC LIMIT ?2 OFFSET ?3",
         )?;
         // Fetch (and decrypt) a page at a time instead of every row up front, so
@@ -533,20 +511,12 @@ impl MemoryStore {
         // above i64::MAX would wrap negative, and SQLite reads a negative LIMIT
         // as "no limit".
         let page = i64::try_from(limit).unwrap_or(i64::MAX);
-        let domain_kind = if !exact_domain {
-            0i64
-        } else if domain.is_some() {
-            2i64
-        } else {
-            1i64
-        };
         let mut out = Vec::new();
         let mut offset: i64 = 0;
         loop {
-            let rows = stmt.query_map(
-                params![app, page, offset, domain_kind, domain.unwrap_or("")],
-                |row| Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?)),
-            )?;
+            let rows = stmt.query_map(params![app, page, offset], |row| {
+                Ok((row.get::<_, Vec<u8>>(0)?, row.get::<_, Option<String>>(1)?))
+            })?;
             let mut fetched = 0i64;
             for row in rows {
                 fetched += 1;
@@ -589,24 +559,6 @@ impl MemoryStore {
             // Explicit clamp over `as u64` — COUNT is i64; try_from keeps the
             // conversion lossless and saturates only on an implausibly huge count.
             out.push((app, u64::try_from(n.max(0)).unwrap_or(u64::MAX)));
-        }
-        Ok(out)
-    }
-
-    /// Canonical browser-domain record counts across apps, most-used first.
-    /// Migrated version-1 and non-browser rows have no domain and are omitted.
-    pub fn count_by_domain(&self) -> Result<Vec<(String, u64)>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT domain, COUNT(*) AS cnt FROM memories WHERE domain IS NOT NULL \
-             GROUP BY domain ORDER BY cnt DESC, domain ASC",
-        )?;
-        let rows = stmt.query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)?))
-        })?;
-        let mut out = Vec::new();
-        for row in rows {
-            let (domain, n) = row?;
-            out.push((domain, u64::try_from(n.max(0)).unwrap_or(u64::MAX)));
         }
         Ok(out)
     }
@@ -907,10 +859,7 @@ mod tests {
             .map(|row| row.unwrap())
             .collect();
         assert_eq!(columns, vec!["id", "app", "blob", "domain"]);
-        assert_eq!(
-            reopened.recent_for_domain("app", None, 4).unwrap(),
-            vec!["version one row"]
-        );
+        assert_eq!(reopened.recent("app", 4).unwrap(), vec!["version one row"]);
         let version: i64 = reopened
             .conn
             .query_row("PRAGMA user_version", [], |row| row.get(0))
@@ -1009,37 +958,21 @@ mod tests {
         store.remember("browser.a", "legacy scope").unwrap();
 
         assert_eq!(
-            store
-                .recent_for_domain("browser.a", Some("example.com"), 10)
-                .unwrap(),
-            vec!["a example"]
-        );
-        assert_eq!(
-            store.recent_for_domain("browser.a", None, 10).unwrap(),
-            vec!["legacy scope"]
-        );
-        assert_eq!(
-            store.count_by_domain().unwrap(),
-            vec![("example.com".into(), 2), ("other.test".into(), 1)]
+            store.recent("browser.a", 10).unwrap(),
+            vec!["legacy scope", "a other", "a example"]
         );
         assert_eq!(store.delete_domain("example.com").unwrap(), 2);
-        assert!(store
-            .recent_for_domain("browser.a", Some("example.com"), 10)
-            .unwrap()
-            .is_empty());
         assert_eq!(
-            store
-                .recent_for_domain("browser.a", Some("other.test"), 10)
-                .unwrap(),
-            vec!["a other"]
+            store.recent("browser.a", 10).unwrap(),
+            vec!["legacy scope", "a other"]
         );
+        assert!(store.recent("browser.b", 10).unwrap().is_empty());
         assert_eq!(store.delete_domain("").unwrap(), 0);
+        assert_eq!(store.delete_domain("other.test").unwrap(), 1);
         assert_eq!(
-            store
-                .recent_for_domain("browser.a", None, 10)
-                .unwrap()
-                .len(),
-            1
+            store.recent("browser.a", 10).unwrap(),
+            vec!["legacy scope"],
+            "the NULL-domain legacy row survives every domain delete"
         );
     }
 
@@ -1058,10 +991,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(store.count().unwrap(), 1);
-        assert!(store
-            .recent_for_domain("browser", Some("attacker.test"), 10)
-            .unwrap()
-            .is_empty());
+        assert!(store.recent("browser", 10).unwrap().is_empty());
     }
 
     #[test]
@@ -1321,12 +1251,7 @@ mod tests {
             let store = MemoryStore::open(&path, &key(24), StorageMode::AcceptedOnly).unwrap();
             assert_eq!(store.delete_domain("drop.example").unwrap(), 1);
             assert_eq!(store.count().unwrap(), 1);
-            assert_eq!(
-                store
-                    .recent_for_domain("browser", Some("keep.example"), 10)
-                    .unwrap(),
-                vec!["stay encrypted"]
-            );
+            assert_eq!(store.recent("browser", 10).unwrap(), vec!["stay encrypted"]);
         }
 
         let raw = std::fs::read(&path).unwrap();

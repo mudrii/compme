@@ -3682,15 +3682,15 @@ fn accepted_browser_text_is_persisted_under_its_resolved_domain() {
     );
 
     assert_eq!(
-        store
-            .recent_for_domain(&field.app, Some("example.com"), 10)
-            .unwrap(),
+        store.recent(&field.app, 10).unwrap(),
         vec!["accepted on this site"]
     );
-    assert!(store
-        .recent_for_domain(&field.app, Some("other.example"), 10)
-        .unwrap()
-        .is_empty());
+    assert_eq!(store.delete_domain("other.example").unwrap(), 0);
+    assert_eq!(
+        store.delete_domain("example.com").unwrap(),
+        1,
+        "the accept is recorded under its site's domain"
+    );
 }
 
 #[test]
@@ -8051,15 +8051,12 @@ fn browser_navigation_never_carries_a_monitored_buffer_into_the_new_domain() {
     );
 
     assert!(buffers.is_empty());
-    assert!(store
-        .recent_for_domain(&field.app, Some("old.example"), 10)
-        .unwrap()
-        .is_empty());
+    assert_eq!(store.recent(&field.app, 10).unwrap(), vec!["new page "]);
+    assert_eq!(store.delete_domain("old.example").unwrap(), 0);
     assert_eq!(
-        store
-            .recent_for_domain(&field.app, Some("new.example"), 10)
-            .unwrap(),
-        vec!["new page "]
+        store.delete_domain("new.example").unwrap(),
+        1,
+        "the flushed page is recorded under the new domain"
     );
 }
 
@@ -12942,16 +12939,15 @@ fn apps_domain_delete_phase_confirmed_erases_that_domain_across_apps_and_live_st
         vec!["confirm:Delete recorded domain inputs?"]
     );
     assert_eq!(
-        fx.store().count_by_domain().unwrap(),
-        vec![("other.org".to_string(), 1)],
-        "example.com erased from both browsers, other.org kept"
+        fx.store().count().unwrap(),
+        2,
+        "example.com erased from both browsers; other.org and the editor row kept"
     );
     assert_eq!(
-        fx.store()
-            .recent_for_domain("com.browser.one", Some("other.org"), 10)
-            .unwrap(),
+        fx.store().recent("com.browser.one", 10).unwrap(),
         vec!["one on other"]
     );
+    assert!(fx.store().recent("com.browser.two", 10).unwrap().is_empty());
     assert_eq!(
         fx.store().recent("com.editor", 10).unwrap(),
         vec!["editor prose"],
@@ -12978,13 +12974,12 @@ fn apps_domain_delete_phase_confirmed_erases_that_domain_across_apps_and_live_st
         .is_empty());
 
     fx.flush(&mut monitored, 1_000);
-    assert!(
-        fx.store()
-            .recent_for_domain("com.browser.one", Some("example.com"), 10)
-            .unwrap()
-            .is_empty(),
+    assert_eq!(
+        fx.store().recent("com.browser.one", 10).unwrap(),
+        vec!["one on other"],
         "text queued before the erase must not recreate the domain"
     );
+    assert_eq!(fx.store().count().unwrap(), 2);
 }
 
 #[test]
@@ -13018,10 +13013,12 @@ fn apps_domain_delete_phase_cancel_keeps_every_record_and_live_state() {
     );
     fx.flush(&mut monitored, 1_000);
     assert_eq!(
-        fx.store()
-            .recent_for_domain("com.browser.one", Some("example.com"), 10)
-            .unwrap(),
-        vec!["partial queued on example ", "one on example"],
+        fx.store().recent("com.browser.one", 10).unwrap(),
+        vec![
+            "partial queued on example ",
+            "one on other",
+            "one on example"
+        ],
         "cancel keeps both queued and partial text available to the normal flush"
     );
 }
