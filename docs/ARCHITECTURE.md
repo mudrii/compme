@@ -589,12 +589,13 @@ modules own reusable policy:
 
 `run()` itself is the heartbeat: it owns event ordering, teardown order, and
 the per-tick sequence, and delegates cohesive slices of the tick to phase
-functions that take the `loop_state` structs directly — `setup_pane_actions`
-(grant AX / screen, Show Models Folder, bring-your-own-model),
-`apps_row_delete` and `apps_row_policy_edit` (Apps pane),
-`personalization_edits` (live `set_profile` + persist + flag mirrors),
-`model_download` (Download Model click, progress log, auto-wire),
-`drain_deep_links`, `tray_collection_toggle`, and `tray_app_disable`. The
+functions that take the `loop_state` structs directly —
+`setup_pane_actions_phase` (grant AX / screen, Show Models Folder,
+bring-your-own-model), `apps_row_delete_phase` and
+`apps_row_policy_edit_phase` (Apps pane), `personalization_edits_phase` (live
+`set_profile` + persist + flag mirrors), `model_download_phase` (Download
+Model click, progress log, auto-wire), `drain_deep_links_phase`,
+`tray_collection_toggle_phase`, and `tray_app_disable_phase`. The
 settings-watcher run is a two-phase seam: `drain_settings_edges` performs
 pure edge detection over the shared flag bus into typed `SettingsCommand`s,
 and `apply_settings_commands` carries the persists, engine setters, and the
