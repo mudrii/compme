@@ -69,14 +69,29 @@ fn looks_high_entropy(token: &str) -> bool {
     has_digit || (has_upper && has_lower) || has_b64_punct
 }
 
-/// Matches a *maximal* run of ASCII digits optionally interleaved with the card
-/// separators (whitespace, dash, dot, comma, no-break space). The 13–19-digit Luhn windowing
-/// happens inside the run (`redact_card_run`) so two cards separated only by a
-/// separator are each detected, rather than a greedy span straddling the card
-/// boundary and failing Luhn over the merged digits (which leaked both PANs).
+/// Matches a *maximal* run of decimal digits optionally interleaved with the
+/// card separators (whitespace, dash, dot, comma, no-break space). `\d` is
+/// Unicode `\p{Nd}` in the `regex` crate, so the fullwidth digits U+FF10..U+FF19
+/// that a CJK input method emits are in scope too and [`digit_value`] maps them.
+/// The 13–19-digit Luhn windowing happens inside the run (`redact_card_run`) so
+/// two cards separated only by a separator are each detected, rather than a
+/// greedy span straddling the card boundary and failing Luhn over the merged
+/// digits (which leaked both PANs).
 fn card_run_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}.,-]*\d)*").expect("card run regex"))
+}
+
+/// Decimal value of an ASCII or fullwidth (U+FF10..U+FF19) digit; `None` for any
+/// other char. `char::to_digit(10)` is ASCII-only, so the fullwidth block — which
+/// [`card_run_re`]'s `\d` does match — has to be mapped explicitly, or a
+/// fullwidth PAN reaches the card stage and is returned untouched.
+fn digit_value(c: char) -> Option<u8> {
+    if c.is_ascii_digit() {
+        return Some(c as u8 - b'0');
+    }
+    let fullwidth = (c as u32).wrapping_sub('\u{ff10}' as u32);
+    (fullwidth < 10).then_some(fullwidth as u8)
 }
 
 /// Redact every Luhn-valid 13–19-digit window inside one digit/separator run by
@@ -90,34 +105,39 @@ fn card_run_re() -> &'static Regex {
 /// A run with no embedded Luhn window (e.g. a non-card 16-digit order id)
 /// survives untouched.
 fn redact_card_run(run: &str) -> String {
-    // Byte offset of each ASCII digit (digits are 1 byte; separators may be
-    // multi-byte, e.g. NBSP — but every redaction boundary lands on a digit
-    // offset, so the span slices are always valid UTF-8 boundaries).
-    let digit_pos: Vec<usize> = run
+    // Byte offset, UTF-8 length and decimal value of each digit. Digits AND
+    // separators may be multi-byte (a fullwidth digit is 3 bytes, NBSP is 2), so
+    // a span ends at `offset + len_utf8`, not `offset + 1`. Every redaction
+    // boundary still lands on a digit edge, so the span slices are always valid
+    // UTF-8 boundaries.
+    let digits: Vec<(usize, usize, u8)> = run
         .char_indices()
-        .filter(|(_, c)| c.is_ascii_digit())
-        .map(|(i, _)| i)
+        .filter_map(|(i, c)| digit_value(c).map(|value| (i, c.len_utf8(), value)))
         .collect();
-    if digit_pos.len() < 13 {
+    if digits.len() < 13 {
         return run.to_string();
     }
-    let digits: Vec<u8> = digit_pos.iter().map(|&i| run.as_bytes()[i]).collect();
+    // `luhn_valid_bytes` keeps its ASCII-digit-byte contract (it is shared with
+    // the `luhn_valid` test wrapper): map each value back to its ASCII byte here
+    // rather than widening it.
+    let values: Vec<u8> = digits.iter().map(|&(_, _, value)| b'0' + value).collect();
 
     let mut spans: Vec<(usize, usize)> = Vec::new();
     let mut i = 0;
-    while i < digits.len() {
-        let max_k = (digits.len() - i).min(19);
+    while i < values.len() {
+        let max_k = (values.len() - i).min(19);
         let mut hit = None;
         for k in (13..=max_k).rev() {
             // luhn over the byte slice directly — no per-window String allocation
             // (the card stage runs on every stored/diagnostic string).
-            if luhn_valid_bytes(&digits[i..i + k]) {
+            if luhn_valid_bytes(&values[i..i + k]) {
                 hit = Some(k);
                 break;
             }
         }
         if let Some(k) = hit {
-            spans.push((digit_pos[i], digit_pos[i + k - 1] + 1));
+            let (last_offset, last_len, _) = digits[i + k - 1];
+            spans.push((digits[i].0, last_offset + last_len));
             i += k;
         } else {
             i += 1;
@@ -320,6 +340,8 @@ pub fn luhn_valid(digits: &str) -> bool {
 /// Luhn over raw ASCII-digit bytes. Any non-ASCII-digit byte makes it `false`
 /// (mirrors the `&str` contract — a multibyte char's UTF-8 bytes aren't digits).
 /// Operating on bytes lets the card-run windowing avoid a String alloc per window.
+/// Callers holding non-ASCII decimal digits map each to its ASCII byte first
+/// (`redact_card_run` does this for the fullwidth block), so this stays ASCII-only.
 fn luhn_valid_bytes(digits: &[u8]) -> bool {
     if digits.is_empty() || !digits.iter().all(u8::is_ascii_digit) {
         return false;
@@ -1010,6 +1032,48 @@ mod tests {
         assert!(!luhn_valid(
             "\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}\u{ff14}\u{ff12}"
         ));
+    }
+
+    #[test]
+    fn fullwidth_digit_card_numbers_are_redacted() {
+        // `card_run_re`'s `\d` is Unicode `\p{Nd}`, so a fullwidth-digit run
+        // (U+FF10..U+FF19) reaches `redact_card_run` — which counted only
+        // `is_ascii_digit()` and so saw zero digits and returned the run
+        // untouched. A CJK input method emits exactly these glyphs, so the SAME
+        // PAN was scrubbed or leaked depending on the keyboard layout. Probe
+        // before the fix:
+        //   redact("４１１１１１１１１１１１１１１１") -> unchanged
+        //   redact("4111111111111111")            -> "[redacted-card]"
+        //
+        // GIVEN a Luhn-valid PAN typed in fullwidth digits, WHEN it is redacted,
+        // THEN it becomes the card placeholder exactly like its ASCII twin.
+        let fullwidth = format!("４{}", "１".repeat(15)); // 4111111111111111
+        assert_eq!(redact(&fullwidth), "[redacted-card]");
+        assert_eq!(
+            redact(&format!("pan {fullwidth} end")),
+            "pan [redacted-card] end"
+        );
+        assert_eq!(redact("4111111111111111"), "[redacted-card]");
+
+        // A run mixing ASCII and fullwidth digits is ONE card: the span covers
+        // both, so no half-redacted digit tail survives.
+        let mixed = format!("４{}１", "1".repeat(14)); // 4111111111111111
+        assert_eq!(redact(&mixed), "[redacted-card]");
+
+        // NEGATIVE control — Luhn still gates it, so the fix cannot amount to
+        // "redact any long fullwidth digit run". `1234567812345671` is the run
+        // `leaves_non_luhn_digit_runs_alone` pins as a surviving order id: it has
+        // no Luhn-valid 13–19 window anywhere inside it, so its fullwidth twin
+        // must survive verbatim too.
+        let ascii_order_id = "1234567812345671";
+        let fullwidth_order_id: String = ascii_order_id
+            .chars()
+            .map(|c| {
+                char::from_u32(u32::from('\u{ff10}') + (c as u32 - '0' as u32)).expect("digit")
+            })
+            .collect();
+        assert_eq!(redact(ascii_order_id), ascii_order_id);
+        assert_eq!(redact(&fullwidth_order_id), fullwidth_order_id);
     }
 
     #[test]
