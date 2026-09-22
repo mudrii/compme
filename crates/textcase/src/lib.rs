@@ -1,6 +1,6 @@
 //! Capitalization pattern detection + application, shared by the text-suggestion
-//! crates (`thesaurus`, `autocorrect`) so a replacement word/phrase can carry the
-//! same case the user typed. Pure and OS-agnostic.
+//! crates (`thesaurus`, `autocorrect`, `grammar`, `localize`) so a replacement
+//! word/phrase can carry the same case the user typed. Pure and OS-agnostic.
 
 /// How a word was capitalized.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
