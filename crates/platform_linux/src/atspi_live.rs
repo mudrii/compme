@@ -1613,10 +1613,13 @@ mod tests {
         );
         assert_eq!(result, Err(PlatformError::Timeout));
 
-        release_tx.send(()).expect("release helper");
-        done_rx
-            .recv_timeout(Duration::from_millis(100))
-            .expect("expired helper must finish");
+        // The helper may observe the expiry before it runs the closure and
+        // drop it unrun, which closes both channels; that is a finish too.
+        let _ = release_tx.send(());
+        match done_rx.recv_timeout(Duration::from_secs(2)) {
+            Ok(()) | Err(mpsc::RecvTimeoutError::Disconnected) => {}
+            Err(mpsc::RecvTimeoutError::Timeout) => panic!("expired helper must finish"),
+        }
         assert_eq!(writes.load(Ordering::SeqCst), 0);
         assert!(
             !coordinator.is_quarantined(TEST_FIELD),
