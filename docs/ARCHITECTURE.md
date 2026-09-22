@@ -478,10 +478,14 @@ caret, secure-state, or text changes.
 Before a completion is shown, the machine shapes it through `ranker` in order:
 `trim_to_stop_boundary` cuts at the first line break, `truncate_at_sentence_end`
 cuts at the first sentence end, `strip_suffix_overlap` removes any tail the user
-already has to the right of the caret, and `cap_words` enforces the word cap.
-The shaped candidate is then suppressed entirely when a `repetition_penalty`
-below `REPETITION_PENALTY_FLOOR` shows it repeats nearby text, or when
-`is_degenerate_repetition` flags a repeated-word loop.
+already has to the right of the caret, and `cap_words` enforces the word cap
+(restoring a single leading seam space the model emitted when the left context
+is non-empty and does not already end in whitespace). The candidate is then
+suppressed entirely when a `repetition_penalty` on the capped text falls below
+`REPETITION_PENALTY_FLOOR` (it repeats nearby text), or when
+`is_degenerate_repetition` flags a repeated-word loop in either the pre-cap
+(de-overlapped) text or the capped text — the pre-cap check catches a loop
+that `cap_words` truncated below the detector's three-word floor.
 
 ### `model_client`
 
