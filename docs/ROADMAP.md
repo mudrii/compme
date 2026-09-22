@@ -62,8 +62,8 @@
 > deferred-risk history behind these batches.
 >
 > Committed 2026-08-25/26: the three-pass audit remediation (`52b509b` through
-> `09c23f2`, dual-model verified; `2FIX.md`/`FIXED.md`), the Linux audit
-> correctness cluster and the manual-validation rig (`082e7b9`, `17752d4`,
+> `09c23f2`, dual-model verified; `docs/superpowers/plans/2FIX.md`/`FIXED.md`),
+> the Linux audit correctness cluster and the manual-validation rig (`082e7b9`, `17752d4`,
 > lx1–lx4 green), the CI lane repairs (`ec3247e`, `fcbc8f6`, `ce39c50`), the
 > v0.1.6 release (`9047861`, cask `77b96f5`), and its post-release fixes:
 > shellcheck on the validate runner (`6c0bea5`, the tag commit), brew trust for

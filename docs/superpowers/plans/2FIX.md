@@ -1,5 +1,8 @@
 # 2FIX — Implementation Plan (plan · code · CI)
 
+> **Superseded — historical record.** Moved from the repository root on
+> 2026-09-23 (audit item D5); current status lives in `docs/ROADMAP.md`.
+
 > **Basis:** the eight-pass review ledger, consolidated 2026-08-25 against
 > `main` @ `6b490be`. Every one of the **69 implementation findings** is scheduled
 > below in one of **15 work packages (WP1–WP15)**, ordered by risk and by
