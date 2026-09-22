@@ -1658,7 +1658,17 @@ fn field_workers_fail_closed_when_secure_input_flips_before_ax() {
     };
 
     type FieldWorkerProbe = fn(&MacosPlatformAdapter, &FieldHandle) -> Result<(), PlatformError>;
-    let probes: [(&str, FieldWorkerProbe); 7] = [
+    let probes: [(&str, FieldWorkerProbe); 9] = [
+        ("insert", |adapter, field| {
+            adapter
+                .insert(field, "b", InsertStrategy::AxSet)
+                .map(|_| ())
+        }),
+        ("insert_replacing", |adapter, field| {
+            adapter
+                .insert_replacing(field, "b", 1, InsertStrategy::AxSet)
+                .map(|_| ())
+        }),
         ("capabilities", |adapter, field| {
             adapter.capabilities(field).map(|_| ())
         }),

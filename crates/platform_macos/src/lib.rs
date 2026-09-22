@@ -1160,6 +1160,7 @@ impl MacosPlatformAdapter {
         match strategy {
             InsertStrategy::AxSet => {
                 let text_for_worker = text.clone();
+                let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
                 let ax_range_target = Arc::clone(&self.ax_range_target);
                 let apply = self.worker.run(move || {
                     insert_for_field(
@@ -1168,6 +1169,7 @@ impl MacosPlatformAdapter {
                         text_for_worker,
                         replace_left,
                         strategy,
+                        secure_input_enabled,
                         ax_range_target.as_ref(),
                     )
                 })?;
@@ -4576,8 +4578,19 @@ fn insert_for_field(
     text: String,
     replace_left: usize,
     strategy: InsertStrategy,
+    secure_input_enabled: Arc<SecureInputProvider>,
     target: &dyn AxRangeTarget,
 ) -> Result<AxSetApply, PlatformError> {
+    // TOCTOU re-check on the worker thread before any AX read, mirroring
+    // `insert_range_for_field` and `read_context_for_field`. The dispatch-site
+    // guard samples global secure input once on the calling thread; secure
+    // input can flip on before this worker reads `kAXValueAttribute` (the
+    // full field plaintext) below. The `StaleField` guard only catches focus
+    // moving to a DIFFERENT element, not the same focused element while
+    // global secure input arms. Uses the adapter's injected provider, like
+    // every other worker, so the check is the same one the dispatch site ran.
+    recheck_global_secure_input(&secure_input_enabled)?;
+
     let (element, _owners) = target.copy_focused_or_app_element(pid)?;
     // SAFETY (every `unsafe` call on `element` below — identity, the two
     // snapshot reads, the pre-write re-read pair, and the set block):
@@ -4588,19 +4601,6 @@ fn insert_for_field(
     let identity = unsafe { target.resolve_identity(element) }?;
     if !field_matches_identity(&field, &identity) {
         return Err(PlatformError::StaleField);
-    }
-
-    // TOCTOU re-check on the worker thread, mirroring `read_context_for_field`
-    // and `caret_rect_for_field`. The dispatch-site guard samples global secure
-    // input once on the calling thread; secure input can flip on in the window
-    // before this worker reads `kAXValueAttribute` (the full field plaintext)
-    // below. The `StaleField` guard above only catches focus moving to a
-    // DIFFERENT element, not the same focused element while global secure input
-    // arms. Re-checking here keeps the window as narrow as possible.
-    if macos_secure_input_enabled() {
-        return Err(PlatformError::SecureInput {
-            state: SecurityState::SecureInputEnabled,
-        });
     }
 
     let value = unsafe { target.read_value(element) }?;
