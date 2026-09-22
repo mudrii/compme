@@ -20,6 +20,13 @@ pub enum BlockReason {
     /// inference worker died (panic) or failed its warm-up decode. Which one is
     /// on stderr (`compme: warm-up failed: …` / `compme: inference worker
     /// panicked`); the tray only carries the severity.
+    ///
+    /// This reason drops pending requests (see `status_drops_pending_requests`),
+    /// so the warm-up case is sticky until relaunch: with submissions stopped no
+    /// completion can succeed, and nothing else clears the inference worker's
+    /// `Degraded` health. Relaunch is the recovery
+    /// path — a warm-up decode that failed is treated as a model that will keep
+    /// failing, not as a transient startup hiccup.
     ModelUnavailable,
 }
 

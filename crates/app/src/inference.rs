@@ -589,6 +589,15 @@ enum WorkerHealth {
     /// The model loaded but its warm-up decode failed. The worker is ALIVE and
     /// keeps serving, so this must not make `submit` refuse — it only tells the
     /// status path that the model is not healthy (A6).
+    ///
+    /// Sticky until relaunch, deliberately: nothing clears this back to
+    /// `Running`. The status path maps it to `BlockReason::ModelUnavailable`,
+    /// which is in `status_drops_pending_requests`, so the run loop stops
+    /// submitting while degraded — no completion can therefore ever succeed, and
+    /// there is no observable signal that could justify clearing it. Relaunch is
+    /// the recovery path. Clearing on a successful completion would be dead code
+    /// unless `ModelUnavailable` were first split into a degraded status that
+    /// keeps suggestions flowing.
     Degraded(String),
     /// The worker thread is gone (it panicked). Nothing will ever be served
     /// again, so `submit` fails closed.
