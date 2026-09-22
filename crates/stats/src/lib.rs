@@ -123,11 +123,7 @@ pub fn group_buckets(buckets: &[DayBucket], grouping: StatGrouping) -> Vec<DayBu
             .map(|week| {
                 let mut agg = DayBucket::default();
                 for b in week {
-                    agg.counts.shown = agg.counts.shown.saturating_add(b.counts.shown);
-                    agg.counts.accepted = agg.counts.accepted.saturating_add(b.counts.accepted);
-                    agg.counts.dismissed = agg.counts.dismissed.saturating_add(b.counts.dismissed);
-                    agg.counts.superseded =
-                        agg.counts.superseded.saturating_add(b.counts.superseded);
+                    agg.counts.merge(&b.counts);
                     agg.words = agg.words.saturating_add(b.words);
                 }
                 agg
@@ -229,6 +225,27 @@ pub struct Counts {
     pub superseded: usize,
 }
 
+impl Counts {
+    /// Count one outcome (saturating).
+    pub fn add(&mut self, outcome: &Outcome) {
+        let counter = match outcome {
+            Outcome::Shown => &mut self.shown,
+            Outcome::Accepted { .. } => &mut self.accepted,
+            Outcome::Dismissed => &mut self.dismissed,
+            Outcome::Superseded => &mut self.superseded,
+        };
+        *counter = counter.saturating_add(1);
+    }
+
+    /// Add every counter of `other` into `self` (saturating).
+    pub fn merge(&mut self, other: &Counts) {
+        self.shown = self.shown.saturating_add(other.shown);
+        self.accepted = self.accepted.saturating_add(other.accepted);
+        self.dismissed = self.dismissed.saturating_add(other.dismissed);
+        self.superseded = self.superseded.saturating_add(other.superseded);
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 struct Entry {
     at_ms: u64,
@@ -264,20 +281,9 @@ impl Stats {
     /// Record an outcome at `now_ms`, then prune anything older than the window.
     /// The grow-only session totals update here too (never pruned).
     pub fn record(&mut self, now_ms: u64, outcome: Outcome) {
-        match outcome {
-            Outcome::Shown => {
-                self.session.counts.shown = self.session.counts.shown.saturating_add(1);
-            }
-            Outcome::Accepted { words } => {
-                self.session.counts.accepted = self.session.counts.accepted.saturating_add(1);
-                self.session.words = self.session.words.saturating_add(words);
-            }
-            Outcome::Dismissed => {
-                self.session.counts.dismissed = self.session.counts.dismissed.saturating_add(1);
-            }
-            Outcome::Superseded => {
-                self.session.counts.superseded = self.session.counts.superseded.saturating_add(1);
-            }
+        self.session.counts.add(&outcome);
+        if let Outcome::Accepted { words } = outcome {
+            self.session.words = self.session.words.saturating_add(words);
         }
         self.entries.push_back(Entry {
             at_ms: now_ms,
@@ -326,12 +332,7 @@ impl Stats {
             .iter()
             .filter(|e| e.at_ms >= cutoff && e.at_ms <= now_ms)
         {
-            match e.outcome {
-                Outcome::Shown => c.shown = c.shown.saturating_add(1),
-                Outcome::Accepted { .. } => c.accepted = c.accepted.saturating_add(1),
-                Outcome::Dismissed => c.dismissed = c.dismissed.saturating_add(1),
-                Outcome::Superseded => c.superseded = c.superseded.saturating_add(1),
-            }
+            c.add(&e.outcome);
         }
         c
     }
@@ -436,18 +437,9 @@ impl Stats {
         {
             let idx = (((e.at_ms - cutoff) / DAY_MS) as usize).min(days - 1);
             let b = &mut buckets[idx];
-            match e.outcome {
-                Outcome::Shown => b.counts.shown = b.counts.shown.saturating_add(1),
-                Outcome::Accepted { words } => {
-                    b.counts.accepted = b.counts.accepted.saturating_add(1);
-                    b.words = b.words.saturating_add(words);
-                }
-                Outcome::Dismissed => {
-                    b.counts.dismissed = b.counts.dismissed.saturating_add(1);
-                }
-                Outcome::Superseded => {
-                    b.counts.superseded = b.counts.superseded.saturating_add(1);
-                }
+            b.counts.add(&e.outcome);
+            if let Outcome::Accepted { words } = e.outcome {
+                b.words = b.words.saturating_add(words);
             }
         }
         buckets
@@ -1292,6 +1284,42 @@ mod tests {
         assert_eq!(StatGrouping::from_index(99), StatGrouping::Daily);
     }
 
+    #[test]
+    fn weekly_group_sums_equal_daily_bucket_totals_for_every_outcome() {
+        // Every outcome kind, spread over two weeks of daily slices: the
+        // weekly groups, the daily buckets and the window counts must all sum
+        // to the same per-outcome totals as adding each outcome directly.
+        let now = T0;
+        let outcomes = [
+            Outcome::Shown,
+            Outcome::Accepted { words: 3 },
+            Outcome::Dismissed,
+            Outcome::Superseded,
+        ];
+        let mut s = Stats::new();
+        let mut expected = Counts::default();
+        for day in 0..14u64 {
+            for (i, outcome) in outcomes.iter().enumerate() {
+                if !(day as usize + i).is_multiple_of(3) {
+                    s.record(now - day * DAY_MS, *outcome);
+                    expected.add(outcome);
+                }
+            }
+        }
+        let daily = s.daily_buckets(now, 14);
+        let weekly = group_buckets(&daily, StatGrouping::Weekly);
+        let sum = |buckets: &[DayBucket]| {
+            buckets.iter().fold(Counts::default(), |mut acc, b| {
+                acc.merge(&b.counts);
+                acc
+            })
+        };
+        assert_eq!(weekly.len(), 2);
+        assert_eq!(sum(&daily), expected);
+        assert_eq!(sum(&weekly), expected);
+        assert_eq!(s.counts(now), expected);
+        assert_eq!(s.session_totals().counts, expected);
+    }
     #[test]
     fn group_buckets_weekly_sums_each_seven_day_chunk_oldest_first() {
         // The Statistics grouping picker: Daily returns the buckets unchanged;
