@@ -12085,45 +12085,125 @@ fn phase_memory_with_two_apps() -> (memory::MemoryStore, Vec<String>) {
     (store, ids)
 }
 
+/// One Apps-pane deletion phase (`apps_row_delete_phase`,
+/// `apps_erase_all_phase`, `apps_domain_delete_phase`).
+type AppsPhase = fn(AppsPaneCtx<'_>, &mut SettingsState, &mut MonitoredInput);
+
+/// The collaborators every Apps-pane deletion-phase test wires into an
+/// `AppsPaneCtx`: settings flags over the startup config, a scripted confirm
+/// shell, a store, the rows composed from it, and live prompt rings. Fields
+/// are public so a test can swap one (e.g. the store) between two phase runs.
+struct AppsPhaseFixture {
+    config: Config,
+    flags: crate::shell::SettingsFlags,
+    shell: Arc<PhaseShell>,
+    host: Arc<dyn ShellHost>,
+    memory: Option<memory::MemoryStore>,
+    settings: SettingsState,
+    prefs: Prefs,
+    window: crate::shell::SettingsWindow,
+    previous: PreviousInputs,
+    // Declared last so it drops last: `COMPME_CONFIG` is restored (and the
+    // serial lock released) only after every other collaborator is gone.
+    _home: Option<PhaseConfigHome>,
+}
+
+impl AppsPhaseFixture {
+    /// A hermetic config home over the two-app (`com.a`/`com.b`) store.
+    fn new(tag: &str, confirm: bool) -> Self {
+        let home = PhaseConfigHome::new(tag);
+        Self::with_store(Some(home), confirm, phase_memory_with_two_apps().0)
+    }
+
+    fn with_store(
+        home: Option<PhaseConfigHome>,
+        confirm: bool,
+        store: memory::MemoryStore,
+    ) -> Self {
+        let config = startup_test_config();
+        let flags = phase_settings_flags(&config);
+        let (shell, host) = phase_shell(PhaseShell::new().confirming(confirm));
+        let (_, ids) = compose_apps_rows(Some(&store));
+        let window = crate::shell::SettingsWindow::new(flags.clone());
+        Self {
+            config,
+            flags,
+            shell,
+            host,
+            memory: Some(store),
+            settings: phase_settings_state(ids),
+            prefs: Prefs::default(),
+            window,
+            previous: PreviousInputs::default(),
+            _home: home,
+        }
+    }
+
+    fn store(&self) -> &memory::MemoryStore {
+        self.memory.as_ref().expect("fixture store")
+    }
+
+    /// The rendered row index of `app`.
+    fn row_of(&self, app: &str) -> usize {
+        self.settings
+            .apps_ids
+            .iter()
+            .position(|a| a == app)
+            .unwrap()
+    }
+
+    /// Drive `phase` once over this fixture's collaborators.
+    fn run(&mut self, phase: AppsPhase, monitored: &mut MonitoredInput) {
+        phase(
+            AppsPaneCtx {
+                settings_flags: &self.flags,
+                shell: &self.host,
+                memory: &self.memory,
+                prefs: &self.prefs,
+                config: &self.config,
+                settings_window: &self.window,
+                previous_inputs: &self.previous,
+            },
+            &mut self.settings,
+            monitored,
+        );
+    }
+
+    /// Flush `monitored` against this fixture's store at tick `now`.
+    fn flush(&self, monitored: &mut MonitoredInput, now: u64) {
+        flush_monitored_changes(
+            &mut monitored.pending_monitored,
+            &mut monitored.monitored_buffers,
+            self.memory.as_ref(),
+            &self.prefs,
+            monitored_policy(true, false, true, now),
+        );
+    }
+}
+
 #[test]
 fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
-    let _home = PhaseConfigHome::new("apps-delete-ok");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let row = ids.iter().position(|a| a == "com.a").unwrap();
-    let survivor = ids[1 - row].clone();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-    *flags.apps_delete_row.lock().unwrap() = Some(row);
+    let mut fx = AppsPhaseFixture::new("apps-delete-ok", true);
+    let row = fx.row_of("com.a");
+    let survivor = fx.settings.apps_ids[1 - row].clone();
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(row);
 
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    fx.run(apps_row_delete_phase, &mut MonitoredInput::default());
 
     assert!(
-        flags.apps_delete_row.lock().unwrap().is_none(),
+        fx.flags.apps_delete_row.lock().unwrap().is_none(),
         "edge consumed"
     );
-    assert_eq!(shell.calls(), vec!["confirm:Delete recorded inputs?"]);
-    let counts = memory.as_ref().unwrap().count_by_app().unwrap();
+    assert_eq!(fx.shell.calls(), vec!["confirm:Delete recorded inputs?"]);
+    let counts = fx.store().count_by_app().unwrap();
     assert_eq!(counts, vec![(survivor.clone(), 1)], "only com.a erased");
-    assert_eq!(settings.apps_ids, vec![survivor.clone()], "rows recomposed");
+    assert_eq!(
+        fx.settings.apps_ids,
+        vec![survivor.clone()],
+        "rows recomposed"
+    );
     assert!(
-        flags
+        fx.flags
             .apps_lines
             .lock()
             .unwrap()
@@ -12132,7 +12212,7 @@ fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
         "apps_lines republished"
     );
     assert_eq!(
-        flags.apps_policy_bits.lock().unwrap().len(),
+        fx.flags.apps_policy_bits.lock().unwrap().len(),
         1,
         "policy bits re-seeded in the new row order"
     );
@@ -12140,10 +12220,7 @@ fn apps_row_delete_phase_confirmed_deletes_the_row_and_recomposes() {
 
 #[test]
 fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
-    let _home = PhaseConfigHome::new("apps-delete-buffered");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let home = PhaseConfigHome::new("apps-delete-buffered");
     let store = memory::MemoryStore::open_in_memory(
         &memory::StaticKey([46u8; 32]),
         memory::StorageMode::AllMonitored,
@@ -12151,12 +12228,8 @@ fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
     .expect("store");
     store.remember("com.a", "stored alpha").unwrap();
     store.remember("com.b", "stored beta").unwrap();
-    let (_, ids) = compose_apps_rows(Some(&store));
-    let row = ids.iter().position(|app| app == "com.a").unwrap();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut fx = AppsPhaseFixture::with_store(Some(home), true, store);
+    let row = fx.row_of("com.a");
     let mut monitored = MonitoredInput::default();
     let pending_field = field_with_app("frontmost.alias");
     let mut partial_field = field_with_app("frontmost.alias");
@@ -12206,13 +12279,7 @@ fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
         Some(survivor_field.app.clone()),
         None,
     );
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 999),
-    );
+    fx.flush(&mut monitored, 999);
     let pending = typed_change_after_baseline(&pending_field, "", "queued before delete ");
     enqueue_monitored_change(
         &mut monitored.pending_monitored,
@@ -12221,39 +12288,16 @@ fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
         None,
     );
 
-    *flags.apps_delete_row.lock().unwrap() = Some(row);
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut monitored,
-    );
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(row);
+    fx.run(apps_row_delete_phase, &mut monitored);
 
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_000),
-    );
+    fx.flush(&mut monitored, 1_000);
     assert!(
-        memory
-            .as_ref()
-            .unwrap()
-            .recent("com.a", 10)
-            .unwrap()
-            .is_empty(),
+        fx.store().recent("com.a", 10).unwrap().is_empty(),
         "a queued boundary from the deleted app must not recreate its row"
     );
     assert_eq!(
-        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        fx.store().recent("com.b", 10).unwrap(),
         vec!["stored beta"],
         "an unrelated partial buffer must wait for its own boundary"
     );
@@ -12288,20 +12332,14 @@ fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
         Some(survivor_field.app.clone()),
         None,
     );
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_001),
-    );
+    fx.flush(&mut monitored, 1_001);
     assert_eq!(
-        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        fx.store().recent("com.a", 10).unwrap(),
         vec!["new text "],
         "the first post-delete boundary must not include an old partial buffer"
     );
     assert_eq!(
-        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        fx.store().recent("com.b", 10).unwrap(),
         vec!["survivorpartialsurvives ", "stored beta"],
         "deleting one app must preserve another app's partial buffer"
     );
@@ -12309,15 +12347,8 @@ fn apps_row_delete_phase_does_not_flush_deleted_apps_buffered_text() {
 
 #[test]
 fn apps_row_delete_phase_cancel_keeps_every_row() {
-    let _home = PhaseConfigHome::new("apps-delete-cancel");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(false));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids.clone());
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut fx = AppsPhaseFixture::new("apps-delete-cancel", false);
+    let ids = fx.settings.apps_ids.clone();
     let field = field_with_app("com.a");
     let mut monitored = phase_monitored_with_buffer(&field);
     let pending = typed_change_after_baseline(&field, "", "queued before cancel ");
@@ -12327,40 +12358,21 @@ fn apps_row_delete_phase_cancel_keeps_every_row() {
         Some(field.app.clone()),
         None,
     );
-    *flags.apps_delete_row.lock().unwrap() = Some(0);
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(0);
 
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut monitored,
-    );
+    fx.run(apps_row_delete_phase, &mut monitored);
 
-    assert!(flags.apps_delete_row.lock().unwrap().is_none());
-    assert_eq!(shell.calls(), vec!["confirm:Delete recorded inputs?"]);
-    assert_eq!(
-        memory.as_ref().unwrap().count().unwrap(),
-        2,
-        "nothing erased"
+    assert!(fx.flags.apps_delete_row.lock().unwrap().is_none());
+    assert_eq!(fx.shell.calls(), vec!["confirm:Delete recorded inputs?"]);
+    assert_eq!(fx.store().count().unwrap(), 2, "nothing erased");
+    assert_eq!(fx.settings.apps_ids, ids, "rows unchanged");
+    assert!(
+        fx.flags.apps_lines.lock().unwrap().is_empty(),
+        "no re-render"
     );
-    assert_eq!(settings.apps_ids, ids, "rows unchanged");
-    assert!(flags.apps_lines.lock().unwrap().is_empty(), "no re-render");
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_000),
-    );
+    fx.flush(&mut monitored, 1_000);
     assert_eq!(
-        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        fx.store().recent("com.a", 10).unwrap(),
         vec!["partialqueued before cancel ", "alpha"],
         "cancel keeps both queued and partial text available to the normal flush"
     );
@@ -12378,18 +12390,10 @@ fn apps_delete_phases_failed_delete_preserve_volatile_state() {
         .expect("store");
         store.remember("com.a", "stored alpha").unwrap();
         store.remember("com.b", "stored beta").unwrap();
-        let (_, ids) = compose_apps_rows(Some(&store));
-        let row = ids.iter().position(|app| app == "com.a").unwrap();
-        let original_ids = ids.clone();
-        let memory = Some(store);
-        let config = startup_test_config();
-        let flags = phase_settings_flags(&config);
-        let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
-        let mut settings = phase_settings_state(ids);
-        let prefs = Prefs::default();
-        let window = crate::shell::SettingsWindow::new(flags.clone());
-        let previous = PreviousInputs::default();
-        previous.record("com.a", "live prompt text".into());
+        let mut fx = AppsPhaseFixture::with_store(None, true, store);
+        let row = fx.row_of("com.a");
+        let original_ids = fx.settings.apps_ids.clone();
+        fx.previous.record("com.a", "live prompt text".into());
         let field = field_with_app("com.a");
         let mut monitored = phase_monitored_with_buffer(&field);
         let pending = typed_change_after_baseline(&field, "", "queued before failure ");
@@ -12408,162 +12412,81 @@ fn apps_delete_phases_failed_delete_preserve_volatile_state() {
         let journal_path = PathBuf::from(journal_name);
         std::fs::create_dir(&journal_path).unwrap();
         if erase_all {
-            flags.apps_erase_all.store(true, Ordering::Relaxed);
-            apps_erase_all_phase(
-                AppsPaneCtx {
-                    settings_flags: &flags,
-                    shell: &host,
-                    memory: &memory,
-                    prefs: &prefs,
-                    config: &config,
-                    settings_window: &window,
-                    previous_inputs: &previous,
-                },
-                &mut settings,
-                &mut monitored,
-            );
+            fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
+            fx.run(apps_erase_all_phase, &mut monitored);
         } else {
-            *flags.apps_delete_row.lock().unwrap() = Some(row);
-            apps_row_delete_phase(
-                AppsPaneCtx {
-                    settings_flags: &flags,
-                    shell: &host,
-                    memory: &memory,
-                    prefs: &prefs,
-                    config: &config,
-                    settings_window: &window,
-                    previous_inputs: &previous,
-                },
-                &mut settings,
-                &mut monitored,
-            );
+            *fx.flags.apps_delete_row.lock().unwrap() = Some(row);
+            fx.run(apps_row_delete_phase, &mut monitored);
         }
         std::fs::remove_dir(&journal_path).unwrap();
 
-        assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2, "{tag}");
-        assert_eq!(settings.apps_ids, original_ids, "{tag}");
-        assert_eq!(previous.recent("com.a"), vec!["live prompt text"], "{tag}");
-        flush_monitored_changes(
-            &mut monitored.pending_monitored,
-            &mut monitored.monitored_buffers,
-            memory.as_ref(),
-            &prefs,
-            monitored_policy(true, false, true, 1_000),
-        );
+        assert_eq!(fx.store().count().unwrap(), 2, "{tag}");
+        assert_eq!(fx.settings.apps_ids, original_ids, "{tag}");
         assert_eq!(
-            memory.as_ref().unwrap().recent("com.a", 10).unwrap()[0],
+            fx.previous.recent("com.a"),
+            vec!["live prompt text"],
+            "{tag}"
+        );
+        fx.flush(&mut monitored, 1_000);
+        assert_eq!(
+            fx.store().recent("com.a", 10).unwrap()[0],
             "partialqueued before failure ",
             "after the {tag} I/O failure clears, the normal flush proves volatile text survived"
         );
-        drop(memory);
+        drop(fx);
         remove_private_memory_test_dir(&path);
     }
 }
 
 #[test]
 fn apps_row_delete_phase_stale_row_or_missing_store_never_prompts() {
-    let _home = PhaseConfigHome::new("apps-delete-stale");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-
     // Out-of-range row against a live store.
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids.clone());
-    *flags.apps_delete_row.lock().unwrap() = Some(99);
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    let mut fx = AppsPhaseFixture::new("apps-delete-stale", true);
+    let ids = fx.settings.apps_ids.clone();
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(99);
+    fx.run(apps_row_delete_phase, &mut MonitoredInput::default());
     assert!(
-        flags.apps_delete_row.lock().unwrap().is_none(),
+        fx.flags.apps_delete_row.lock().unwrap().is_none(),
         "edge consumed"
     );
-    assert!(shell.calls().is_empty(), "stale click never prompts");
-    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2);
+    assert!(fx.shell.calls().is_empty(), "stale click never prompts");
+    assert_eq!(fx.store().count().unwrap(), 2);
 
     // Valid row but memory is off.
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let no_memory: Option<memory::MemoryStore> = None;
-    *flags.apps_delete_row.lock().unwrap() = Some(0);
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &no_memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
-    assert!(flags.apps_delete_row.lock().unwrap().is_none());
-    assert!(shell.calls().is_empty());
-    assert_eq!(settings.apps_ids, ids);
+    (fx.shell, fx.host) = phase_shell(PhaseShell::new().confirming(true));
+    fx.memory = None;
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(0);
+    fx.run(apps_row_delete_phase, &mut MonitoredInput::default());
+    assert!(fx.flags.apps_delete_row.lock().unwrap().is_none());
+    assert!(fx.shell.calls().is_empty());
+    assert_eq!(fx.settings.apps_ids, ids);
 }
 
 // apps_erase_all_phase
 
 #[test]
 fn apps_erase_all_phase_confirmed_empties_the_store_and_recomposes() {
-    let _home = PhaseConfigHome::new("apps-erase-ok");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-    flags.apps_erase_all.store(true, Ordering::Relaxed);
+    let mut fx = AppsPhaseFixture::new("apps-erase-ok", true);
+    fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
 
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    fx.run(apps_erase_all_phase, &mut MonitoredInput::default());
 
     assert!(
-        !flags.apps_erase_all.load(Ordering::Relaxed),
+        !fx.flags.apps_erase_all.load(Ordering::Relaxed),
         "edge consumed"
     );
-    assert_eq!(shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
+    assert_eq!(fx.shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
     assert_eq!(
-        memory.as_ref().unwrap().count().unwrap(),
+        fx.store().count().unwrap(),
         0,
         "every app erased, not just the rendered rows"
     );
-    assert!(settings.apps_ids.is_empty(), "rows recomposed to empty");
+    assert!(fx.settings.apps_ids.is_empty(), "rows recomposed to empty");
 }
 
 #[test]
 fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
-    let _home = PhaseConfigHome::new("apps-erase-buffered");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
+    let home = PhaseConfigHome::new("apps-erase-buffered");
     let store = memory::MemoryStore::open_in_memory(
         &memory::StaticKey([45u8; 32]),
         memory::StorageMode::AllMonitored,
@@ -12571,11 +12494,7 @@ fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
     .expect("store");
     store.remember("com.a", "stored alpha").unwrap();
     store.remember("com.b", "stored beta").unwrap();
-    let (_, ids) = compose_apps_rows(Some(&store));
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut fx = AppsPhaseFixture::with_store(Some(home), true, store);
     let mut monitored = MonitoredInput::default();
     let pending_field = field_with_app("com.a");
     let partial_field = field_with_app("com.b");
@@ -12595,30 +12514,12 @@ fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
         },
     );
 
-    flags.apps_erase_all.store(true, Ordering::Relaxed);
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut monitored,
-    );
+    fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
+    fx.run(apps_erase_all_phase, &mut monitored);
 
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_000),
-    );
+    fx.flush(&mut monitored, 1_000);
     assert_eq!(
-        memory.as_ref().unwrap().count().unwrap(),
+        fx.store().count().unwrap(),
         0,
         "a queued boundary from before erase must not recreate a row"
     );
@@ -12630,15 +12531,9 @@ fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
         Some(partial_field.app.clone()),
         None,
     );
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_001),
-    );
+    fx.flush(&mut monitored, 1_001);
     assert_eq!(
-        memory.as_ref().unwrap().recent("com.b", 10).unwrap(),
+        fx.store().recent("com.b", 10).unwrap(),
         vec!["new text "],
         "the first post-erase boundary must not include an old partial buffer"
     );
@@ -12646,15 +12541,8 @@ fn apps_erase_all_phase_does_not_flush_text_buffered_before_erase() {
 
 #[test]
 fn apps_erase_all_phase_declined_keeps_every_record() {
-    let _home = PhaseConfigHome::new("apps-erase-cancel");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(false));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids.clone());
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let mut fx = AppsPhaseFixture::new("apps-erase-cancel", false);
+    let ids = fx.settings.apps_ids.clone();
     let field = field_with_app("com.a");
     let mut monitored = phase_monitored_with_buffer(&field);
     let pending = typed_change_after_baseline(&field, "", "queued before cancel ");
@@ -12664,39 +12552,17 @@ fn apps_erase_all_phase_declined_keeps_every_record() {
         Some(field.app.clone()),
         None,
     );
-    flags.apps_erase_all.store(true, Ordering::Relaxed);
+    fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
 
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut monitored,
-    );
+    fx.run(apps_erase_all_phase, &mut monitored);
 
-    assert!(!flags.apps_erase_all.load(Ordering::Relaxed));
-    assert_eq!(shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
+    assert!(!fx.flags.apps_erase_all.load(Ordering::Relaxed));
+    assert_eq!(fx.shell.calls(), vec!["confirm:Erase all recorded inputs?"]);
+    assert_eq!(fx.store().count().unwrap(), 2, "Cancel is safe");
+    assert_eq!(fx.settings.apps_ids, ids);
+    fx.flush(&mut monitored, 1_000);
     assert_eq!(
-        memory.as_ref().unwrap().count().unwrap(),
-        2,
-        "Cancel is safe"
-    );
-    assert_eq!(settings.apps_ids, ids);
-    flush_monitored_changes(
-        &mut monitored.pending_monitored,
-        &mut monitored.monitored_buffers,
-        memory.as_ref(),
-        &prefs,
-        monitored_policy(true, false, true, 1_000),
-    );
-    assert_eq!(
-        memory.as_ref().unwrap().recent("com.a", 10).unwrap(),
+        fx.store().recent("com.a", 10).unwrap(),
         vec!["partialqueued before cancel ", "alpha"],
         "cancel keeps both queued and partial text available to the normal flush"
     );
@@ -12704,56 +12570,24 @@ fn apps_erase_all_phase_declined_keeps_every_record() {
 
 #[test]
 fn apps_erase_all_phase_unarmed_or_storeless_never_prompts() {
-    let _home = PhaseConfigHome::new("apps-erase-inert");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-
     // Flag never set: the phase must not raise a destructive prompt per tick.
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids.clone());
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
-    assert!(shell.calls().is_empty(), "unarmed phase never prompts");
-    assert_eq!(memory.as_ref().unwrap().count().unwrap(), 2);
+    let mut fx = AppsPhaseFixture::new("apps-erase-inert", true);
+    let ids = fx.settings.apps_ids.clone();
+    fx.run(apps_erase_all_phase, &mut MonitoredInput::default());
+    assert!(fx.shell.calls().is_empty(), "unarmed phase never prompts");
+    assert_eq!(fx.store().count().unwrap(), 2);
 
     // Armed but no store open: consume the edge, prompt for nothing.
-    let (shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let no_memory: Option<memory::MemoryStore> = None;
-    flags.apps_erase_all.store(true, Ordering::Relaxed);
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &no_memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &PreviousInputs::default(),
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    (fx.shell, fx.host) = phase_shell(PhaseShell::new().confirming(true));
+    fx.memory = None;
+    fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
+    fx.run(apps_erase_all_phase, &mut MonitoredInput::default());
     assert!(
-        !flags.apps_erase_all.load(Ordering::Relaxed),
+        !fx.flags.apps_erase_all.load(Ordering::Relaxed),
         "edge consumed even with no store"
     );
-    assert!(shell.calls().is_empty());
-    assert_eq!(settings.apps_ids, ids);
+    assert!(fx.shell.calls().is_empty());
+    assert_eq!(fx.settings.apps_ids, ids);
 }
 
 #[test]
@@ -12762,78 +12596,37 @@ fn apps_erase_all_phase_also_drops_the_live_prompt_rings() {
     // text into every prompt for the rest of the process — and `has_ring`
     // meant no later read would refresh them. "Permanently erased" has to
     // include the copy currently steering completions.
-    let _home = PhaseConfigHome::new("apps-erase-rings");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-    let previous = PreviousInputs::default();
-    previous.record_with_cross_app("com.a", "recorded prose".into(), true);
-    assert_eq!(previous.recent("com.a"), vec!["recorded prose"]);
+    let mut fx = AppsPhaseFixture::new("apps-erase-rings", true);
+    fx.previous
+        .record_with_cross_app("com.a", "recorded prose".into(), true);
+    assert_eq!(fx.previous.recent("com.a"), vec!["recorded prose"]);
 
-    flags.apps_erase_all.store(true, Ordering::Relaxed);
-    apps_erase_all_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &previous,
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    fx.flags.apps_erase_all.store(true, Ordering::Relaxed);
+    fx.run(apps_erase_all_phase, &mut MonitoredInput::default());
 
     assert!(
-        previous.recent("com.a").is_empty(),
+        fx.previous.recent("com.a").is_empty(),
         "erased text must not keep steering completions"
     );
-    assert!(previous.recent_for_scope("com.a", true).is_empty());
+    assert!(fx.previous.recent_for_scope("com.a", true).is_empty());
 }
 
 #[test]
 fn apps_row_delete_phase_also_drops_that_apps_live_ring() {
-    let _home = PhaseConfigHome::new("apps-delete-rings");
-    let config = startup_test_config();
-    let flags = phase_settings_flags(&config);
-    let (_shell, host) = phase_shell(PhaseShell::new().confirming(true));
-    let (store, ids) = phase_memory_with_two_apps();
-    let row = ids.iter().position(|a| a == "com.a").unwrap();
-    let memory = Some(store);
-    let mut settings = phase_settings_state(ids);
-    let prefs = Prefs::default();
-    let window = crate::shell::SettingsWindow::new(flags.clone());
-    let previous = PreviousInputs::default();
-    previous.record("com.a", "deleted app prose".into());
-    previous.record("com.b", "other app prose".into());
-    *flags.apps_delete_row.lock().unwrap() = Some(row);
+    let mut fx = AppsPhaseFixture::new("apps-delete-rings", true);
+    let row = fx.row_of("com.a");
+    fx.previous.record("com.a", "deleted app prose".into());
+    fx.previous.record("com.b", "other app prose".into());
+    *fx.flags.apps_delete_row.lock().unwrap() = Some(row);
 
-    apps_row_delete_phase(
-        AppsPaneCtx {
-            settings_flags: &flags,
-            shell: &host,
-            memory: &memory,
-            prefs: &prefs,
-            config: &config,
-            settings_window: &window,
-            previous_inputs: &previous,
-        },
-        &mut settings,
-        &mut MonitoredInput::default(),
-    );
+    fx.run(apps_row_delete_phase, &mut MonitoredInput::default());
 
     assert!(
-        previous.recent("com.a").is_empty(),
+        fx.previous.recent("com.a").is_empty(),
         "the deleted app's live ring must go with its rows"
     );
     assert_eq!(
-        previous.recent("com.b"),
+        fx.previous.recent("com.b"),
         vec!["other app prose"],
         "other apps are untouched"
     );
