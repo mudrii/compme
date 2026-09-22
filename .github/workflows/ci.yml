@@ -101,8 +101,10 @@ jobs:
       - name: Test (parallel)
         run: cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets
 
-      # A few platform_macos tests share the process-wide NSPasteboard and app
-      # tests share shortcut/pasteboard globals, so only these two crates pay
+      # platform_macos tests swap the process-global hotkey state
+      # (ACCEPT_KEYMAP, TAB_HOTKEY_SUPPRESSED, SHORTCUT_BINDINGS) and app tests
+      # swap the process environment (COMPME_CONFIG) plus their own
+      # shortcut-binding global, so only these two crates pay
       # the serial cost to avoid cross-test state leaks; the other 24 crates
       # run in parallel above.
       - name: Test (serial, macOS state)

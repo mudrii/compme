@@ -351,6 +351,60 @@ impl Drop for ShortcutBindingsGuard {
     }
 }
 
+/// One lock for the two process-global hotkey states the Carbon worker
+/// re-reads: `ACCEPT_KEYMAP` and `TAB_HOTKEY_SUPPRESSED`. The
+/// `effective_accept_keys_default_then_follow_runtime_swaps` comment used to
+/// claim one test owns the keymap, but four tests read or write these, so a
+/// parallel lane would race the "owner" against the others. Same shape as
+/// `SHORTCUT_BINDINGS_TEST_LOCK` above.
+static HOTKEY_GLOBALS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+struct AcceptKeymapGuard {
+    previous: AcceptKeymap,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl AcceptKeymapGuard {
+    fn lock() -> Self {
+        let lock = HOTKEY_GLOBALS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self {
+            previous: accept_keymap(),
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for AcceptKeymapGuard {
+    fn drop(&mut self) {
+        set_accept_keymap(self.previous);
+    }
+}
+
+struct TabHotkeySuppressedGuard {
+    previous: bool,
+    _lock: std::sync::MutexGuard<'static, ()>,
+}
+
+impl TabHotkeySuppressedGuard {
+    fn lock() -> Self {
+        let lock = HOTKEY_GLOBALS_TEST_LOCK
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        Self {
+            previous: TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed),
+            _lock: lock,
+        }
+    }
+}
+
+impl Drop for TabHotkeySuppressedGuard {
+    fn drop(&mut self) {
+        set_tab_hotkey_suppressed(self.previous);
+    }
+}
+
 fn test_adapter(
     frontmost_pid: Option<i32>,
     installs: Arc<Mutex<Vec<FakeObserverInstall>>>,
@@ -3363,8 +3417,8 @@ fn a_rebound_keymap_keeps_decision_registration_and_inverse_consistent() {
     // The cycle-13 one-source contract, checked on a NON-default map so a
     // future regression in any of the three call sites' shared source
     // shows up as a divergence here (the swappable ACCEPT_KEYMAP global
-    // stays untouched — the swap test owns it; this test works on a
-    // local map only).
+    // stays untouched — the tests that swap it take the hotkey-globals lock;
+    // this test works on a local map only).
     let map = AcceptKeymap::from_accept_keys(Some(122), Some(120)).expect("valid rebind");
     for (id, keycode, _mask) in map.carbon_bindings() {
         // registration → inverse agrees
@@ -5145,11 +5199,14 @@ fn ns_event_modifier_flags_map_to_carbon_bits() {
 
 #[test]
 fn effective_accept_keys_default_then_follow_runtime_swaps() {
-    // ONE test owns the global keymap (parallel tests would race it):
-    // unset → defaults; set_accept_keymap → effective follows at runtime
-    // (the live-rebind core, recorder tick 5a); restored afterward.
+    // Three other tests read or write this same global keymap, so this test no
+    // longer claims sole ownership of it — it holds `HOTKEY_GLOBALS_TEST_LOCK`
+    // for its whole body instead, and the guard restores the previous map on
+    // drop. Contract under test: unset → defaults; set_accept_keymap →
+    // effective follows at runtime (the live-rebind core, recorder tick 5a).
     // (accept_tap_decision takes the keymap as a parameter, so the
     // decision tests no longer read this global during the swap window.)
+    let _guard = AcceptKeymapGuard::lock();
     assert_eq!(effective_accept_keys(), (48, 50));
     set_accept_keymap(AcceptKeymap::from_accept_keys(Some(35), Some(38)).unwrap());
     assert_eq!(effective_accept_keys(), (35, 38));
@@ -5204,6 +5261,7 @@ fn effective_accept_keys_default_then_follow_runtime_swaps() {
 
 #[test]
 fn effective_accept_keys_with_mods_and_grammar_includes_configured_grammar_accept() {
+    let _guard = AcceptKeymapGuard::lock();
     set_accept_keymap_from_config_with_mods(
         Some((35, CARBON_SHIFT_KEY)),
         None,
@@ -5219,8 +5277,6 @@ fn effective_accept_keys_with_mods_and_grammar_includes_configured_grammar_accep
             Some((96, CARBON_OPTION_KEY))
         )
     );
-
-    set_accept_keymap(AcceptKeymap::default());
 }
 
 #[test]
@@ -5372,6 +5428,7 @@ fn arm_bindings_skip_literal_tab_when_suppressed() {
 
 #[test]
 fn set_tab_hotkey_suppressed_removes_literal_tab_from_worker_registration() {
+    let _guard = TabHotkeySuppressedGuard::lock();
     set_tab_hotkey_suppressed(false);
     let unsuppressed = accept_keymap().arm_bindings_for_action(
         AcceptAction::Full,
@@ -5389,8 +5446,6 @@ fn set_tab_hotkey_suppressed_removes_literal_tab_from_worker_registration() {
     assert!(suppressed
         .iter()
         .all(|&(_, code, mods)| !(code == KEYCODE_TAB && mods == 0)));
-
-    set_tab_hotkey_suppressed(false);
 }
 
 #[test]
@@ -5485,15 +5540,8 @@ fn from_accept_keys_rejects_negative_keycodes() {
 
 #[test]
 fn accept_keymap_rejects_keycode_above_carbon_width_without_mutating_live_map() {
-    struct Restore(AcceptKeymap);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            set_accept_keymap(self.0);
-        }
-    }
-
+    let _guard = AcceptKeymapGuard::lock();
     let previous = accept_keymap();
-    let _restore = Restore(previous);
     let too_large = i64::from(u32::MAX) + 1;
 
     assert_eq!(
