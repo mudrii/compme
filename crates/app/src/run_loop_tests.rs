@@ -58,30 +58,59 @@ fn inference_timeout_watchdog_bounds_stuck_cleanup() {
 use std::cell::{Cell, RefCell};
 use std::collections::HashMap;
 
-static SHORTCUT_BINDINGS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
+/// Serialises every test that writes the process-global key bindings: the
+/// always-on shortcut table and, on Linux, the accept-chord store. That
+/// includes every test reaching `startup()` (→ `apply_startup_key_bindings`),
+/// because the Windows/Linux CI lanes run this crate's tests in parallel (only
+/// the macOS lane passes `--test-threads=1`).
+static KEY_BINDINGS_TEST_LOCK: std::sync::Mutex<()> = std::sync::Mutex::new(());
 
-struct ShortcutBindingsGuard {
-    previous: crate::shell::ShortcutBindings,
+/// Holds [`KEY_BINDINGS_TEST_LOCK`] for a test's lifetime, starting from the
+/// default bindings and restoring the previous ones on drop — unwind included,
+/// so a failing test cannot leave rebound chords behind for the next one.
+struct KeyBindingsGuard {
+    previous_shortcuts: crate::shell::ShortcutBindings,
+    #[cfg(target_os = "linux")]
+    previous_accept: shell_flags::EffectiveAcceptKeys,
     _lock: std::sync::MutexGuard<'static, ()>,
 }
 
-impl ShortcutBindingsGuard {
+impl KeyBindingsGuard {
     fn reset() -> Self {
-        let lock = SHORTCUT_BINDINGS_TEST_LOCK
+        let lock = KEY_BINDINGS_TEST_LOCK
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
-        let previous = crate::shell::effective_shortcut_bindings();
+        let previous_shortcuts = crate::shell::effective_shortcut_bindings();
         crate::shell::set_shortcut_bindings_from_config(None, None, None, None);
+        #[cfg(target_os = "linux")]
+        let previous_accept = crate::shell::effective_accept_keys_with_mods_and_grammar();
+        #[cfg(target_os = "linux")]
+        crate::shell::set_accept_keymap_from_config_with_mods(None, None, None)
+            .expect("the default accept chords are always valid");
         Self {
-            previous,
+            previous_shortcuts,
+            #[cfg(target_os = "linux")]
+            previous_accept,
             _lock: lock,
         }
     }
 }
 
-impl Drop for ShortcutBindingsGuard {
+impl Drop for KeyBindingsGuard {
     fn drop(&mut self) {
-        crate::shell::set_shortcut_bindings(self.previous);
+        crate::shell::set_shortcut_bindings(self.previous_shortcuts);
+        #[cfg(target_os = "linux")]
+        {
+            let (word, full, grammar_accept) = self.previous_accept;
+            // Re-applying a set that was already in force cannot collide;
+            // ignore the Result rather than panic in a drop that may run
+            // mid-unwind.
+            let _ = crate::shell::set_accept_keymap_from_config_with_mods(
+                Some(word),
+                Some(full),
+                grammar_accept,
+            );
+        }
     }
 }
 
@@ -2048,7 +2077,7 @@ fn setup_lines_from_checks_renders_relaunch_required_after_accessibility_grant()
 
 #[test]
 fn startup_key_bindings_apply_global_shortcuts_from_config() {
-    let _guard = ShortcutBindingsGuard::reset();
+    let _guard = KeyBindingsGuard::reset();
     let config = Config::from_lookup(lookup(&[
         ("COMPME_FORCE_ACTIVATE_KEY", "cmd+96"),
         ("COMPME_TOGGLE_APP_KEY", "option+96"),
@@ -2067,7 +2096,7 @@ fn startup_key_bindings_apply_global_shortcuts_from_config() {
 
 #[test]
 fn accept_subscription_observes_startup_shortcuts_before_installing() {
-    let _guard = ShortcutBindingsGuard::reset();
+    let _guard = KeyBindingsGuard::reset();
     let config = Config::from_lookup(lookup(&[
         ("COMPME_FORCE_ACTIVATE_KEY", "cmd+96"),
         ("COMPME_TOGGLE_APP_KEY", "option+96"),
@@ -11155,6 +11184,7 @@ fn recording_factories(
 
 #[test]
 fn startup_orders_lock_config_signals_permissions_before_platform() {
+    let _keys = KeyBindingsGuard::reset();
     // The c92 class: nothing that touches the platform (AX observers,
     // hotkeys, engine) may run before the instance lock, config, signal
     // handlers, and the permission check have. The sequence IS the
@@ -11211,7 +11241,7 @@ fn startup_orders_lock_config_signals_permissions_before_platform() {
 #[test]
 #[cfg(target_os = "linux")]
 fn startup_applies_accept_bindings_before_adapter_construction() {
-    crate::shell::set_accept_keymap_from_config_with_mods(None, None, None).unwrap();
+    let _keys = KeyBindingsGuard::reset();
     let log = startup_log();
     let dir = startup_test_dir("bindings-before-adapter");
     let config = Config::from_lookup(lookup(&[
@@ -11245,12 +11275,12 @@ fn startup_applies_accept_bindings_before_adapter_construction() {
 
     let ctx = startup(&factories).expect("startup").expect("context");
     drop(ctx);
-    crate::shell::set_accept_keymap_from_config_with_mods(None, None, None).unwrap();
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 #[test]
 fn startup_config_failure_aborts_before_platform_construction() {
+    let _keys = KeyBindingsGuard::reset();
     // Fail-closed config: an existing-but-unreadable config file aborts
     // startup (complements the binary-level app/tests/config_startup.rs,
     // which exercises the real unreadable file). This pins the abort
@@ -11287,6 +11317,7 @@ fn startup_config_failure_aborts_before_platform_construction() {
 
 #[test]
 fn startup_degraded_subscriptions_surface_requires_relaunch() {
+    let _keys = KeyBindingsGuard::reset();
     // AX permission missing → every subscription degrades to no-op
     // ("grant it, then relaunch"). Startup still completes, but the
     // requires-relaunch state must surface: the run reflects Blocked
@@ -11347,6 +11378,7 @@ fn startup_degraded_subscriptions_surface_requires_relaunch() {
 
 #[test]
 fn startup_survives_missing_linux_accessibility_service_without_permission_prompt() {
+    let _keys = KeyBindingsGuard::reset();
     let log = startup_log();
     let dir = startup_test_dir("accessibility-unavailable");
     let factories = recording_factories(
@@ -11409,6 +11441,7 @@ fn startup_survives_missing_linux_accessibility_service_without_permission_promp
 
 #[test]
 fn startup_instance_lock_collision_exits_before_touching_adapter() {
+    let _keys = KeyBindingsGuard::reset();
     // Second instance: the real flock is already held (by this test, on a
     // temp path — same-process flocks contend because each open() is a
     // separate description). The gate takes the clean-exit arm without
@@ -11447,6 +11480,7 @@ fn startup_instance_lock_collision_exits_before_touching_adapter() {
 
 #[test]
 fn startup_adapter_permission_failure_stops_before_engine() {
+    let _keys = KeyBindingsGuard::reset();
     // AX-permission-negative adapter init: make_adapter fails closed on
     // the missing grant → startup aborts at "adapter init" before the
     // overlay exists, so the engine is never constructed.
@@ -11489,6 +11523,7 @@ fn startup_adapter_permission_failure_stops_before_engine() {
 
 #[test]
 fn startup_overlay_failure_stops_before_engine() {
+    let _keys = KeyBindingsGuard::reset();
     // Overlay-init twin of the adapter-permission arm above: make_overlay
     // fails → startup aborts at "overlay init" after the adapter exists
     // but before the engine is constructed, so no subscriptions or tray.
