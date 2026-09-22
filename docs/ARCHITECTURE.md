@@ -292,7 +292,10 @@ that drives gating.
 `personalization` templates prompt-based steering (§6) into a preamble that the
 host prepends to the completion prompt: custom instructions (global + per-app +
 per-domain instruction maps), a 6-stop strength slider, and sender identity.
-The app config parser fills the maps from target-list keys plus sanitized
+The instruction block is capped at 2000 characters, spent on the most specific
+scope first (per-domain, then per-app, then global), so a long global
+instruction can never crowd out a per-app or per-domain one; steering order in
+the preamble is unchanged. The app config parser fills the maps from target-list keys plus sanitized
 per-target instruction keys; request-time app and domain steering are live, with
 browser domains copied onto completion requests before inference builds the
 preamble. The macOS Personalization settings tab edits global instructions,
@@ -481,8 +484,10 @@ cuts at the first sentence end, `strip_suffix_overlap` removes any tail the user
 already has to the right of the caret, and `cap_words` enforces the word cap
 (restoring a single leading seam space the model emitted when the left context
 is non-empty and does not already end in whitespace). The candidate is then
-suppressed entirely when a `repetition_penalty` on the capped text falls below
-`REPETITION_PENALTY_FLOOR` (it repeats nearby text), or when
+suppressed entirely when a `repetition_penalty` on the capped text, measured
+against only the last `REPETITION_WINDOW_CHARS` (160) characters before the
+caret, falls below `REPETITION_PENALTY_FLOOR` (it repeats nearby text — a
+common phrase seen far back in a long field does not count), or when
 `is_degenerate_repetition` flags a repeated-word loop in either the pre-cap
 (de-overlapped) text or the capped text — the pre-cap check catches a loop
 that `cap_words` truncated below the detector's three-word floor.
@@ -531,10 +536,12 @@ errors. Everything here is pure; the host owns the implemented RAM probe and I/O
 
 `model_fetch` is the model downloader (§15 D14), two halves in one crate: a
 pure core (SHA-256 integrity, resume planning — unit-testable with no IO) and a
-blocking network half (`download_url_bounded` over `ureq` with resume/restart/verify,
-plus a `ModelDownloader` worker thread). The download protocol is
-`.part` → verify SHA-256 → atomic rename, so a partial download never
-masquerades as complete. Catalog downloads also carry a catalog-derived byte
+blocking network half (`download_with_agent` over `ureq` with resume/restart/verify,
+plus a `ModelDownloader` worker thread that also owns the already-present
+check, so hashing a multi-GB model never runs on the UI loop). The download
+protocol is `.part` → verify SHA-256 → atomic rename, so a partial download
+never masquerades as complete; a `416` on resume first verifies the existing
+part against the pinned hash and promotes it on a match instead of refetching. Catalog downloads also carry a catalog-derived byte
 ceiling that rejects oversized declarations, streams, resume totals, and
 already-oversized partial files before rename. The seam stays inside the crate
 so protocol tests can drive the real network code against a loopback
