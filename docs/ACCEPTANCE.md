@@ -36,8 +36,12 @@ Native portability CI:
   bugs surface before tag time.
 
 The root test gate must use `--all-targets` because `platform_macos` keeps
-acceptance regression tests in example targets. It is serialized because several
-macOS pasteboard checks share process-wide OS state.
+acceptance regression tests in example targets. Only `platform_macos` and `app`
+run serialized (`--test-threads=1`): `platform_macos` tests swap the
+process-global hotkey state (`ACCEPT_KEYMAP`, `TAB_HOTKEY_SUPPRESSED`,
+`SHORTCUT_BINDINGS`) and `app` tests mutate the process environment
+(`COMPME_CONFIG`) plus their own shortcut-binding global; the other crates run
+in parallel.
 
 Model-backed local gates:
 
