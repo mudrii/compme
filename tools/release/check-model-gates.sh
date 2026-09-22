@@ -1380,6 +1380,9 @@ check_all_self_test_env_contracts() {
 
 run_self_test() {
   tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/compme-check-model-gates.XXXXXX")"
+  # The explicit cleanup calls cover the self-test's own failure paths; the EXIT
+  # trap covers a set -e exit from any unguarded command in between.
+  trap 'rm -rf "$tmp_dir"' EXIT
   cleanup() {
     rm -rf "$tmp_dir"
   }

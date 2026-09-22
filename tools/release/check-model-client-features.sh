@@ -157,7 +157,8 @@ run_self_test() {
   fi
 
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-model-client-features.XXXXXX")"
-  trap 'rm -rf "$tmp"' RETURN
+  # EXIT, not RETURN: a RETURN trap never fires when set -e exits mid-function.
+  trap 'rm -rf "$tmp"' EXIT
   if "$0" --self-test unexpected-extra >/dev/null 2>"$tmp/self-test-argc.err"; then
     echo "model_client feature self-test failed: extra --self-test argument was accepted" >&2
     return 1

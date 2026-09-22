@@ -143,7 +143,9 @@ compare_manifest() {
   entries="$1"
   vendor="$2"
   allow_file="$3"
-  work="$(mktemp -d "${TMPDIR:-/tmp}/compme-vendor-drift-cmp.XXXXXX")"
+  # Nest the work dir beside the entries file: every caller keeps that file in
+  # a directory its EXIT trap removes, so a set -e exit below cannot leak it.
+  work="$(mktemp -d "$(dirname "$entries")/compme-vendor-drift-cmp.XXXXXX")"
 
   manifest_paths "$entries" >"$work/upstream.list"
   list_tree "$vendor" >"$work/vendor.list"
@@ -336,8 +338,9 @@ run_self_test() {
   unset COMPME_VENDOR_CRATE_PATH
 
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-vendor-drift.XXXXXX")"
+  # EXIT, not RETURN: a RETURN trap never fires when set -e exits mid-function.
   # shellcheck disable=SC2064
-  trap "rm -rf '$tmp'" RETURN
+  trap "rm -rf '$tmp'" EXIT
   script="$repo_root/tools/release/check-vendor-drift.sh"
 
   up="$tmp/upstream"

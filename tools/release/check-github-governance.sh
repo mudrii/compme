@@ -156,9 +156,10 @@ self_test() {
     return 1
   fi
   unset COMPME_GITHUB_REPOSITORY
-  local tmp
+  # Global, not local, and EXIT, not RETURN: a RETURN trap never fires when
+  # set -e exits mid-function, and the EXIT trap expands $tmp after return.
   tmp="$(mktemp -d "${TMPDIR:-/tmp}/compme-governance-self-test.XXXXXX")"
-  trap 'rm -rf "$tmp"' RETURN
+  trap 'rm -rf "$tmp"' EXIT
 
   cat >"$tmp/branch-good.json" <<'JSON'
 {"required_status_checks":{"strict":true,"checks":[{"context":"CI"}]},"required_pull_request_reviews":{"required_approving_review_count":1},"enforce_admins":{"enabled":true}}
