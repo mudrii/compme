@@ -474,7 +474,7 @@ A2 submit ledger alone:
 
 ## A2 Local-Replacement Live Gate (emoji / autocorrect / British English)
 
-The local-replacement pipeline (`offer_replacement` → `Command::Replace` →
+The local-replacement pipeline (`offer_replacement_multi` → `Command::Replace` →
 atomic range replacement) is unit/build-verified and covered on macOS through
 the AxSet path by the rebuilt scripted Carbon live gates. Synthetic key posts do
 fire the Carbon accept path when the NSApp event pump is active (same correction

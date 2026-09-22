@@ -147,8 +147,7 @@ source stays free of product-shaped vocabulary.
 
 - `left_context`
 - `right_context`
-- `word_at_split_caret` (the bounded production seam; `word_at_caret` is a
-  private test helper)
+- `word_at_split_caret` (the bounded production seam)
 - `tail_chars`
 - `build_context_block`
 
