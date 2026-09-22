@@ -2167,6 +2167,7 @@ fn insert_clipboard_posts_text_to_target_pid() {
     let posted = Arc::new(Mutex::new(Vec::new()));
     let posted_in_hook = Arc::clone(&posted);
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
     config.pasteboard_poster = Arc::new(move |pid, text| {
         posted_in_hook.lock().unwrap().push((pid, text.to_string()));
         Ok(())
@@ -2195,6 +2196,7 @@ fn insert_synthetic_keys_posts_text_when_frontmost_pid_matches_field() {
     let posted = Arc::new(Mutex::new(Vec::new()));
     let posted_in_hook = Arc::clone(&posted);
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
     config.synthetic_key_poster = Arc::new(move |pid, text| {
         posted_in_hook.lock().unwrap().push((pid, text.to_string()));
         Ok(())
@@ -2242,6 +2244,133 @@ fn insert_global_strategy_rejects_when_frontmost_pid_moved_to_another_app() {
     assert!(posted.lock().unwrap().is_empty());
 }
 
+/// The `pid:42` / `ax:0x123` / generation 1 handle most adapter tests target.
+fn pid42_field() -> FieldHandle {
+    FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: pointer_identity("ax:0x123").field_element_id(),
+        generation: 1,
+    }
+}
+
+/// The AX seam reporting `identity` as the target app's focused element —
+/// what a global (synthetic-key / paste) insert re-verifies before posting.
+fn focused_element_target(identity: AxElementIdentity) -> Arc<FakeAxRangeTarget> {
+    Arc::new(FakeAxRangeTarget::new(
+        identity,
+        "",
+        CFRange {
+            location: 0,
+            length: 0,
+        },
+        Arc::default(),
+        Arc::default(),
+        Arc::default(),
+    ))
+}
+
+#[test]
+fn global_insert_refuses_a_same_pid_different_field_as_stale() {
+    // Focus moved to ANOTHER field of the SAME app after the suggestion was
+    // computed: the frontmost pid still matches, so a pid-only check would
+    // post the text into the wrong field. The global paths (synthetic keys,
+    // paste, and the AxSet silent fallback) re-resolve the focused element
+    // and refuse the old handle as stale.
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x456"));
+    config.bundle_id_for_pid = Arc::new(|_| Some("com.googlecode.iterm2".into()));
+    let posted_keys = Arc::clone(&posted);
+    config.synthetic_key_poster = Arc::new(move |_, text| {
+        posted_keys.lock().unwrap().push(format!("keys:{text}"));
+        Ok(())
+    });
+    let posted_paste = Arc::clone(&posted);
+    config.pasteboard_poster = Arc::new(move |_, text| {
+        posted_paste.lock().unwrap().push(format!("paste:{text}"));
+        Ok(())
+    });
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: pointer_identity("ax:0x123").field_element_id(),
+        generation: 1,
+    };
+
+    for strategy in [InsertStrategy::SyntheticKeys, InsertStrategy::Clipboard] {
+        assert_eq!(
+            adapter.insert(&field, "x", strategy),
+            Err(PlatformError::StaleField),
+            "{strategy:?}"
+        );
+    }
+    assert_eq!(
+        adapter.finish_axset_insert(&field, 42, AxSetApply::SilentlyIgnored, "x", 0),
+        Err(PlatformError::StaleField),
+        "the allowlisted AxSet silent fallback is a global post too"
+    );
+    assert!(posted.lock().unwrap().is_empty());
+}
+
+#[test]
+fn global_insert_posts_when_the_focused_element_is_still_the_field() {
+    // Chromium churns AX element refs, so the focused element's pointer
+    // differs from the handle's; the stable identity (pid + identifier +
+    // role) still names the same field, and the insert proceeds.
+    let posted = Arc::new(Mutex::new(Vec::new()));
+    let handle_identity = AxElementIdentity::new(
+        "ax:0x123",
+        Some(42),
+        Some("q".into()),
+        Some("AXTextField".into()),
+        None,
+    );
+    let refreshed_identity = AxElementIdentity::new(
+        "ax:0x789",
+        Some(42),
+        Some("q".into()),
+        Some("AXTextField".into()),
+        None,
+    );
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(refreshed_identity);
+    let posted_keys = Arc::clone(&posted);
+    config.synthetic_key_poster = Arc::new(move |_, text| {
+        posted_keys.lock().unwrap().push(format!("keys:{text}"));
+        Ok(())
+    });
+    let posted_paste = Arc::clone(&posted);
+    config.pasteboard_poster = Arc::new(move |_, text| {
+        posted_paste.lock().unwrap().push(format!("paste:{text}"));
+        Ok(())
+    });
+    let adapter = test_adapter_with_hooks(config);
+    let field = FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: handle_identity.field_element_id(),
+        generation: 1,
+    };
+
+    for strategy in [InsertStrategy::SyntheticKeys, InsertStrategy::Clipboard] {
+        assert_eq!(
+            adapter.insert(&field, "x", strategy),
+            Ok(Inserted {
+                bytes: 1,
+                chars: 1,
+                strategy,
+            }),
+            "{strategy:?}"
+        );
+    }
+    assert_eq!(
+        *posted.lock().unwrap(),
+        vec!["keys:x".to_string(), "paste:x".to_string()]
+    );
+}
+
 #[test]
 fn insert_synthetic_keys_errors_when_no_app_is_frontmost() {
     // No frontmost app at all (the desktop has focus): a global synthetic
@@ -2285,6 +2414,7 @@ fn insert_synthetic_keys_rechecks_secure_input_before_posting() {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_in_hook = Arc::clone(&calls);
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
     // false on the first call (entry guard), true on every later re-check.
     config.secure_input_enabled =
         Arc::new(move || calls_in_hook.fetch_add(1, Ordering::Relaxed) > 0);
@@ -2323,6 +2453,7 @@ fn insert_clipboard_rechecks_secure_input_before_posting() {
     let calls = Arc::new(AtomicUsize::new(0));
     let calls_in_hook = Arc::clone(&calls);
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
     config.secure_input_enabled =
         Arc::new(move || calls_in_hook.fetch_add(1, Ordering::Relaxed) > 0);
     config.pasteboard_poster = Arc::new(move |pid, text| {
@@ -2368,7 +2499,7 @@ fn finish_axset_insert_silent_fallback_refuses_synthetic_post_when_secure_input_
     let adapter = test_adapter_with_hooks(config);
 
     assert_eq!(
-        adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0),
+        adapter.finish_axset_insert(&pid42_field(), 42, AxSetApply::SilentlyIgnored, "x", 0),
         Err(PlatformError::SecureInput {
             state: SecurityState::SecureInputEnabled,
         }),
@@ -2383,6 +2514,7 @@ fn insert_replacing_with_zero_replace_left_is_pure_append_like_insert() {
     // append) on the global text channel.
     let posted = Arc::new(Mutex::new(Vec::new()));
     let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
     let p = Arc::clone(&posted);
     config.synthetic_key_poster = Arc::new(move |_, text| {
         p.lock().unwrap().push(text.to_string());
@@ -3123,6 +3255,7 @@ fn finish_axset_silent_fallback_posts_only_for_allowlisted_bundle() {
         let posted = Arc::new(Mutex::new(Vec::new()));
         let posted_in_hook = Arc::clone(&posted);
         let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+        config.ax_range_target = focused_element_target(pointer_identity("ax:0x123"));
         let bundle = case.bundle;
         config.bundle_id_for_pid = Arc::new(move |_| bundle.map(str::to_string));
         let p = Arc::clone(&posted_in_hook);
@@ -3132,7 +3265,8 @@ fn finish_axset_silent_fallback_posts_only_for_allowlisted_bundle() {
         });
         let adapter = test_adapter_with_hooks(config);
 
-        let result = adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0);
+        let result =
+            adapter.finish_axset_insert(&pid42_field(), 42, AxSetApply::SilentlyIgnored, "x", 0);
         if case.want_post {
             // Invariant: the allowlisted app keeps the live-validated
             // behavior — the retry posts exactly once and reports the
@@ -3401,7 +3535,7 @@ fn silently_ignored_axset_replacement_refuses_non_atomic_fallback() {
     let adapter = test_adapter_with_hooks(config);
 
     assert_eq!(
-        adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "😄", 6),
+        adapter.finish_axset_insert(&pid42_field(), 42, AxSetApply::SilentlyIgnored, "😄", 6),
         Err(PlatformError::CannotComplete {
             reason: "AxSet replacement was ignored; non-atomic fallback refused".into(),
         }),
@@ -3427,7 +3561,7 @@ fn applied_axset_touches_no_synthetic_text_poster() {
         strategy: InsertStrategy::AxSet,
     };
     assert_eq!(
-        adapter.finish_axset_insert(42, AxSetApply::Applied(inserted), "😄", 6),
+        adapter.finish_axset_insert(&pid42_field(), 42, AxSetApply::Applied(inserted), "😄", 6),
         Ok(Inserted {
             bytes: 4,
             chars: 1,
@@ -3449,7 +3583,7 @@ fn silently_ignored_axset_fails_honestly_when_the_app_is_not_frontmost() {
     let adapter = test_adapter_with_hooks(config);
 
     assert_eq!(
-        adapter.finish_axset_insert(42, AxSetApply::SilentlyIgnored, "x", 0),
+        adapter.finish_axset_insert(&pid42_field(), 42, AxSetApply::SilentlyIgnored, "x", 0),
         Err(PlatformError::StaleField),
         "synthetic input must never reach an app the user switched away from"
     );

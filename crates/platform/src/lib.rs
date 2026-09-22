@@ -22,10 +22,17 @@ pub type CaretCallback = Arc<dyn Fn(FieldHandle, Option<ScreenRect>) + Send + Sy
 pub type AcceptCallback = Arc<dyn Fn(TapControl) + Send + Sync + 'static>;
 
 /// Identity of one editable field. Two handles refer to the same live field
-/// only when *all* fields compare equal — adapters must bump `generation` when
-/// the underlying element is replaced, so operations against an old handle fail
-/// with [`PlatformError::StaleField`] instead of writing into the wrong element.
-/// Holders must treat a stale handle as dead and wait for the next focus event.
+/// only when *all* fields compare equal; adapters mint a fresh `generation`
+/// for each newly tracked element. Before a field operation, adapters check
+/// the handle against the element that currently has focus and fail with
+/// [`PlatformError::StaleField`] on a mismatch instead of writing into the
+/// wrong element. What that check compares is per-adapter: the Linux field
+/// registry compares `element_id` and `generation`; Windows UIA compares
+/// `element_id` against the focused element's pid + runtime id; macOS
+/// compares the resolved AX element identity against `element_id` (AX
+/// exposes no generation to check), on the AX-write paths and the global
+/// synthetic-key / paste paths alike. Holders must treat a stale handle as
+/// dead and wait for the next focus event.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 pub struct FieldHandle {
     pub app: AppId,

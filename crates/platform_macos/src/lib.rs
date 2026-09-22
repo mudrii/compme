@@ -1160,12 +1160,13 @@ impl MacosPlatformAdapter {
         match strategy {
             InsertStrategy::AxSet => {
                 let text_for_worker = text.clone();
+                let field_for_worker = field.clone();
                 let secure_input_enabled = Arc::clone(&self.secure_input_enabled);
                 let ax_range_target = Arc::clone(&self.ax_range_target);
                 let apply = self.worker.run(move || {
                     insert_for_field(
                         pid,
-                        field,
+                        field_for_worker,
                         text_for_worker,
                         replace_left,
                         strategy,
@@ -1173,13 +1174,14 @@ impl MacosPlatformAdapter {
                         ax_range_target.as_ref(),
                     )
                 })?;
-                let result = apply
-                    .and_then(|apply| self.finish_axset_insert(pid, apply, &text, replace_left));
+                let result = apply.and_then(|apply| {
+                    self.finish_axset_insert(&field, pid, apply, &text, replace_left)
+                });
                 self.map_app_exited(pid, app, result)
             }
             InsertStrategy::SyntheticKeys => {
-                self.ensure_global_insert_target(pid)?;
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
+                self.ensure_global_insert_target(&field, pid)?;
                 let result = self
                     .recheck_secure_input()
                     .and_then(|()| (self.synthetic_key_poster)(pid, &text))
@@ -1191,8 +1193,8 @@ impl MacosPlatformAdapter {
                 self.map_app_exited(pid, app, result)
             }
             InsertStrategy::Clipboard => {
-                self.ensure_global_insert_target(pid)?;
                 Self::refuse_non_atomic_replacement(replace_left, strategy)?;
+                self.ensure_global_insert_target(&field, pid)?;
                 let result = self
                     .recheck_secure_input()
                     .and_then(|()| (self.pasteboard_poster)(pid, &text))
@@ -1378,6 +1380,7 @@ impl MacosPlatformAdapter {
 
     fn finish_axset_insert(
         &self,
+        field: &FieldHandle,
         pid: i32,
         apply: AxSetApply,
         text: &str,
@@ -1392,7 +1395,7 @@ impl MacosPlatformAdapter {
                     });
                 }
                 self.recheck_secure_input()?;
-                self.ensure_global_insert_target(pid)?;
+                self.ensure_global_insert_target(field, pid)?;
                 // G2 (plan item 2d): even after the bounded readback re-poll
                 // the classifier cannot distinguish a true no-op from an
                 // asynchronously applied write it failed to observe, so the
@@ -1447,14 +1450,34 @@ impl MacosPlatformAdapter {
         }
     }
 
-    fn ensure_global_insert_target(&self, pid: i32) -> Result<(), PlatformError> {
+    /// Stale-focus guard for the global insert paths (synthetic keys, paste,
+    /// and the AxSet silent fallback), which post to whatever element has
+    /// keyboard focus rather than to `field`. The frontmost app must still be
+    /// `pid`, AND its focused element must still be `field` (by
+    /// [`field_matches_identity`], the same test the AX workers apply):
+    /// focus moving to another field of the same app is `StaleField` too.
+    ///
+    /// Fails closed: if the focused element's identity cannot be resolved,
+    /// that error refuses the insert — a post whose target cannot be proven
+    /// could land in any field of the app, including a secure one.
+    fn ensure_global_insert_target(
+        &self,
+        field: &FieldHandle,
+        pid: i32,
+    ) -> Result<(), PlatformError> {
         match (self.frontmost_pid)() {
-            Some(frontmost_pid) if frontmost_pid == pid => Ok(()),
-            Some(_) => Err(PlatformError::StaleField),
-            None => Err(PlatformError::CannotComplete {
-                reason: "no frontmost application pid for global insert".into(),
-            }),
+            Some(frontmost_pid) if frontmost_pid == pid => {}
+            Some(_) => return Err(PlatformError::StaleField),
+            None => {
+                return Err(PlatformError::CannotComplete {
+                    reason: "no frontmost application pid for global insert".into(),
+                })
+            }
         }
+        let field = field.clone();
+        let ax_range_target = Arc::clone(&self.ax_range_target);
+        self.worker
+            .run(move || ensure_focused_element_is_field(pid, &field, ax_range_target.as_ref()))?
     }
 
     fn subscription_handle(&self, id: u64, active: Arc<AtomicBool>) -> Subscription {
@@ -4752,6 +4775,25 @@ impl AxRangeTarget for RawAxRangeTarget {
 
     unsafe fn set_caret_after_value_write(&self, element: AXUIElementRef, new_caret: usize) {
         set_caret_after_value_write(element, new_caret);
+    }
+}
+
+/// `StaleField` unless `pid`'s focused element still is `field`.
+fn ensure_focused_element_is_field(
+    pid: i32,
+    field: &FieldHandle,
+    target: &dyn AxRangeTarget,
+) -> Result<(), PlatformError> {
+    let (element, _owners) = target.copy_focused_or_app_element(pid)?;
+    // SAFETY: `copy_focused_or_app_element` returned a non-null ref whose
+    // create-rule owners live in `_owners`, a named binding held to the end
+    // of this function, so `element` is valid for the call — exactly the
+    // `AxRangeTarget` method contract.
+    let identity = unsafe { target.resolve_identity(element) }?;
+    if field_matches_identity(field, &identity) {
+        Ok(())
+    } else {
+        Err(PlatformError::StaleField)
     }
 }
 
