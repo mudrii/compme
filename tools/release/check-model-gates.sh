@@ -1253,6 +1253,9 @@ require_test_symbol() {
   fi
 }
 
+# The section helpers below read the whole section with `grep -E ... >/dev/null`
+# rather than `grep -q`: an early `-q` exit SIGPIPEs awk, and pipefail then
+# reports the pipeline as failed regardless of the match.
 require_readme_gate_line() {
   pattern="$1"
   label="$2"
@@ -1260,7 +1263,7 @@ require_readme_gate_line() {
     /^## Current Validation Gates$/ { in_section = 1; next }
     in_section && /^## / { in_section = 0 }
     in_section { print }
-  ' "$readme_doc" | grep -Eq "$pattern"; then
+  ' "$readme_doc" | grep -E "$pattern" >/dev/null; then
     echo "missing release gate: $label" >&2
     return 1
   fi
@@ -1273,7 +1276,7 @@ require_readme_homebrew_line() {
     /^### Homebrew \(macOS\)$/ { in_section = 1; next }
     in_section && /^### / { in_section = 0 }
     in_section { print }
-  ' "$readme_doc" | grep -Eq "$pattern"; then
+  ' "$readme_doc" | grep -E "$pattern" >/dev/null; then
     echo "missing release gate: $label" >&2
     return 1
   fi
@@ -1293,7 +1296,7 @@ reject_readme_homebrew_line() {
     /^### Homebrew \(macOS\)$/ { in_section = 1; next }
     in_section && /^### / { in_section = 0 }
     in_section { print }
-  ' "$readme_doc" | grep -Eq "$pattern"; then
+  ' "$readme_doc" | grep -E "$pattern" >/dev/null; then
     echo "stale release gate: $label" >&2
     return 1
   fi
@@ -1306,7 +1309,7 @@ require_development_gate_line() {
     /^## Full Local Gate$/ { in_section = 1; next }
     in_section && /^## / { in_section = 0 }
     in_section { print }
-  ' "$development_doc" | grep -Eq "$pattern"; then
+  ' "$development_doc" | grep -E "$pattern" >/dev/null; then
     echo "missing release gate: $label" >&2
     return 1
   fi
@@ -1319,7 +1322,7 @@ require_grammar_spec_validation_line() {
     /^## Validation commands$/ { in_section = 1; next }
     in_section && /^## / { in_section = 0 }
     in_section { print }
-  ' "$grammar_spec" | sed -E 's/^- `?//; s/`$//' | grep -Eq "$pattern"; then
+  ' "$grammar_spec" | sed -E 's/^- `?//; s/`$//' | grep -E "$pattern" >/dev/null; then
     echo "missing release gate: $label" >&2
     return 1
   fi
@@ -1380,6 +1383,33 @@ run_self_test() {
   cleanup() {
     rm -rf "$tmp_dir"
   }
+
+  # A pinned line at the top of a long section: `grep -q` exits on the first
+  # match while awk is still writing, and under pipefail awk's SIGPIPE turned
+  # a present line into "missing" and a stale line into "absent".
+  long_section_doc="$tmp_dir/long-section.md"
+  awk 'BEGIN {
+    print "## Full Local Gate"
+    print "### Homebrew (macOS)"
+    print "pinned-first-line"
+    for (i = 0; i < 20000; i++) print "filler line " i " keeps the section writer busy"
+  }' >"$long_section_doc"
+  saved_development_doc="$development_doc"
+  saved_readme_doc="$readme_doc"
+  development_doc="$long_section_doc"
+  readme_doc="$long_section_doc"
+  if ! require_development_gate_line '^pinned-first-line$' "long-section early match" 2>/dev/null; then
+    echo "release gate self-test failed: an early match in a long gate section was reported missing" >&2
+    cleanup
+    return 1
+  fi
+  if reject_readme_homebrew_line '^pinned-first-line$' "long-section stale match" 2>/dev/null; then
+    echo "release gate self-test failed: an early stale line in a long Homebrew section was accepted" >&2
+    cleanup
+    return 1
+  fi
+  development_doc="$saved_development_doc"
+  readme_doc="$saved_readme_doc"
 
   check_toolchain_pin_comments "$ci_workflow" 4 "CI"
   check_toolchain_pin_comments "$canonical_release_workflow" 4 "release"

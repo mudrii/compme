@@ -238,11 +238,11 @@ SH
     echo "make-icon self-test failed: iconutil failure replaced the last good icon" >&2
     return 1
   fi
-  if find "$work_tmp" -maxdepth 1 -type d -name 'compme-icon.*' | grep -q .; then
+  if [[ -n "$(find "$work_tmp" -maxdepth 1 -type d -name 'compme-icon.*' -print -quit)" ]]; then
     echo "make-icon self-test failed: generator temporary directory leaked" >&2
     return 1
   fi
-  if find "$output_dir" -maxdepth 1 -type f -name '.AppIcon.icns.*' | grep -q .; then
+  if [[ -n "$(find "$output_dir" -maxdepth 1 -type f -name '.AppIcon.icns.*' -print -quit)" ]]; then
     echo "make-icon self-test failed: atomic output temporary file leaked" >&2
     return 1
   fi
