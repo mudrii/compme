@@ -463,10 +463,15 @@ impl MemoryStore {
     /// no-op once the row count is at or below `cap`. Extracted from `store` so
     /// the eviction bound can be unit-tested with a small `cap`. secure_delete
     /// (set in `from_connection`) means the evicted ciphertext is zeroed too.
+    ///
+    /// A rowid-range delete: the subquery walks the primary key newest-first to
+    /// the `(cap + 1)`-th newest id and evicts it and everything older. Under
+    /// the cap the subquery is empty (NULL), so nothing is compared or deleted —
+    /// unlike `NOT IN (… LIMIT cap)`, which materialized `cap` ids per insert.
     fn trim_to_cap(conn: &Connection, cap: i64) -> Result<()> {
         conn.execute(
-            "DELETE FROM memories WHERE id NOT IN \
-             (SELECT id FROM memories ORDER BY id DESC LIMIT ?1)",
+            "DELETE FROM memories WHERE id <= \
+             (SELECT id FROM memories ORDER BY id DESC LIMIT 1 OFFSET ?1)",
             params![cap],
         )?;
         Ok(())
@@ -2176,6 +2181,35 @@ mod tests {
         );
     }
 
+    #[test]
+    fn trim_to_cap_is_noop_below_cap_and_evicts_exactly_oldest_above() {
+        // Ids are not assumed contiguous: a deleted row leaves a gap, and the
+        // eviction must still keep exactly the newest `cap` rows.
+        let store = MemoryStore::open_in_memory(&key(54), StorageMode::AcceptedOnly).unwrap();
+        for i in 0..5 {
+            store.remember("app", &format!("row {i}")).unwrap();
+        }
+        store
+            .conn
+            .execute("DELETE FROM memories WHERE id = 2", [])
+            .unwrap();
+
+        MemoryStore::trim_to_cap(&store.conn, 10).unwrap();
+        assert_eq!(store.count().unwrap(), 4, "below the cap: nothing evicted");
+        MemoryStore::trim_to_cap(&store.conn, 4).unwrap();
+        assert_eq!(
+            store.count().unwrap(),
+            4,
+            "exactly at the cap: nothing evicted"
+        );
+
+        MemoryStore::trim_to_cap(&store.conn, 2).unwrap();
+        assert_eq!(
+            store.recent("app", 10).unwrap(),
+            vec!["row 4".to_string(), "row 3".to_string()],
+            "above the cap: exactly the oldest rows are evicted"
+        );
+    }
     #[test]
     fn remember_rolls_back_insert_when_retention_trim_fails() {
         let store = MemoryStore::open_in_memory(&key(93), StorageMode::AcceptedOnly).unwrap();
