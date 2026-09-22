@@ -173,8 +173,10 @@ are wired (D14):
   click-through that fails closed and is remembered once-per-model in
   `COMPME_LICENSE_ACCEPTED`.
 - **Dest-exists guard** — the `ModelDownloader` worker (never the UI loop) skips a
-  present, non-empty, pinned-hash-matching `.gguf` and reports it done, so a
-  repeat "Download" never clobbers a good file; a 0-byte stub is re-fetched.
+  present, non-empty `.gguf` whose SHA-256 matches the catalog pin
+  (`model_fetch::dest_already_present`) and reports it done, so a repeat
+  "Download" never clobbers a good file; a 0-byte stub or a wrong-hash file is
+  treated as absent and re-fetched.
 
 On a completed download (or when a model is already present, or via
 "Choose Model…") the app persists `COMPME_MODEL_PATH` to `config.env` so the

@@ -45,7 +45,8 @@ means the app sees what it needs.
   `fits` / `tight` / `exceeds` RAM verdict; on a machine below a model's
   minimum RAM the download is blocked and logged, and nothing is fetched.
 - **The model is already on disk.** A dest-exists guard skips re-downloading
-  an existing model; delete it first if you meant to fetch it again.
+  an existing model whose SHA-256 matches the catalog pin (a file with the
+  wrong hash is re-fetched); delete it first if you meant to fetch it again.
 
 ## Requirements mismatch
 
