@@ -12,7 +12,7 @@ use engine_core::{Command, Event, SnapshotId, SuggestionMachine};
 pub use engine_core::{EditKind, StatEvent, TriggerPolicy};
 use platform::{
     AcceptAction, Capabilities, CorrectionRange, FieldHandle, InsertStrategy, KeyInterceptMode,
-    OverlayPlacement, OverlayPresenter, PlatformAdapter, SecurityState, Toolkit,
+    OverlayPlacement, OverlayPresenter, PlatformAdapter, ScreenRect, SecurityState, Toolkit,
 };
 use std::time::Duration;
 
@@ -86,6 +86,14 @@ impl std::error::Error for AcceptError {
 struct DispatchError {
     error: platform::PlatformError,
     committed: bool,
+}
+
+/// One overlay-anchor geometry source, tried in order by `resolve_anchor`.
+#[derive(Clone, Copy)]
+enum AnchorSource {
+    Caret,
+    PopupAnchor,
+    TextRange(CorrectionRange),
 }
 
 /// Impure-but-deterministic wiring layer that connects the pure
@@ -497,6 +505,41 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
         self.dispatch_with_commit(commands).map_err(|err| err.error)
     }
 
+    /// Resolve an overlay anchor from `sources` in order: the first `Some`
+    /// rect wins, `Ok(None)` (no geometry) falls through to the next source,
+    /// and an `Err` (a real AX failure) is returned at once — later sources are
+    /// never queried.
+    fn resolve_anchor(
+        &self,
+        field: &FieldHandle,
+        sources: &[AnchorSource],
+    ) -> Result<Option<ScreenRect>, platform::PlatformError> {
+        for source in sources {
+            let rect = match *source {
+                AnchorSource::Caret => self.adapter.caret_rect(field)?,
+                AnchorSource::PopupAnchor => self.adapter.popup_anchor(field)?,
+                AnchorSource::TextRange(range) => self.adapter.text_range_rect(field, range)?,
+            };
+            if rect.is_some() {
+                return Ok(rect);
+            }
+        }
+        Ok(None)
+    }
+
+    /// Reconcile the machine/UI after a failed dispatch step (`reconcile` is
+    /// `reconcile_failed_show` or `reconcile_visible_failure`) and build the
+    /// error to return.
+    fn fail(
+        &mut self,
+        reconcile: fn(&mut Self),
+        error: platform::PlatformError,
+        committed: bool,
+    ) -> DispatchError {
+        reconcile(self);
+        DispatchError { error, committed }
+    }
+
     fn dispatch_with_commit(
         &mut self,
         commands: Vec<Command>,
@@ -530,19 +573,12 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // back to the other anchor, but an `Err` (a real AX failure)
                     // is fail-loud — it aborts the dispatch rather than papering
                     // over a broken accessibility tree with a fallback anchor.
-                    let anchor = if self.mirror_mode {
-                        self.adapter
-                            .popup_anchor(&field)
-                            .and_then(|rect| match rect {
-                                Some(rect) => Ok(Some(rect)),
-                                None => self.adapter.caret_rect(&field),
-                            })
+                    let sources = if self.mirror_mode {
+                        [AnchorSource::PopupAnchor, AnchorSource::Caret]
                     } else {
-                        self.adapter.caret_rect(&field).and_then(|rect| match rect {
-                            Some(rect) => Ok(Some(rect)),
-                            None => self.adapter.popup_anchor(&field),
-                        })
+                        [AnchorSource::Caret, AnchorSource::PopupAnchor]
                     };
+                    let anchor = self.resolve_anchor(&field, &sources);
                     let rect = match anchor {
                         Ok(rect) => rect,
                         Err(err) => {
@@ -551,11 +587,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             // returning so the Shown stat is retracted and a later
                             // accept cannot phantom-insert an unpainted ghost —
                             // mirroring the show_ghost/set_tap_visible paths below.
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                     };
                     if let Some(rect) = rect {
@@ -563,21 +595,13 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                             // The machine has already transitioned to showing,
                             // but the UI never painted. Reconcile before returning
                             // so a later accept cannot insert an invisible ghost.
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                         if let Err(err) = self.set_tap_visible(true, Some(AcceptAction::Full)) {
                             // The ghost was painted but cannot be accepted. Reconcile
                             // immediately so a visible-but-unarmed suggestion does not
                             // remain in the UI or machine state.
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                     } else {
                         // No caret rect and no popup anchor: we cannot place the
@@ -595,40 +619,26 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     accept_action,
                     ..
                 } => {
-                    let anchor = self
-                        .adapter
-                        .text_range_rect(&field, correction_range)
-                        .and_then(|rect| match rect {
-                            Some(rect) => Ok(Some(rect)),
-                            None => self.adapter.caret_rect(&field).and_then(|rect| match rect {
-                                Some(rect) => Ok(Some(rect)),
-                                None => self.adapter.popup_anchor(&field),
-                            }),
-                        });
+                    let anchor = self.resolve_anchor(
+                        &field,
+                        &[
+                            AnchorSource::TextRange(correction_range),
+                            AnchorSource::Caret,
+                            AnchorSource::PopupAnchor,
+                        ],
+                    );
                     let rect = match anchor {
                         Ok(rect) => rect,
                         Err(err) => {
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                     };
                     if let Some(rect) = rect {
                         if let Err(err) = self.overlay.show_correction(rect, &suggestion) {
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                         if let Err(err) = self.set_tap_visible(true, Some(accept_action)) {
-                            self.reconcile_failed_show();
-                            return Err(DispatchError {
-                                error: err,
-                                committed,
-                            });
+                            return Err(self.fail(Self::reconcile_failed_show, err, committed));
                         }
                     } else {
                         show_failed = true;
@@ -640,11 +650,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                     // show→accept→hide cycle.
                     let strategy = self.caps.insert_strategy;
                     if let Err(err) = self.adapter.insert(&field, &text, strategy) {
-                        self.reconcile_visible_failure();
-                        return Err(DispatchError {
-                            error: err,
-                            committed,
-                        });
+                        return Err(self.fail(Self::reconcile_visible_failure, err, committed));
                     }
                     committed = true;
                     // Cross-crate invariant: on every terminal accept this flag is
@@ -668,11 +674,7 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         self.adapter
                             .insert_replacing(&field, &text, replace_left, strategy)
                     {
-                        self.reconcile_visible_failure();
-                        return Err(DispatchError {
-                            error: err,
-                            committed,
-                        });
+                        return Err(self.fail(Self::reconcile_visible_failure, err, committed));
                     }
                     committed = true;
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
@@ -691,22 +693,14 @@ impl<P: PlatformAdapter, O: OverlayPresenter> Engine<P, O> {
                         correction_range,
                         strategy,
                     ) {
-                        self.reconcile_visible_failure();
-                        return Err(DispatchError {
-                            error: err,
-                            committed,
-                        });
+                        return Err(self.fail(Self::reconcile_visible_failure, err, committed));
                     }
                     committed = true;
                     delay_next_hide = strategy == InsertStrategy::SyntheticKeys;
                 }
                 Command::UpdateGhost { text, .. } => {
                     if let Err(err) = self.overlay.update_ghost(&text) {
-                        self.reconcile_visible_failure();
-                        return Err(DispatchError {
-                            error: err,
-                            committed,
-                        });
+                        return Err(self.fail(Self::reconcile_visible_failure, err, committed));
                     }
                 }
                 Command::Hide => {

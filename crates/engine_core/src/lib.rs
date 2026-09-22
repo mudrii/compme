@@ -687,126 +687,9 @@ impl SuggestionMachine {
                 // ghost back up after the dismiss.
                 self.advance_snapshot();
             }
-            Event::AcceptFull => {
-                if let Some(showing) = self.showing.take() {
-                    let Some(showing) = self.accept_selection_replacement(showing, &mut out) else {
-                        return out;
-                    };
-                    if showing.presentation == Presentation::Correction {
-                        self.showing = Some(showing);
-                        return out;
-                    }
-                    // A replacement (`replace_left > 0`) inserts its exact rendered
-                    // text (emoji glyph / synonym) — the trailing-space-after-
-                    // single-word policy applies only to append-only completions.
-                    let raw = &showing.candidates[showing.index];
-                    let text = if showing.replace_left > 0 {
-                        raw.clone()
-                    } else {
-                        self.finalize_accept_text(raw)
-                    };
-                    // Append-only completion → Insert; replacement (emoji/typo/
-                    // spelling, replace_left > 0) → Replace that first deletes
-                    // replace_left chars. Same shape the AcceptWord arm inlines.
-                    out.push(if showing.replace_left > 0 {
-                        local_replacement_command(&showing, text)
-                    } else {
-                        Command::Insert {
-                            field: showing.field,
-                            text,
-                        }
-                    });
-                    out.push(Command::Hide);
-                    self.advance_snapshot();
-                }
-            }
-            Event::AcceptWord => {
-                if let Some(showing) = self.showing.take() {
-                    let Some(mut showing) = self.accept_selection_replacement(showing, &mut out)
-                    else {
-                        return out;
-                    };
-                    if showing.presentation == Presentation::Correction {
-                        self.showing = Some(showing);
-                        return out;
-                    }
-                    // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
-                    // atomic — there is no "next word" of a glyph to partially
-                    // accept, and a multi-word synonym ("big deal") must not be
-                    // split (which would drop the deletion). Word-accept of a
-                    // replacement therefore commits the whole token like Full.
-                    if showing.replace_left > 0 {
-                        let text = showing.candidates[showing.index].clone();
-                        out.push(local_replacement_command(&showing, text));
-                        out.push(Command::Hide);
-                        self.advance_snapshot();
-                        return out;
-                    }
-                    let (word, rest) = next_word(showing.current());
-                    // Single-word trailing-space applies only when this accept
-                    // completes the suggestion (no rest); `finalize_accept_text`
-                    // self-gates, but `word` already carries its own trailing
-                    // space when `rest` is non-empty, so it is a no-op there.
-                    let text = self.finalize_accept_text(&word);
-                    out.push(Command::Insert {
-                        field: showing.field.clone(),
-                        text,
-                    });
-                    if rest.is_empty() {
-                        out.push(Command::Hide);
-                        self.advance_snapshot();
-                    } else {
-                        // Advance the caret to the position it will occupy AFTER
-                        // the host inserts `word`. This intentionally moves past
-                        // the current `self.value` length — `self.value` still
-                        // holds the pre-insert text and only grows when the host
-                        // echoes the next `TextChanged`, so clamping to it here
-                        // would wrongly pin the caret behind the accepted word and
-                        // hide a ghost that should stay visible. Downstream context
-                        // helpers clamp defensively, so a transiently-unsynced caret
-                        // can never panic; it self-corrects on the next edit.
-                        showing.caret += word.chars().count();
-                        self.caret = showing.caret;
-                        // Collapse to the active candidate: the siblings still
-                        // begin with the just-accepted word and would re-offer it
-                        // on cycle, so once the user commits word-by-word the
-                        // alternatives are dropped.
-                        showing.candidates = vec![rest.clone()];
-                        showing.index = 0;
-                        out.push(Command::UpdateGhost {
-                            field: showing.field.clone(),
-                            snapshot: showing.snapshot,
-                            text: rest,
-                        });
-                        self.showing = Some(showing);
-                    }
-                }
-            }
-            Event::AcceptCorrection => {
-                if let Some(showing) = self.showing.take() {
-                    if showing.presentation != Presentation::Correction {
-                        self.showing = Some(showing);
-                        return out;
-                    }
-                    let Some(correction_range) = showing.correction_range else {
-                        self.showing = Some(showing);
-                        return out;
-                    };
-                    let Some(expected_text) = showing.correction_original.clone() else {
-                        self.showing = Some(showing);
-                        return out;
-                    };
-                    let text = showing.candidates[showing.index].clone();
-                    out.push(Command::ReplaceRange {
-                        field: showing.field,
-                        expected_text,
-                        text,
-                        correction_range,
-                    });
-                    out.push(Command::Hide);
-                    self.advance_snapshot();
-                }
-            }
+            Event::AcceptFull => self.on_accept_full(&mut out),
+            Event::AcceptWord => self.on_accept_word(&mut out),
+            Event::AcceptCorrection => self.on_accept_correction(&mut out),
         }
 
         if was_showing && non_user_event && self.showing.is_none() {
@@ -814,6 +697,131 @@ impl SuggestionMachine {
         }
 
         out
+    }
+
+    /// Accept the whole showing suggestion.
+    fn on_accept_full(&mut self, out: &mut Vec<Command>) {
+        if let Some(showing) = self.showing.take() {
+            let Some(showing) = self.accept_selection_replacement(showing, out) else {
+                return;
+            };
+            if showing.presentation == Presentation::Correction {
+                self.showing = Some(showing);
+                return;
+            }
+            // A replacement (`replace_left > 0`) inserts its exact rendered
+            // text (emoji glyph / synonym) — the trailing-space-after-
+            // single-word policy applies only to append-only completions.
+            let raw = &showing.candidates[showing.index];
+            let text = if showing.replace_left > 0 {
+                raw.clone()
+            } else {
+                self.finalize_accept_text(raw)
+            };
+            // Append-only completion → Insert; replacement (emoji/typo/
+            // spelling, replace_left > 0) → Replace that first deletes
+            // replace_left chars. Same shape the AcceptWord arm inlines.
+            out.push(if showing.replace_left > 0 {
+                local_replacement_command(&showing, text)
+            } else {
+                Command::Insert {
+                    field: showing.field,
+                    text,
+                }
+            });
+            out.push(Command::Hide);
+            self.advance_snapshot();
+        }
+    }
+
+    /// Accept the next word of the showing suggestion.
+    fn on_accept_word(&mut self, out: &mut Vec<Command>) {
+        if let Some(showing) = self.showing.take() {
+            let Some(mut showing) = self.accept_selection_replacement(showing, out) else {
+                return;
+            };
+            if showing.presentation == Presentation::Correction {
+                self.showing = Some(showing);
+                return;
+            }
+            // A replacement (`replace_left > 0`, e.g. emoji/synonym) is
+            // atomic — there is no "next word" of a glyph to partially
+            // accept, and a multi-word synonym ("big deal") must not be
+            // split (which would drop the deletion). Word-accept of a
+            // replacement therefore commits the whole token like Full.
+            if showing.replace_left > 0 {
+                let text = showing.candidates[showing.index].clone();
+                out.push(local_replacement_command(&showing, text));
+                out.push(Command::Hide);
+                self.advance_snapshot();
+                return;
+            }
+            let (word, rest) = next_word(showing.current());
+            // Single-word trailing-space applies only when this accept
+            // completes the suggestion (no rest); `finalize_accept_text`
+            // self-gates, but `word` already carries its own trailing
+            // space when `rest` is non-empty, so it is a no-op there.
+            let text = self.finalize_accept_text(&word);
+            out.push(Command::Insert {
+                field: showing.field.clone(),
+                text,
+            });
+            if rest.is_empty() {
+                out.push(Command::Hide);
+                self.advance_snapshot();
+            } else {
+                // Advance the caret to the position it will occupy AFTER
+                // the host inserts `word`. This intentionally moves past
+                // the current `self.value` length — `self.value` still
+                // holds the pre-insert text and only grows when the host
+                // echoes the next `TextChanged`, so clamping to it here
+                // would wrongly pin the caret behind the accepted word and
+                // hide a ghost that should stay visible. Downstream context
+                // helpers clamp defensively, so a transiently-unsynced caret
+                // can never panic; it self-corrects on the next edit.
+                showing.caret += word.chars().count();
+                self.caret = showing.caret;
+                // Collapse to the active candidate: the siblings still
+                // begin with the just-accepted word and would re-offer it
+                // on cycle, so once the user commits word-by-word the
+                // alternatives are dropped.
+                showing.candidates = vec![rest.clone()];
+                showing.index = 0;
+                out.push(Command::UpdateGhost {
+                    field: showing.field.clone(),
+                    snapshot: showing.snapshot,
+                    text: rest,
+                });
+                self.showing = Some(showing);
+            }
+        }
+    }
+
+    /// Accept a showing grammar correction as an exact-range replace.
+    fn on_accept_correction(&mut self, out: &mut Vec<Command>) {
+        if let Some(showing) = self.showing.take() {
+            if showing.presentation != Presentation::Correction {
+                self.showing = Some(showing);
+                return;
+            }
+            let Some(correction_range) = showing.correction_range else {
+                self.showing = Some(showing);
+                return;
+            };
+            let Some(expected_text) = showing.correction_original.clone() else {
+                self.showing = Some(showing);
+                return;
+            };
+            let text = showing.candidates[showing.index].clone();
+            out.push(Command::ReplaceRange {
+                field: showing.field,
+                expected_text,
+                text,
+                correction_range,
+            });
+            out.push(Command::Hide);
+            self.advance_snapshot();
+        }
     }
 
     /// A ready result matches the outstanding request only when its stamp
