@@ -4,11 +4,19 @@
 //! real on Windows: `with_uia()` spawns the UIA worker (one dedicated MTA
 //! thread per the decision of record in `Qfd.md` §23) and `capabilities` and
 //! `read_context` read the focused element through `GetFocusedElement` +
-//! `TextPattern` — see the `uia_*` modules. Everything else is still the
-//! fail-closed scaffold: every insert, subscribe, and overlay method returns
-//! [`PlatformError::UnsupportedField`], never panics, so an unwired surface is
-//! inert, not harmful. Each stub's doc names the Win32 API its real
-//! implementation will use.
+//! `TextPattern` — see the `uia_*` modules. The rest of the adapter is still
+//! the fail-closed scaffold: every subscribe, `caret_rect`, and insert method,
+//! and every overlay method except `hide`, returns
+//! [`PlatformError::UnsupportedField`]; `hide` is an `Ok(())` no-op (there is
+//! nothing to hide) and `front_app` reports `None`. Nothing panics, so an
+//! unwired surface is inert, not harmful. Each stub's doc names the Win32 API
+//! its real implementation will use.
+//!
+//! [`WindowsShellHost`] is partly real on Windows: the Win32 message pump, the
+//! installed-RAM probe, and native URL opening go through `win_host` (as does
+//! the adapter's `environment()` OS-version probe). Its remaining host services
+//! (permission settings, file reveal, launch-at-login, confirmation, memory
+//! key) fail closed.
 
 use platform::{
     AcceptCallback, AcceptSubscription, AppId, Capabilities, CaretCallback, Environment,

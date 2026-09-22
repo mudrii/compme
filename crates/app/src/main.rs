@@ -1,9 +1,12 @@
-//! `compme` — the macOS MVP integration binary.
+//! `compme` — the integration binary, one run loop for every target OS.
 //!
 //! Wires the proven-in-isolation parts into one running process:
-//! `PlatformAdapterImpl` (focus/caret/accept + AX reads/inserts),
-//! `OverlayPresenterImpl` (ghost text), `Engine` (the deterministic state
-//! machine), and a `LocalModel` (inference on a dedicated thread).
+//! `PlatformAdapterImpl` (focus/caret/accept, context reads, inserts) and
+//! `OverlayPresenterImpl` (ghost text), which the `shell` module binds per
+//! target at compile time — `platform_macos` on macOS (the shipped product),
+//! `platform_windows` on Windows, `platform_linux` on Linux, each within its
+//! adapter's documented boundary — plus `Engine` (the deterministic state
+//! machine) and a `LocalModel` (inference on a dedicated thread).
 //!
 //! See `docs/superpowers/specs/2026-06-06-p0-mvp-integration-design.md`.
 
