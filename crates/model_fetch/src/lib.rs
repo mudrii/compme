@@ -319,6 +319,19 @@ fn download_with_agent(
         // a surviving part re-sends a Range and 416s back into this arm,
         // overflowing the stack instead of failing.
         Err(ureq::Error::StatusCode(416)) if existing > 0 => {
+            // Or the part is already complete: a crash after the last byte
+            // but before the rename, resumed under a MiB cap that is never the
+            // exact file size (so the shortcut above never fires). With a
+            // pinned hash, a verified part is promoted instead of refetched.
+            if let Some(expected) = expected_sha256 {
+                let mut file = open_part(&part, true)?;
+                if verify_part_handle(&mut file, expected)?.is_none() {
+                    ensure_part_path_is_regular(&part)?;
+                    drop(file);
+                    std::fs::rename(&part, dest).map_err(|e| FetchError::Io(e.to_string()))?;
+                    return Ok(dest.to_path_buf());
+                }
+            }
             std::fs::remove_file(&part).map_err(|e| FetchError::Io(e.to_string()))?;
             return download_with_agent(agent, url, dest, expected_sha256, max_bytes, progress);
         }
@@ -1860,6 +1873,27 @@ mod tests {
         let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
         assert!(matches!(err, FetchError::Http(416)), "got: {err}");
         assert!(!part.exists(), "the stale part was dropped by the retry");
+    }
+
+    #[test]
+    fn complete_part_under_cap_is_promoted_on_416_without_refetch() {
+        // A crash after the last byte but before the rename leaves a complete
+        // part. Production caps are `size_mb` MiB — never the exact file size —
+        // so the resume request is `Range: bytes=N-` and the server 416s. With
+        // a pinned hash the part is verified and promoted; a server that 416s
+        // EVERYTHING proves no unranged refetch was needed.
+        let url = serve_always_416();
+        let dest = temp_dest("complete416");
+        let part = dest.with_extension("part");
+        let body = b"complete model bytes";
+        std::fs::write(&part, body).unwrap();
+        let expected = sha256_hex(body);
+        let got = download_url_bounded(&url, &dest, Some(&expected), Some(1 << 20), |_, _| {})
+            .expect("the verified complete part is promoted");
+        assert_eq!(got, dest);
+        assert_eq!(std::fs::read(&dest).unwrap(), body);
+        assert!(!part.exists());
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[cfg(unix)]
