@@ -1,6 +1,6 @@
 # compme — Full Architecture, Source, Test, Documentation, and CI Audit
 
-**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16)
+**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16) · **CI/CD + doc-gating audit:** 2026-07-29 (§17) · **Release-readiness pass:** 2026-07-29 (§18) · **Dependency catch-up:** 2026-08-11 (§19) · **Full-codebase audit:** 2026-09-08 (§20, tree `2d18c34`) · **Independent audit:** 2026-09-15 (§21, `8613a92`, AUD-1..14) · **Design of record:** 2026-09-16 (§22, G7 Carbon main-thread marshal) · **Decision of record:** 2026-09-17 (§23, UIA apartment) · **Audit repairs:** 2026-09-20 (§24)
 
 **Repository:** `compme`
 
