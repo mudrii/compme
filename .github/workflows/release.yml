@@ -7,10 +7,14 @@ on:
 permissions:
   contents: read
 
-# Serialize every release run under one fixed group (not per-ref): finalize-cask.sh
-# pushes a cask commit to main, so two concurrent tag releases would race that push.
+# One group per tag: a single fixed group keeps only one pending run, so a
+# third tag push would silently replace the queued second release. Distinct
+# tags may now overlap; finalize-cask.sh fails closed on that race (it pulls
+# --ff-only, refuses an out-of-order cask version, and pushes without force),
+# and a failed finalize_cask job is retryable. Re-pushing the same tag still
+# waits behind its own in-progress run.
 concurrency:
-  group: release
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:

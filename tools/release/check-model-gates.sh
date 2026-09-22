@@ -200,7 +200,7 @@ abort("missing release gate: CI push trigger is limited to main and spike branch
 abort("missing release gate: CI push trigger skips only unpinned prose") unless push_trigger.fetch("paths-ignore") == ["docs/superpowers/plans/**", "docs/RELEASE-NOTES-*.md", "docs/TROUBLESHOOTING.md", "Qfd.md", "LICENSE"]
 abort("missing release gate: CI preserves main runs while cancelling superseded branch runs") unless
   workflow.fetch("concurrency") == {
-    "group" => "ci-${{ github.ref }}",
+    "group" => "ci-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}",
     "cancel-in-progress" => "${{ github.ref != 'refs/heads/main' }}",
   }
 jobs = workflow.fetch("jobs")
@@ -374,7 +374,10 @@ abort("missing release gate: docs lane paths exactly mirror the CI paths-ignore 
 abort("missing release gate: docs lane has read-only contents permission") unless
   workflow.fetch("permissions") == {"contents" => "read"}
 abort("missing release gate: docs lane has exact concurrency policy") unless
-  workflow.fetch("concurrency") == {"group" => "docs-${{ github.ref }}", "cancel-in-progress" => true}
+  workflow.fetch("concurrency") == {
+    "group" => "docs-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}",
+    "cancel-in-progress" => "${{ github.ref != 'refs/heads/main' }}",
+  }
 jobs = workflow.fetch("jobs")
 abort("missing release gate: docs lane has exactly one docs job") unless jobs.keys == ["docs"]
 job = jobs.fetch("docs")
@@ -596,6 +599,8 @@ def reject_command_shadowing!(step, command_names, label)
 end
 
 workflow = YAML.load_file(ARGV.fetch(0))
+abort("missing release gate: release workflow queues every tag run in its own group") unless
+  workflow.fetch("concurrency") == {"group" => "release-${{ github.ref }}", "cancel-in-progress" => false}
 jobs = workflow.fetch("jobs")
 checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
@@ -2780,7 +2785,7 @@ YAML
   check_ci_integrity_controls "$ci_workflow"
   ci_integrity_fixture="$tmp_dir/ci-integrity.yml"
 
-  for mutation in concurrency doc-tests portable-doc-tests quality-gate all-targets; do
+  for mutation in concurrency shared-main-group doc-tests portable-doc-tests quality-gate all-targets; do
     cp "$ci_workflow" "$ci_integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -2789,6 +2794,10 @@ YAML
       case mutation
       when "concurrency"
         workflow.fetch("concurrency")["cancel-in-progress"] = true
+      when "shared-main-group"
+        # One group per ref keeps a single pending run: a third main push
+        # would replace the queued second one instead of waiting behind it.
+        workflow.fetch("concurrency")["group"] = "ci-${{ github.ref }}"
       when "doc-tests"
         jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Doc tests (macOS crates)" }
       when "portable-doc-tests"
@@ -3124,6 +3133,24 @@ YAML
     return 1
   fi
 
+  for mutation in shared-main-group cancel-main; do
+    cp "$docs_workflow" "$docs_integrity_fixture"
+    ruby -ryaml -e '
+      path, mutation = ARGV
+      workflow = YAML.load_file(path)
+      case mutation
+      when "shared-main-group" then workflow.fetch("concurrency")["group"] = "docs-${{ github.ref }}"
+      when "cancel-main" then workflow.fetch("concurrency")["cancel-in-progress"] = true
+      end
+      File.write(path, YAML.dump(workflow))
+    ' "$docs_integrity_fixture" "$mutation"
+    if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
+      echo "release gate self-test failed: docs lane $mutation concurrency mutation was accepted" >&2
+      cleanup
+      return 1
+    fi
+  done
+
   cp "$docs_workflow" "$docs_integrity_fixture"
   ruby -0pi -e 'sub(%q(actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1), %q(actions/checkout@v7))' "$docs_integrity_fixture"
   if check_docs_integrity_controls "$docs_integrity_fixture" "$ci_workflow" >/dev/null 2>&1; then
@@ -3140,7 +3167,7 @@ YAML
     portable-all-targets portable-doc-tests credential-scrubs prebuild-fail-open \
     publish-runner finalize-runner signer-workflow post-attestation \
     finalize-attestation-order post-attestation-order \
-    draft-preparation finalizer-repository; do
+    draft-preparation finalizer-repository shared-release-group cancel-release; do
     cp "$canonical_release_workflow" "$integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -3188,6 +3215,11 @@ YAML
       when "finalizer-repository"
         step = jobs.fetch("finalize_cask").fetch("steps").find { |candidate| candidate["name"] == "Finalize Homebrew cask" }
         step["run"] = step.fetch("run").sub(" \"$GITHUB_REPOSITORY\"", "")
+      when "shared-release-group"
+        # A fixed group keeps a single pending run: a third tag push would
+        # replace the queued second release instead of waiting behind it.
+        workflow.fetch("concurrency")["group"] = "release"
+      when "cancel-release" then workflow.fetch("concurrency")["cancel-in-progress"] = true
       end
       File.write(path, YAML.dump(workflow))
     ' "$integrity_fixture" "$mutation"
@@ -4095,7 +4127,7 @@ ruby -ryaml -e '
   end
   abort("missing release gate: CI preserves main runs while cancelling superseded branch runs") unless
     ci_workflow.fetch("concurrency") == {
-      "group" => "ci-${{ github.ref }}",
+      "group" => "ci-${{ github.ref }}-${{ github.ref == #{39.chr}refs/heads/main#{39.chr} && github.sha || #{39.chr}tip#{39.chr} }}",
       "cancel-in-progress" => "${{ github.ref != #{39.chr}refs/heads/main#{39.chr} }}",
     }
   jobs.each do |job_name, job|
@@ -4205,7 +4237,7 @@ ruby -ryaml -e '
   abort("missing release gate: release workflow push trigger is limited to v* tags") unless push_trigger.is_a?(Hash) && push_trigger.keys == ["tags"] && push_trigger.fetch("tags") == ["v*"]
   abort("missing release gate: workflow defaults to read-only contents permission") unless workflow.fetch("permissions").fetch("contents") == "read"
   concurrency = workflow.fetch("concurrency")
-  abort("missing release gate: release workflow serializes every tag run") unless concurrency.fetch("group") == "release"
+  abort("missing release gate: release workflow queues every tag run in its own group") unless concurrency.fetch("group") == "release-${{ github.ref }}"
   abort("missing release gate: release workflow does not cancel in-progress release") unless concurrency.fetch("cancel-in-progress") == false
   release_jobs = workflow.fetch("jobs")
   preflight = release_jobs.fetch("preflight")

@@ -26,7 +26,10 @@ permissions:
   contents: read
 
 concurrency:
-  group: ci-${{ github.ref }}
+  # Branch runs share one group per ref so a newer push cancels the older one.
+  # Each main commit gets its own group: a shared group keeps only one pending
+  # run, so a third push would silently replace the queued second one.
+  group: ci-${{ github.ref }}-${{ github.ref == 'refs/heads/main' && github.sha || 'tip' }}
   cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
 
 env:
