@@ -225,6 +225,16 @@ fn observer_event_for_pid(
     }
 }
 
+/// The `pid:42` / `ax:0x123` / generation 1 handle most adapter tests target.
+fn pid42_field() -> FieldHandle {
+    FieldHandle {
+        app: "pid:42".into(),
+        pid: Some(42),
+        element_id: pointer_identity("ax:0x123").field_element_id(),
+        generation: 1,
+    }
+}
+
 pub(crate) fn pointer_identity(element_id: &str) -> AxElementIdentity {
     AxElementIdentity::pointer_only(element_id)
 }
@@ -1560,12 +1570,7 @@ fn capabilities_blocks_secure_text_field_handles() {
 #[test]
 fn capabilities_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     let caps = adapter
         .capabilities(&field)
@@ -1616,12 +1621,7 @@ fn capabilities_worker_secure_input_recheck_is_fail_closed() {
 
 #[test]
 fn field_workers_fail_closed_when_secure_input_flips_before_ax() {
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     type FieldWorkerProbe = fn(&MacosPlatformAdapter, &FieldHandle) -> Result<(), PlatformError>;
     let probes: [(&str, FieldWorkerProbe); 9] = [
@@ -1864,12 +1864,7 @@ fn editable_capabilities_preserve_unknown_role_in_toolkit() {
 #[test]
 fn read_context_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.read_context(&field),
@@ -1907,12 +1902,7 @@ fn read_context_blocks_secure_text_field_handles() {
 #[test]
 fn caret_rect_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.caret_rect(&field),
@@ -1950,12 +1940,7 @@ fn caret_rect_blocks_secure_text_field_handles() {
 #[test]
 fn popup_anchor_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.popup_anchor(&field),
@@ -2045,12 +2030,7 @@ fn popup_anchor_rect_falls_back_from_frameless_element_window_to_app_window() {
 #[test]
 fn caret_diagnostics_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.caret_diagnostics(&field),
@@ -2088,12 +2068,7 @@ fn caret_diagnostics_blocks_secure_text_field_handles() {
 #[test]
 fn insert_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::AxSet),
@@ -2139,12 +2114,7 @@ fn insert_clipboard_posts_text_to_target_pid() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::Clipboard),
@@ -2168,12 +2138,7 @@ fn insert_synthetic_keys_posts_text_when_frontmost_pid_matches_field() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "hé", InsertStrategy::SyntheticKeys),
@@ -2196,28 +2161,13 @@ fn insert_global_strategy_rejects_when_frontmost_pid_moved_to_another_app() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
         Err(PlatformError::StaleField)
     );
     assert!(posted.lock().unwrap().is_empty());
-}
-
-/// The `pid:42` / `ax:0x123` / generation 1 handle most adapter tests target.
-fn pid42_field() -> FieldHandle {
-    FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    }
 }
 
 /// The AX seam reporting `identity` as the target app's focused element —
@@ -2258,12 +2208,7 @@ fn global_insert_refuses_a_same_pid_different_field_as_stale() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     for strategy in [InsertStrategy::SyntheticKeys, InsertStrategy::Clipboard] {
         assert_eq!(
@@ -2352,12 +2297,7 @@ fn insert_synthetic_keys_errors_when_no_app_is_frontmost() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
@@ -2389,12 +2329,7 @@ fn insert_synthetic_keys_rechecks_secure_input_before_posting() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::SyntheticKeys),
@@ -2427,12 +2362,7 @@ fn insert_clipboard_rechecks_secure_input_before_posting() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "x", InsertStrategy::Clipboard),
@@ -2487,12 +2417,7 @@ fn insert_replacing_with_zero_replace_left_is_pure_append_like_insert() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing(&field, "hi", 0, InsertStrategy::SyntheticKeys),
@@ -2515,12 +2440,7 @@ fn insert_replacing_range_refuses_non_axset_without_posting_text() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing_range(
@@ -2540,12 +2460,7 @@ fn insert_replacing_range_refuses_non_axset_without_posting_text() {
 #[test]
 fn insert_replacing_range_secure_input_wins_even_for_non_axset_strategy() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing_range(
@@ -3731,12 +3646,7 @@ fn insert_replacing_synthetic_keys_refuses_non_atomic_replacement() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
@@ -3750,12 +3660,7 @@ fn insert_replacing_synthetic_keys_refuses_non_atomic_replacement() {
 #[test]
 fn insert_replacing_blocks_when_global_secure_input_is_enabled() {
     let adapter = test_adapter_with_secure_input(true);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing(&field, "the", 3, InsertStrategy::SyntheticKeys),
@@ -3778,12 +3683,7 @@ fn insert_replacing_clipboard_refuses_non_atomic_replacement() {
         Ok(())
     });
     let adapter = test_adapter_with_hooks(config);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert_replacing(&field, "😄", 6, InsertStrategy::Clipboard),
@@ -6155,12 +6055,7 @@ fn synthetic_event_tag_can_be_detected_by_future_taps() {
 #[test]
 fn insert_empty_text_is_noop_for_axset() {
     let adapter = test_adapter_with_secure_input(false);
-    let field = FieldHandle {
-        app: "pid:42".into(),
-        pid: Some(42),
-        element_id: pointer_identity("ax:0x123").field_element_id(),
-        generation: 1,
-    };
+    let field = pid42_field();
 
     assert_eq!(
         adapter.insert(&field, "", InsertStrategy::AxSet),
