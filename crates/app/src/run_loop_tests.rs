@@ -796,90 +796,167 @@ fn settings_flags_share_the_tray_enabled_atomic() {
     // The Enabled switch and the tray toggle are TWO VIEWS of ONE
     // atomic — sharing the Arc is what keeps them in sync (banked
     // c115 design). Pin identity, not just equal values.
-    let config = Config::from_lookup(lookup(&[
+    let config = startup_test_config();
+    let tray_enabled = Arc::new(AtomicBool::new(true));
+    let flags = build_settings_flags(&config, Arc::clone(&tray_enabled), false, 16);
+    assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
+    tray_enabled.store(false, Ordering::Relaxed);
+    assert!(
+        !flags.general_enabled.load(Ordering::Relaxed),
+        "a tray toggle is visible through the Settings switch"
+    );
+}
+
+/// The Settings-pane state `build_settings_flags` seeds from one config, as
+/// literals, so a swapped or mis-mapped field cannot hide behind a fixture
+/// where every switch reads the same.
+#[derive(Debug, PartialEq)]
+struct SeededSettingsFlags {
+    launch_at_login: bool,
+    midline: bool,
+    autocorrect: bool,
+    full_autocorrect: bool,
+    thesaurus_selection: bool,
+    trailing_space: bool,
+    cross_app_previous_inputs: bool,
+    clipboard: bool,
+    screen: bool,
+    emoji: bool,
+    emoji_skin_tone_index: usize,
+    emoji_gender_index: usize,
+    instructions: String,
+    sender_name: String,
+    sender_email: String,
+    strength_index: usize,
+}
+
+fn seeded_settings_flags(flags: &crate::shell::SettingsFlags) -> SeededSettingsFlags {
+    SeededSettingsFlags {
+        launch_at_login: flags.general_launch_at_login.load(Ordering::Relaxed),
+        midline: flags.labs_midline.load(Ordering::Relaxed),
+        autocorrect: flags.general_autocorrect.load(Ordering::Relaxed),
+        full_autocorrect: flags.general_full_autocorrect.load(Ordering::Relaxed),
+        thesaurus_selection: flags.general_thesaurus_selection.load(Ordering::Relaxed),
+        trailing_space: flags.general_trailing_space.load(Ordering::Relaxed),
+        cross_app_previous_inputs: flags
+            .context_cross_app_previous_inputs
+            .load(Ordering::Relaxed),
+        clipboard: flags.context_clipboard.load(Ordering::Relaxed),
+        screen: flags.context_screen.load(Ordering::Relaxed),
+        emoji: flags.emoji_enabled.load(Ordering::Relaxed),
+        emoji_skin_tone_index: flags.emoji_skin_tone_index.load(Ordering::Relaxed),
+        emoji_gender_index: flags.emoji_gender_index.load(Ordering::Relaxed),
+        instructions: flags.personalization_instructions.lock().unwrap().clone(),
+        sender_name: flags.personalization_sender_name.lock().unwrap().clone(),
+        sender_email: flags.personalization_sender_email.lock().unwrap().clone(),
+        strength_index: flags.personalization_strength_index.load(Ordering::Relaxed),
+    }
+}
+
+#[test]
+fn build_settings_flags_mirrors_config_fields() {
+    // Two configs with every switch inverted between them, alternating
+    // within each, so each flag must track ITS OWN config field.
+    let alternating = Config::from_lookup(lookup(&[
         ("COMPME_MIDLINE", "1"),
-        ("COMPME_AUTOCORRECT", "1"),
+        ("COMPME_AUTOCORRECT", "0"),
         ("COMPME_FULL_AUTOCORRECT", "1"),
-        ("COMPME_THESAURUS_SELECTION", "1"),
+        ("COMPME_THESAURUS_SELECTION", "0"),
         ("COMPME_TRAILING_SPACE", "1"),
-        ("COMPME_CROSS_APP_PREVIOUS_INPUTS", "1"),
-        ("COMPME_CLIPBOARD_CONTEXT", "0"),
-        ("COMPME_SCREEN_CONTEXT", "1"),
+        ("COMPME_CROSS_APP_PREVIOUS_INPUTS", "0"),
+        ("COMPME_CLIPBOARD_CONTEXT", "1"),
+        ("COMPME_SCREEN_CONTEXT", "0"),
         ("COMPME_EMOJI", "1"),
-        ("COMPME_EMOJI_SKIN_TONE", "dark"),
-        ("COMPME_EMOJI_GENDER", "female"),
+        ("COMPME_EMOJI_SKIN_TONE", "medium-light"),
+        ("COMPME_EMOJI_GENDER", "male"),
         ("COMPME_INSTRUCTIONS", "Keep completions terse."),
         ("COMPME_SENDER_NAME", "Ada"),
         ("COMPME_SENDER_EMAIL", "ada@example.com"),
         ("COMPME_STRENGTH", "4"),
     ]));
-    let tray_enabled = Arc::new(AtomicBool::new(true));
-    let flags = build_settings_flags(&config, Arc::clone(&tray_enabled), false, 16);
-    assert!(Arc::ptr_eq(&flags.general_enabled, &tray_enabled));
-    assert!(!flags.general_launch_at_login.load(Ordering::Relaxed));
+    let flags = build_settings_flags(&alternating, Arc::new(AtomicBool::new(true)), true, 16);
     assert_eq!(
-        flags.labs_midline.load(Ordering::Relaxed),
-        config.allow_mid_word
-    );
-    assert!(flags.general_autocorrect.load(Ordering::Relaxed) == config.autocorrect);
-    assert_eq!(
-        flags.general_full_autocorrect.load(Ordering::Relaxed),
-        config.full_autocorrect
-    );
-    assert_eq!(
-        flags.general_thesaurus_selection.load(Ordering::Relaxed),
-        config.thesaurus_selection
-    );
-    assert_eq!(
-        flags.general_trailing_space.load(Ordering::Relaxed),
-        config.trailing_space
-    );
-    assert_eq!(
-        flags
-            .context_cross_app_previous_inputs
-            .load(Ordering::Relaxed),
-        config.cross_app_previous_inputs
-    );
-    assert!(flags.context_clipboard.load(Ordering::Relaxed) == config.clipboard_context);
-    assert!(flags.context_screen.load(Ordering::Relaxed) == config.screen_context);
-    assert_eq!(
-        flags.emoji_enabled.load(Ordering::Relaxed),
-        config.emoji.is_some()
+        seeded_settings_flags(&flags),
+        SeededSettingsFlags {
+            launch_at_login: true,
+            midline: true,
+            autocorrect: false,
+            full_autocorrect: true,
+            thesaurus_selection: false,
+            trailing_space: true,
+            cross_app_previous_inputs: false,
+            clipboard: true,
+            screen: false,
+            emoji: true,
+            emoji_skin_tone_index: 2,
+            emoji_gender_index: 2,
+            instructions: "Keep completions terse.".into(),
+            sender_name: "Ada".into(),
+            sender_email: "ada@example.com".into(),
+            strength_index: 4,
+        }
     );
     assert_eq!(
-        flags.emoji_skin_tone_index.load(Ordering::Relaxed),
-        emoji_skin_tone_index(config.emoji_prefs.skin_tone)
+        flags.personalization_strength_titles,
+        vec![
+            "Off",
+            "Very gentle",
+            "Gentle",
+            "Balanced",
+            "Strong",
+            "Strict"
+        ]
     );
-    assert_eq!(
-        flags.emoji_gender_index.load(Ordering::Relaxed),
-        emoji_gender_index(config.emoji_prefs.gender)
-    );
+    // The model picker is seeded from the catalog, not the config; its own
+    // tests in model_picker pin the index and the RAM-verdict titles.
     assert_eq!(
         flags.setup_model_index.load(Ordering::Relaxed),
         crate::model_picker::recommended_index()
     );
-    let expected_titles = crate::model_picker::model_menu_titles(16);
     assert!(!flags.setup_model_menu_titles.is_empty());
-    assert_eq!(flags.setup_model_menu_titles, expected_titles);
     assert_eq!(
-        *flags.personalization_instructions.lock().unwrap(),
-        config.personalization.global_instructions
+        flags.setup_model_menu_titles,
+        crate::model_picker::model_menu_titles(16)
     );
+
+    let inverted = Config::from_lookup(lookup(&[
+        ("COMPME_MIDLINE", "0"),
+        ("COMPME_AUTOCORRECT", "1"),
+        ("COMPME_FULL_AUTOCORRECT", "0"),
+        ("COMPME_THESAURUS_SELECTION", "1"),
+        ("COMPME_TRAILING_SPACE", "0"),
+        ("COMPME_CROSS_APP_PREVIOUS_INPUTS", "1"),
+        ("COMPME_CLIPBOARD_CONTEXT", "0"),
+        ("COMPME_SCREEN_CONTEXT", "1"),
+        ("COMPME_EMOJI", "0"),
+        ("COMPME_EMOJI_SKIN_TONE", "dark"),
+        ("COMPME_EMOJI_GENDER", "female"),
+        ("COMPME_INSTRUCTIONS", "Write formally."),
+        ("COMPME_SENDER_NAME", "Grace"),
+        ("COMPME_SENDER_EMAIL", "grace@example.org"),
+        ("COMPME_STRENGTH", "1"),
+    ]));
+    let flags = build_settings_flags(&inverted, Arc::new(AtomicBool::new(true)), false, 16);
     assert_eq!(
-        *flags.personalization_sender_name.lock().unwrap(),
-        config.personalization.sender.name
-    );
-    assert_eq!(
-        *flags.personalization_sender_email.lock().unwrap(),
-        config.personalization.sender.email
-    );
-    assert_eq!(
-        flags.personalization_strength_index.load(Ordering::Relaxed),
-        personalization_strength_index(config.personalization.strength)
-    );
-    assert_eq!(
-        flags.personalization_strength_titles,
-        personalization_strength_titles()
+        seeded_settings_flags(&flags),
+        SeededSettingsFlags {
+            launch_at_login: false,
+            midline: false,
+            autocorrect: true,
+            full_autocorrect: false,
+            thesaurus_selection: true,
+            trailing_space: false,
+            cross_app_previous_inputs: true,
+            clipboard: false,
+            screen: true,
+            emoji: false,
+            emoji_skin_tone_index: 5,
+            emoji_gender_index: 1,
+            instructions: "Write formally.".into(),
+            sender_name: "Grace".into(),
+            sender_email: "grace@example.org".into(),
+            strength_index: 1,
+        }
     );
 }
 
