@@ -1486,15 +1486,21 @@ mod tests {
         // G8: a wedged accessibility bus must surface the contract's
         // PlatformError::Timeout, never park the caller. The closure stands
         // in for a *ProxyBlocking call that never returns.
+        // The call stays wedged until the test releases it after the caller
+        // has returned, so "gave up at the deadline" does not race a sleep. A
+        // caller that waited instead would sit out the 30 s release fallback.
+        let (release_tx, release_rx) = mpsc::channel::<()>();
         let started = std::time::Instant::now();
-        let result = bounded_bus_call("wedged", std::time::Duration::from_millis(10), || {
-            std::thread::sleep(std::time::Duration::from_millis(250));
+        let result = bounded_bus_call("wedged", std::time::Duration::from_millis(10), move || {
+            let _ = release_rx.recv_timeout(std::time::Duration::from_secs(30));
             Ok(7)
         });
+        let elapsed = started.elapsed();
+        let _ = release_tx.send(());
         assert_eq!(result, Err(PlatformError::Timeout));
         assert!(
-            started.elapsed() < std::time::Duration::from_millis(200),
-            "the caller must give up at the deadline, not wait the closure out"
+            elapsed < std::time::Duration::from_secs(10),
+            "the caller must give up at the deadline, not wait the closure out: {elapsed:?}"
         );
     }
 

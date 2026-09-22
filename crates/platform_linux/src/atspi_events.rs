@@ -624,10 +624,16 @@ mod tests {
             "this case must be the timeout path, not a clean acknowledgement: {elapsed:?}"
         );
 
-        release_tx.send(()).expect("release the blocked subscriber");
+        // Dropping (not sending) releases every later `recv` too, so a broken
+        // gate delivers and returns instead of blocking the barrier below.
+        drop(release_tx);
         // The detached worker now drains: the queued event must hit the closed
-        // gate rather than the callback.
-        std::thread::sleep(Duration::from_millis(100));
+        // gate rather than the callback. Its late stop acknowledgement is sent
+        // only after `dispatch_gated_events` returns, so it is the barrier that
+        // makes "nothing more was delivered" a settled fact, not a sleep.
+        stopped_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the released worker must finish draining");
         assert_eq!(
             *delivered
                 .lock()
