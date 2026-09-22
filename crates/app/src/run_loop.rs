@@ -2176,11 +2176,17 @@ fn hydrate_previous_inputs(
 /// drift — which is exactly how retrieval first came to be enabled under a
 /// configuration that records nothing.
 fn previous_input_context_chars(config: &Config, context_bound: usize) -> usize {
-    if config.context_max_chars > 0 || config.cross_app_previous_inputs {
+    if previous_inputs_enabled(config) {
         context_bound
     } else {
         0
     }
+}
+
+/// Whether previous-input context is on at all: per-app via
+/// `COMPME_PREVIOUS_INPUT_CONTEXT`, or the live cross-app opt-in.
+fn previous_inputs_enabled(config: &Config) -> bool {
+    config.context_max_chars > 0 || config.cross_app_previous_inputs
 }
 
 /// The Focus-arm edge for [`hydrate_previous_inputs`]: owns the store plumbing
@@ -3608,7 +3614,15 @@ where
             SettingsCommand::CrossAppPreviousInputs { on } => {
                 ctx.cross_app_previous_inputs.store(*on, Ordering::Relaxed);
                 if !on {
-                    ctx.previous_inputs.clear_cross_app();
+                    // With per-app context also off the feature is now fully
+                    // off, but the worker reads the rings under the floored
+                    // `context_bound`: drop the per-app copies too, or they
+                    // keep feeding "Recent:" into prompts until relaunch.
+                    if previous_inputs_enabled(ctx.config) {
+                        ctx.previous_inputs.clear_cross_app();
+                    } else {
+                        ctx.previous_inputs.clear_all();
+                    }
                 }
                 (ctx.persist_switch)(
                     "COMPME_CROSS_APP_PREVIOUS_INPUTS",

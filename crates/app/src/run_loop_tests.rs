@@ -1645,6 +1645,73 @@ fn apply_settings_commands_persists_switches_and_dismisses_on_off_edges() {
 }
 
 #[test]
+fn disabling_cross_app_with_per_app_context_off_removes_recent_from_worker_block() {
+    // Given cross-app sharing on and COMPME_PREVIOUS_INPUT_CONTEXT unset, an
+    // accept fills both rings (the per-app ring always records). When the
+    // user switches cross-app sharing off, previous-input context is fully
+    // off — so the worker, whose bound is floored nonzero for clipboard
+    // context, must not keep feeding the per-app ring as "Recent:".
+    let mut engine = phase_engine();
+    let mut suggestion = phase_pending_suggestion();
+    let mut config = Config::from_lookup(lookup(&[("COMPME_CROSS_APP_PREVIOUS_INPUTS", "1")]));
+    assert!(previous_input_context_chars(&config, 160) > 0);
+    let mut settings = phase_settings_state(Vec::new());
+    let shell: Arc<dyn ShellHost> = Arc::new(RecordingShell {
+        trusted: true,
+        log: startup_log(),
+    });
+    let settings_flags = build_settings_flags(&config, Arc::new(AtomicBool::new(false)), false, 16);
+    let mut settings_window = crate::shell::SettingsWindow::new(settings_flags.clone());
+    let cross_app = Arc::new(AtomicBool::new(true));
+    let previous_inputs = PreviousInputs::default();
+    let request = req(1);
+    previous_inputs.record_with_cross_app(&request.field.app, "earlier prose".into(), true);
+    let worker_context = WorkerContext {
+        previous_inputs: previous_inputs.clone(),
+        cross_app_previous_inputs: Arc::clone(&cross_app),
+        max_chars: settings_context_bound_chars(config.context_max_chars),
+        ..WorkerContext::default()
+    };
+    assert!(worker_context
+        .block_for(&request)
+        .contains("Recent: earlier prose"));
+    let clipboard_cell = Mutex::new(None);
+    let screen_cell = Mutex::new(None);
+    let mut screen_ocr = None;
+
+    // The pure mirror flips the config before the apply half runs.
+    config.cross_app_previous_inputs = false;
+    apply_settings_commands(
+        &[SettingsCommand::CrossAppPreviousInputs { on: false }],
+        SettingsApplyCtx {
+            engine: &mut engine,
+            suggestion: &mut suggestion,
+            shell: &shell,
+            settings_window: &mut settings_window,
+            config: &mut config,
+            settings: &mut settings,
+            launch_login_flag: settings_flags.general_launch_at_login.as_ref(),
+            screen_flag: settings_flags.context_screen.as_ref(),
+            cross_app_previous_inputs: &cross_app,
+            previous_inputs: &previous_inputs,
+            clipboard_cell: &clipboard_cell,
+            screen_cell: &screen_cell,
+            screen_ocr: &mut screen_ocr,
+            set_screen_wait_ms: &|_ms| {},
+            spawn_screen_ocr: &|| Err("not spawned in this test".to_string()),
+            recompose_setup_lines: &|_config| {},
+            persist_switch: &|_key, _label, _on| {},
+            persist_value: &|_key, _label, _value| {},
+        },
+    );
+
+    assert!(
+        !worker_context.block_for(&request).contains("Recent:"),
+        "previous-input context is fully off: no ring may reach the prompt"
+    );
+}
+
+#[test]
 fn apply_settings_commands_launch_at_login_rejection_restores_the_ui_atomic() {
     // The OS-backed edge (spec analysis: launch-at-login is NOT pure): a
     // rejected shell mutation restores the UI atomic, leaves the
