@@ -167,7 +167,7 @@ pub enum Command {
     /// Like `Insert`, but first delete `replace_left` characters immediately to
     /// the left of the caret — a *replacement* (e.g. emoji `:smile`→😄, typo fix,
     /// US→UK spelling). Emitted for an `AxSet` `Showing` whose `replace_left > 0`
-    /// (produced by `offer_replacement`). `NativeRangeSet` fields instead emit
+    /// (produced by `offer_replacement_multi`). `NativeRangeSet` fields instead emit
     /// `ReplaceRange` with an exact scalar range and original-text guard.
     /// SyntheticKeys/Clipboard fields deliberately fail closed.
     Replace {
@@ -199,7 +199,7 @@ struct Showing {
     index: usize,
     caret: usize,
     /// Characters to delete left of the caret on accept (a replacement, set by
-    /// `offer_replacement`). `0` for ordinary model completions (append-only).
+    /// `offer_replacement_multi`). `0` for ordinary model completions (append-only).
     replace_left: usize,
     presentation: Presentation,
     correction_range: Option<CorrectionRange>,
@@ -1058,13 +1058,16 @@ impl SuggestionMachine {
         (!text.is_empty()).then(|| (showing.field.clone(), text, range))
     }
 
-    /// Offer a local *replacement* suggestion: show `text` as the ghost, and on
-    /// accept delete `replace_left` characters to the left of the caret before
-    /// inserting (emoji `:smile`→😄, typo fix, US→UK spelling). Host-driven — the
-    /// host detects the opportunity (e.g. `emoji::suggest`) and supplies the
-    /// rendered `text` + `replace_left`; `engine_core` takes no dependency on those
-    /// crates. Gated like a model completion: no offer when the field can't show
-    /// inline (`enabled`), the field is suppressed (post-Esc), or `text` is empty.
+    /// Offer a local *replacement* suggestion: show the first candidate as the
+    /// ghost (Down arrow cycles the rest), and on accept delete `replace_left`
+    /// characters to the left of the caret before inserting (emoji `:smile`→😄,
+    /// typo fix, US→UK spelling). Host-driven — the host detects the opportunity
+    /// (e.g. `emoji::suggest`) and supplies the rendered candidates +
+    /// `replace_left`; `engine_core` takes no dependency on those crates. Gated
+    /// like a model completion: no offer when the field can't show inline
+    /// (`enabled`), the field is suppressed (post-Esc), or the candidate list is
+    /// empty (before or after dropping empty/duplicate entries). A single
+    /// candidate is the ordinary case — pass a one-element vec.
     /// The offer rides the current snapshot and **disarms the model path** for it
     /// (clears `pending_since` + `requested`), so neither a prior in-flight request
     /// (stale by snapshot) nor a freshly-armed one (the debounce tick that
@@ -1076,28 +1079,6 @@ impl SuggestionMachine {
     /// left-delete command; `NativeRangeSet` captures the exact original scalar
     /// slice and emits a guarded `ReplaceRange`. SyntheticKeys/Clipboard cannot
     /// delete atomically, so offering there would leave the typed token in place.
-    ///
-    /// Test-only: production code calls [`Self::offer_replacement_multi`]
-    /// directly. This single-candidate wrapper survives only for test call sites.
-    #[cfg(test)]
-    pub fn offer_replacement(
-        &mut self,
-        field: &FieldHandle,
-        text: String,
-        replace_left: usize,
-    ) -> Vec<Command> {
-        // Single-candidate convenience: identical to the multi path with one
-        // candidate (multi's empty-filter + exact-dedup is a no-op on one
-        // non-empty element, and its empty-after-filter guard matches this
-        // path's `text.is_empty()` gate). Delegating keeps the offer logic —
-        // the gating, supersede accounting, model-path disarm, and ShowGhost —
-        // in exactly one place (`offer_replacement_multi`) rather than two.
-        self.offer_replacement_multi(field, vec![text], replace_left)
-    }
-
-    /// Offer a local replacement (emoji/thesaurus/typo) with multiple candidates.
-    /// Works exactly like `offer_replacement`, but populates a candidate list
-    /// for cycling (Down arrow).
     pub fn offer_replacement_multi(
         &mut self,
         field: &FieldHandle,
@@ -1117,10 +1098,11 @@ impl SuggestionMachine {
         if self.field.as_ref() != Some(field) {
             return out;
         }
-        // Filter empties and dedup in order before seeding: the single-candidate
-        // path rejects empty text and the completion path dedups (on a normalized
-        // key); this multi seed dedups on EXACT match — a tighter equivalence,
-        // sufficient so Cycle never shows a blank or an exact-duplicate candidate.
+        // Filter empties and dedup in order before seeding: a blank candidate
+        // must never reach the screen, and the completion path dedups (on a
+        // normalized key); this seed dedups on EXACT match — a tighter
+        // equivalence, sufficient so Cycle never shows a blank or an
+        // exact-duplicate candidate.
         // (Defense-in-depth: today's producers emit non-empty, unique candidates.)
         let mut seen = std::collections::HashSet::new();
         let candidates: Vec<String> = candidates
@@ -3050,7 +3032,7 @@ mod tests {
         // Suppression survived the caret move: the field is still blocked, so an
         // offer (gated by `self.suppressed`) produces nothing and shows no ghost.
         assert_eq!(
-            machine.offer_replacement(&f, "\u{1F604}".into(), 5),
+            machine.offer_replacement_multi(&f, vec!["\u{1F604}".into()], 5),
             vec![],
             "a no-op CaretMoved must not clear Esc-suppression"
         );
@@ -3085,7 +3067,7 @@ mod tests {
         machine.on_event(Event::DismissDiscard);
         assert!(
             !machine
-                .offer_replacement(&field("field-a"), "\u{1F604}".into(), 5)
+                .offer_replacement_multi(&field("field-a"), vec!["\u{1F604}".into()], 5)
                 .is_empty(),
             "DismissDiscard must not suppress the field"
         );
@@ -3454,12 +3436,12 @@ mod tests {
         };
         let full_replace = {
             let mut machine = focused_machine();
-            machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+            machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5);
             machine.on_event(Event::AcceptFull)
         };
         let word_replace = {
             let mut machine = focused_machine();
-            machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+            machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5);
             machine.on_event(Event::AcceptWord)
         };
         let selection_full_replace = {
@@ -3772,8 +3754,8 @@ mod tests {
         );
     }
 
-    /// A machine with `field-a` focused (so `offer_replacement`'s field-identity
-    /// guard passes). Focus advances the snapshot to 1.
+    /// A machine with `field-a` focused (so `offer_replacement_multi`'s
+    /// field-identity guard passes). Focus advances the snapshot to 1.
     fn focused_machine() -> SuggestionMachine {
         let mut machine = machine();
         machine.on_event(Event::Focus {
@@ -3872,7 +3854,7 @@ mod tests {
         let mut machine = focused_machine();
         let f = field("field-a");
         assert_eq!(
-            machine.offer_replacement(&f, "😄".into(), 5),
+            machine.offer_replacement_multi(&f, vec!["😄".into()], 5),
             vec![Command::ShowGhost {
                 field: f.clone(),
                 snapshot: 1,
@@ -3898,7 +3880,7 @@ mod tests {
     fn offer_replacement_word_accept_also_replaces_atomic_token() {
         let mut machine = focused_machine();
         let f = field("field-a");
-        machine.offer_replacement(&f, "😄".into(), 5);
+        machine.offer_replacement_multi(&f, vec!["😄".into()], 5);
         // A replacement is a single atomic token: Word-accept completes it
         // (no rest) and carries the deletion, exactly like Full.
         assert_eq!(
@@ -3915,37 +3897,6 @@ mod tests {
     }
 
     #[test]
-    fn offer_replacement_blocked_when_suppressed_or_empty() {
-        let f = field("field-a");
-        // Post-Esc suppression blocks a local offer.
-        let mut suppressed = focused_machine();
-        suppressed.on_event(Event::DismissSuppress);
-        assert_eq!(suppressed.offer_replacement(&f, "😄".into(), 5), vec![]);
-        // Observable: nothing is offered, so there is nothing to preview or
-        // accept — a later Accept inserts nothing (refactor-survivable vs. a
-        // private `showing.is_none()` probe).
-        assert_eq!(suppressed.preview_accept_insert(AcceptAction::Full), None);
-        assert_eq!(suppressed.on_event(Event::AcceptFull), vec![]);
-        // Empty text never offers (no spurious ghost).
-        let mut machine = focused_machine();
-        assert_eq!(machine.offer_replacement(&f, String::new(), 3), vec![]);
-        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
-        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
-    }
-
-    #[test]
-    fn offer_replacement_rejects_zero_delete_count() {
-        let f = field("field-a");
-        let mut machine = focused_machine();
-
-        assert_eq!(machine.offer_replacement(&f, "the".into(), 0), vec![]);
-        assert!(machine.showing.is_none());
-        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
-        assert!(!machine.take_stat_events().contains(&StatEvent::Shown));
-        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
-    }
-
-    #[test]
     fn stat_events_buffer_is_capped_when_host_never_drains() {
         // A host that stops draining must not grow the buffer without bound.
         // record_stat caps at STAT_EVENTS_CAP; past that, advisory stats drop.
@@ -3957,111 +3908,6 @@ mod tests {
         // After draining, the buffer is empty and accepts events again.
         machine.record_stat(StatEvent::Superseded);
         assert_eq!(machine.take_stat_events().len(), 1);
-    }
-
-    #[test]
-    fn offer_replacement_blocked_in_secure_or_unsupported_field() {
-        // Security-critical gate: a secure field (password) is `UxMode::Blocked`,
-        // so `enabled()` is false and no replacement ghost may be offered — a
-        // replacement must never surface a glyph/synonym into a password field.
-        // This is the `!self.enabled()` branch of `offer_replacement`.
-        let mut secure = machine();
-        secure.on_event(Event::Focus {
-            field: field("field-a"),
-            caps: secure_caps(),
-        });
-        assert_eq!(
-            secure.offer_replacement(&field("field-a"), "😄".into(), 5),
-            vec![]
-        );
-        assert!(secure.showing.is_none());
-        assert!(!secure.take_stat_events().contains(&StatEvent::Shown));
-    }
-
-    #[test]
-    fn offer_replacement_blocked_when_field_is_not_focused() {
-        // Focus-race guard: an offer for a field other than the focused one (or
-        // when nothing is focused) is dropped — no ghost tagged to a stale field.
-        let mut focused = focused_machine(); // field-a focused
-        assert_eq!(
-            focused.offer_replacement(&field("other-field"), "😄".into(), 5),
-            vec![]
-        );
-        assert!(focused.showing.is_none());
-        let mut unfocused = machine();
-        assert_eq!(
-            unfocused.offer_replacement(&field("field-a"), "😄".into(), 5),
-            vec![]
-        );
-    }
-
-    #[test]
-    fn offer_replacement_disarms_pending_model_request_so_it_cannot_supersede() {
-        let mut machine = focused_machine();
-        // An edit arms the debounce for a model completion (same turn the host
-        // detects an emoji/typo and offers a replacement).
-        machine.on_event(text_changed("color", 5, 0));
-        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
-        let _ = machine.take_stat_events();
-        // The debounce tick must NOT fire a model request — the offer preempted it.
-        let tick = machine.on_event(Event::Tick { now_ms: 10_000 });
-        assert!(
-            !tick
-                .iter()
-                .any(|c| matches!(c, Command::RequestCompletion { .. })),
-            "model request armed despite a local replacement offer: {tick:?}"
-        );
-        // The replacement ghost is still the one showing (not superseded).
-        assert_eq!(
-            machine.preview_accept_insert(AcceptAction::Full),
-            Some((field("field-a"), "😄".into(), 5))
-        );
-    }
-
-    #[test]
-    fn offer_replacement_drops_a_prior_in_flight_completion_that_returns_after() {
-        // The other half of the disarm guarantee (the sibling test pins the
-        // freshly-armed debounce tick): a model request that was *already
-        // in-flight* when the offer was made must not match-and-supersede the
-        // replacement ghost when its completion finally returns. `offer_replacement`
-        // clears `requested`, so the late completion fails the `matches_request`
-        // guard in `on_completion_ready` and is dropped.
-        let mut machine = focused_machine();
-        // Arm and actually issue a model request (debounce elapsed).
-        machine.on_event(text_changed("color", 5, 0));
-        let issued = machine.on_event(Event::Tick { now_ms: 10_000 });
-        let req = issued
-            .iter()
-            .find_map(|c| match c {
-                Command::RequestCompletion {
-                    generation,
-                    snapshot,
-                    ..
-                } => Some((*generation, *snapshot)),
-                _ => None,
-            })
-            .expect("a model request must have been issued");
-        // The host detects an emoji/typo on the same snapshot and offers a
-        // replacement — this disarms the in-flight request.
-        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
-        let _ = machine.take_stat_events();
-        // The previously-issued completion now returns (same generation+snapshot
-        // it was requested with). It must be ignored — no ghost command at all.
-        let late = machine.on_event(Event::CompletionReady {
-            generation: req.0,
-            field: field("field-a"),
-            snapshot: req.1,
-            text: "colorful".into(),
-        });
-        assert!(
-            late.is_empty(),
-            "a disarmed in-flight completion produced commands: {late:?}"
-        );
-        // The replacement ghost is untouched — still the one showing.
-        assert_eq!(
-            machine.preview_accept_insert(AcceptAction::Full),
-            Some((field("field-a"), "😄".into(), 5))
-        );
     }
 
     #[test]
@@ -4102,10 +3948,9 @@ mod tests {
 
     #[test]
     fn offer_replacement_multi_skips_empty_candidates_and_shows_the_first_nonempty() {
-        // The single-candidate path rejects empty text outright; the multi seed
-        // must hold the same contract so a malformed vec like ["", "huge"] never
-        // shows or accepts a blank ghost. The empty entry is dropped and the
-        // first NON-empty candidate ("huge") is shown.
+        // An empty candidate must never reach the screen: a malformed vec like
+        // ["", "huge"] drops the empty entry and shows the first NON-empty
+        // candidate ("huge") rather than a blank ghost.
         let mut machine = focused_machine();
         let f = field("field-a");
         assert_eq!(
@@ -4128,9 +3973,9 @@ mod tests {
 
     #[test]
     fn offer_replacement_multi_dedups_candidates_so_cycle_never_repeats() {
-        // The model/single paths dedup; the multi seed must too, or Cycle lands
-        // on the same word twice. ["huge","huge","big"] → after dedup the second
-        // Cycle target is "big", not a repeated "huge".
+        // The completion path dedups; the replacement seed must too, or Cycle
+        // lands on the same word twice. ["huge","huge","big"] → after dedup the
+        // second Cycle target is "big", not a repeated "huge".
         let mut machine = focused_machine();
         let f = field("field-a");
         assert_eq!(
@@ -4157,33 +4002,11 @@ mod tests {
     }
 
     #[test]
-    fn offer_replacement_requires_an_atomic_range_replace_field() {
-        // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
-        // deletion, so no replacement is offered there (avoids `:smile😄` + a
-        // desynced host diff baseline).
-        let mut caps = inline_caps();
-        caps.insert_strategy = InsertStrategy::SyntheticKeys;
-        let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
-        machine.on_event(Event::Focus {
-            field: field("field-a"),
-            caps,
-        });
-        assert_eq!(
-            machine.offer_replacement(&field("field-a"), "😄".into(), 5),
-            vec![]
-        );
-        // Observable: no ghost was offered, so there is nothing to preview or
-        // accept (refactor-survivable vs. a private `showing.is_none()` probe).
-        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
-        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
-    }
-
-    #[test]
     fn offer_replacement_multi_blocked_when_suppressed_or_empty() {
-        // Production entry point (Engine::on_replacement calls this): the multi
-        // path must honor the same suppression/empty guards as the single path.
+        // Production entry point (`Engine::on_replacement` calls this), so the
+        // suppression/empty guards are pinned here.
         let f = field("field-a");
-        // Post-Esc suppression blocks a local multi offer.
+        // Post-Esc suppression blocks a local offer.
         let mut suppressed = focused_machine();
         suppressed.on_event(Event::DismissSuppress);
         assert_eq!(
@@ -4192,16 +4015,28 @@ mod tests {
         );
         assert!(suppressed.showing.is_none());
         assert!(!suppressed.take_stat_events().contains(&StatEvent::Shown));
-        // An empty candidate vec never offers (no spurious ghost).
+        // Observable: nothing is offered, so there is nothing to preview or
+        // accept — a later Accept inserts nothing (refactor-survivable vs. a
+        // private `showing.is_none()` probe).
+        assert_eq!(suppressed.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(suppressed.on_event(Event::AcceptFull), vec![]);
+        // An empty candidate list never offers (no spurious ghost) — neither the
+        // empty vec nor a single empty string that the seed filter drops.
         let mut machine = focused_machine();
         assert_eq!(machine.offer_replacement_multi(&f, vec![], 3), vec![]);
+        assert_eq!(
+            machine.offer_replacement_multi(&f, vec![String::new()], 3),
+            vec![]
+        );
         assert!(machine.showing.is_none());
+        assert_eq!(machine.preview_accept_insert(AcceptAction::Full), None);
+        assert_eq!(machine.on_event(Event::AcceptFull), vec![]);
     }
 
     #[test]
     fn offer_replacement_multi_rejects_zero_delete_count() {
-        // A replacement with replace_left == 0 is malformed (nothing to delete);
-        // the multi seed rejects it exactly like the single path.
+        // A replacement with replace_left == 0 is malformed (nothing to delete),
+        // so the seed rejects it before any ghost or stat is produced.
         let f = field("field-a");
         let mut machine = focused_machine();
         assert_eq!(
@@ -4217,9 +4052,9 @@ mod tests {
     #[test]
     fn offer_replacement_multi_blocked_in_secure_or_unsupported_field() {
         // Security-critical gate: a secure field (password) is `UxMode::Blocked`,
-        // so `enabled()` is false and no replacement ghost may be offered via the
-        // multi path either — a synonym/glyph must never surface in a password
-        // field. This is the `!self.enabled()` branch of `offer_replacement_multi`.
+        // so `enabled()` is false and no replacement ghost may be offered — a
+        // synonym/glyph must never surface in a password field. This is the
+        // `!self.enabled()` branch of `offer_replacement_multi`.
         let mut secure = machine();
         secure.on_event(Event::Focus {
             field: field("field-a"),
@@ -4247,7 +4082,7 @@ mod tests {
         });
         machine.on_event(text_changed(":smile", 6, 0));
         assert_eq!(
-            machine.offer_replacement(&field("field-a"), "😄".into(), 5),
+            machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5),
             vec![Command::ShowGhost {
                 field: field("field-a"),
                 snapshot: 2,
@@ -4333,8 +4168,9 @@ mod tests {
     #[test]
     fn offer_replacement_multi_requires_an_atomic_range_replace_field() {
         // A non-range-replace field (SyntheticKeys/Clipboard) can't honor the
-        // deletion, so no multi replacement is offered there — same guard as the
-        // single path (`supports_atomic_range_replace() == false`).
+        // deletion, so no replacement is offered there (the
+        // `supports_atomic_range_replace() == false` gate) — offering would leave
+        // `:smile😄` on screen plus a desynced host diff baseline.
         let mut caps = inline_caps();
         caps.insert_strategy = InsertStrategy::SyntheticKeys;
         let mut machine = SuggestionMachine::new(caps.clone(), 200, 4);
@@ -4375,8 +4211,9 @@ mod tests {
 
     #[test]
     fn offer_replacement_multi_disarms_pending_model_request_so_it_cannot_supersede() {
-        // Mirrors the single-candidate disarm test for the multi production path:
-        // an edit arms the debounce, then a multi replacement offer preempts it.
+        // An edit arms the debounce for a model completion (the same turn the
+        // host detects an emoji/typo and offers a replacement); the offer must
+        // preempt it, so the debounce tick fires no model request.
         let mut machine = focused_machine();
         machine.on_event(text_changed("color", 5, 0));
         machine.offer_replacement_multi(&field("field-a"), vec!["😄".into(), "🙂".into()], 5);
@@ -4446,7 +4283,8 @@ mod tests {
         machine.value = "hello".into();
         machine.caret = 5;
         let _ = machine.take_stat_events(); // drop the completion's Shown
-        let events_before = machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        let events_before =
+            machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5);
         assert!(!events_before.is_empty()); // it showed
         let stats = machine.take_stat_events();
         assert!(stats.contains(&StatEvent::Superseded));
@@ -4459,7 +4297,7 @@ mod tests {
         // the deletion and leave the typed token. It commits whole, like Full.
         let mut machine = focused_machine();
         let f = field("field-a");
-        machine.offer_replacement(&f, "big deal".into(), 6);
+        machine.offer_replacement_multi(&f, vec!["big deal".into()], 6);
         assert_eq!(
             machine.on_event(Event::AcceptWord),
             vec![
@@ -4485,7 +4323,7 @@ mod tests {
         machine.value = "token".into();
         machine.caret = 5;
         let f = field("field-a");
-        machine.offer_replacement(&f, "😄".into(), 5);
+        machine.offer_replacement_multi(&f, vec!["😄".into()], 5);
         assert_eq!(
             machine.on_event(Event::AcceptFull),
             vec![
@@ -4505,7 +4343,7 @@ mod tests {
         // (text, replace_left) the accept will Replace with — atomic + unfinalized
         // for both Full and Word.
         let mut machine = focused_machine();
-        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5);
         assert_eq!(
             machine.preview_accept_insert(AcceptAction::Full),
             Some((field("field-a"), "😄".into(), 5))
@@ -4543,7 +4381,7 @@ mod tests {
         // ghost that must mean a fresh ShowGhost AND an intact replace_left, so
         // a subsequent accept still deletes the typed trigger text.
         let mut machine = focused_machine();
-        machine.offer_replacement(&field("field-a"), "😄".into(), 5);
+        machine.offer_replacement_multi(&field("field-a"), vec!["😄".into()], 5);
 
         assert_eq!(
             machine.on_event(Event::ForceShow),
@@ -4594,7 +4432,7 @@ mod tests {
         let mut machine = focused_machine();
         machine.on_event(Event::Dismiss);
         assert_eq!(
-            machine.offer_replacement(&field("field-a"), "\u{1F604}".into(), 5),
+            machine.offer_replacement_multi(&field("field-a"), vec!["\u{1F604}".into()], 5),
             vec![Command::ShowGhost {
                 field: field("field-a"),
                 snapshot: 1,
