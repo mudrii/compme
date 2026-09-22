@@ -581,7 +581,18 @@ mod tests {
         *screen.lock().unwrap() = None;
         drop(ocr);
         release_tx.send(()).unwrap();
-        std::thread::sleep(Duration::from_millis(100));
+        // Barrier on the worker's exit instead of a fixed sleep: its closure
+        // owns the only other `screen` clone and releases it only after the
+        // in-flight publish attempt has returned, so once this test holds the
+        // sole reference the worker can no longer write the cell.
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while Arc::strong_count(&screen) > 1 {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the detached OCR worker must exit once released"
+            );
+            std::thread::sleep(Duration::from_millis(1));
+        }
 
         assert!(
             screen.lock().unwrap().is_none(),

@@ -1655,26 +1655,20 @@ mod tests {
 
     #[test]
     fn screen_context_wait_is_bounded_when_matching_ocr_is_late() {
+        // The matching OCR is published only AFTER the outcome arrives, so the
+        // outcome can only have been produced by the wait giving up: no writer
+        // thread races the 5 ms bound under load. The receive is itself
+        // bounded so an unbounded wait fails instead of hanging the suite.
         let req = request("typing", 1);
-        let screen = Arc::new(Mutex::new(None));
-        let delayed_screen = Arc::clone(&screen);
         let screen_field = req.field.clone();
-        let writer = thread::spawn(move || {
-            thread::sleep(Duration::from_millis(40));
-            *delayed_screen.lock().unwrap() = Some(ScreenContext {
-                field: screen_field,
-                generation: 1,
-                snapshot: 1,
-                text: "late visible text".to_string(),
-            });
-        });
+        let screen = Arc::new(Mutex::new(None));
         let inference = InferenceHandle::spawn(
             Box::new(EchoModel),
             PromptMode::Raw,
             PersonalizationProfile::default(),
             1,
             WorkerContext {
-                screen,
+                screen: Arc::clone(&screen),
                 screen_wait_ms: WorkerContext::screen_wait_cell(Duration::from_millis(5)),
                 max_chars: 160,
                 ..Default::default()
@@ -1682,14 +1676,22 @@ mod tests {
         )
         .unwrap();
         inference.submit(req);
-        let outcome = inference.recv_outcome().expect("outcome");
+        let outcome = inference
+            .outcome_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("the screen wait must give up without matching OCR");
+        *screen.lock().unwrap() = Some(ScreenContext {
+            field: screen_field,
+            generation: 1,
+            snapshot: 1,
+            text: "late visible text".to_string(),
+        });
         assert!(
             !outcome.candidates[0].contains("late visible text"),
             "late screen context should not hold inference past the bounded wait: {:?}",
             outcome.candidates[0]
         );
         assert!(outcome.candidates[0].contains("typing"));
-        writer.join().unwrap();
         assert!(!inference.shutdown().timed_out());
     }
 
@@ -2163,6 +2165,13 @@ mod tests {
             WorkerContext::default(),
         )
         .unwrap();
+        // Round-trip one request first so the worker is idle on its request
+        // channel: anything enqueued from here on is served in order.
+        inference.submit(request("warm", 1));
+        assert_eq!(
+            inference.recv_outcome().expect("warm-up").request.prompt,
+            "warm"
+        );
 
         // Several edits in a row, with no submit between them.
         for tone in ["Write tersely.", "Write formally.", "Write casually."] {
@@ -2172,16 +2181,19 @@ mod tests {
             });
         }
 
-        // Give a (mis)triggered request time to surface, then assert silence.
-        std::thread::sleep(std::time::Duration::from_millis(50));
-        assert!(
-            inference.drain_outcomes().is_empty(),
+        // The outcome channel is FIFO, so a request (mis)triggered by the
+        // edits above would surface BEFORE the real one below: the first
+        // outcome after the edits must be the real submission, and nothing may
+        // trail it — no sleep-then-assert-nothing window needed.
+        inference.submit(request("hi", 2));
+        let outcome = inference.recv_outcome().expect("outcome");
+        assert_eq!(
+            (outcome.request.prompt.as_str(), outcome.request.generation),
+            ("hi", 2),
             "set_profile must not enqueue inference — no outcome may appear without a submit"
         );
-
+        assert!(inference.drain_outcomes().is_empty());
         // The last write is what the next real submission is steered by.
-        inference.submit(request("hi", 1));
-        let outcome = inference.recv_outcome().expect("outcome");
         assert!(
             outcome.candidates[0].contains("Write casually."),
             "the surviving (last) profile steers the prompt: {:?}",
@@ -2544,27 +2556,35 @@ mod tests {
         // (returning from `run`) rather than panicking or looping forever — even
         // while the request sender is still open and a request is queued.
         //
-        // Driving `run` on the test thread makes this deterministic: if the
-        // send-failure break did not fire, `run` would loop back, block on the
-        // still-open request channel, and this call would never return.
+        // If the send-failure break did not fire, `run` would loop back and
+        // block on the still-open request channel forever. Drive it on its own
+        // thread and require completion within a bound, so that regression
+        // fails this test instead of hanging the whole suite.
         let (request_tx, request_rx) = channel::<CompletionRequest>();
         let (outcome_tx, outcome_rx) = channel::<CompletionOutcome>();
         request_tx.send(request("typing", 1)).unwrap();
         drop(outcome_rx); // receiver gone → the first send fails
+        let (done_tx, done_rx) = channel::<()>();
 
-        run(
-            Box::new(StubModel::new("x")),
-            PromptMode::Raw,
-            Arc::new(Mutex::new(PersonalizationProfile::default())),
-            1,
-            WorkerContext::default(),
-            request_rx,
-            outcome_tx,
-            Arc::new(AtomicBool::new(false)),
-        );
+        thread::spawn(move || {
+            run(
+                Box::new(StubModel::new("x")),
+                PromptMode::Raw,
+                Arc::new(Mutex::new(PersonalizationProfile::default())),
+                1,
+                WorkerContext::default(),
+                request_rx,
+                outcome_tx,
+                Arc::new(AtomicBool::new(false)),
+            );
+            let _ = done_tx.send(());
+        });
 
-        // Reaching here proves `run` returned: the keep-alive sender below shows
-        // the loop did not exit merely because the request channel closed.
+        done_rx
+            .recv_timeout(Duration::from_secs(5))
+            .expect("run must return once the outcome receiver is gone");
+        // The keep-alive sender, dropped only now, shows the loop did not exit
+        // merely because the request channel closed.
         drop(request_tx);
     }
 
