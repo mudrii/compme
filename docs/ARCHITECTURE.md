@@ -684,7 +684,9 @@ Major responsibilities:
   `AxSet` can update the value and selected range safely.
 - Full statistical spelling correction through `NSSpellChecker`, exposed only
   through the portable `ShellHost::spelling_correction` seam.
-- Stale-focus rejection before global synthetic or paste insertion.
+- Stale-focus rejection before global synthetic or paste insertion: both the
+  frontmost-application pid and the focused element's identity must still
+  match the target field, otherwise the insert fails with `StaleField`.
 - Pasteboard snapshot/restore with `changeCount` guard.
 - Deferred pasteboard restoration through a coordinator that retains the
   earliest complete multi-format snapshot across back-to-back inserts and
