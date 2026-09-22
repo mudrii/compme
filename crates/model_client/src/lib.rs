@@ -481,15 +481,20 @@ fn dispatch_error(stage: &'static str, failure: DispatchFailure) -> LocalModelEr
     LocalModelError::new(stage, message)
 }
 
-/// Generate `n` candidate continuations for one prompt. Each candidate decodes
-/// the prompt fresh (prev cleared) so candidates are independent; candidate 0 is
-/// greedy, the rest use temperature+seed sampling. `prev_tokens` is left holding
-/// the prompt so the next request can reuse its KV prefix.
+/// Generate `n` candidate continuations for one prompt. Candidate 0 reuses the
+/// KV prefix left by the previous request; every later candidate decodes the
+/// prompt fresh (prev cleared) so candidates stay independent of each other's
+/// generated KV. Candidate 0 is greedy, the rest use temperature+seed sampling.
+/// `prev_tokens` is left holding the prompt so the next request can reuse its KV
+/// prefix.
 ///
-/// Tradeoff (accepted): this re-decodes the shared prompt prefix once per
-/// candidate rather than branching the prompt KV, so N candidates cost ~N prompt
+/// Tradeoff (accepted): candidates after the first re-decode the shared prompt
+/// prefix rather than branching the prompt KV, so N candidates cost ~(N-1) prompt
 /// decodes. For small N (≤5) and short prompts the simplicity (no subtle KV-branch
 /// bug) is worth it; a prompt-prefix-reuse optimization is a future enhancement.
+/// Candidate 0 must keep the cross-request reuse: the app always asks for one
+/// candidate (`DEFAULT_CANDIDATES = 1`), so clearing here would make every
+/// debounce re-decode the whole prompt.
 fn complete_candidates_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,
@@ -502,8 +507,12 @@ fn complete_candidates_on_worker(
     let mut candidates = Vec::with_capacity(n);
     for index in 0..n {
         check_shutdown(cancellation)?;
-        // Force a clean decode per candidate so they don't share generated KV.
-        prev_tokens.clear();
+        if index > 0 {
+            // Force a clean decode per candidate so they don't share generated
+            // KV. Candidate 0 keeps `prev_tokens` so the prompt prefix decoded by
+            // an earlier request is reused instead of re-decoded from scratch.
+            prev_tokens.clear();
+        }
         let text = complete_on_worker(
             model,
             context,

@@ -194,6 +194,42 @@ fn warm_completion_under_500ms() {
     Box::new(model).shutdown();
 }
 
+// The binary never calls `complete` for completions: `crates/app/src/inference.rs`
+// goes through `complete_n` with `DEFAULT_CANDIDATES = 1`. Mirror the budget above
+// on that path so the 500ms gate measures what ships.
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
+fn warm_complete_n_under_500ms() {
+    if !require_latency_budget() {
+        return;
+    }
+
+    let path = model_path();
+    if !ensure_model_exists(&path) {
+        return;
+    }
+
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
+    let prompt = terse_continuation_prompt("The quick brown fox");
+    model.warm_up().expect("warm up");
+    let started = Instant::now();
+    let candidates = model
+        .complete_n(&prompt, 12, 1)
+        .expect("measured complete_n");
+    let elapsed_ms = started.elapsed().as_millis();
+
+    println!("warm complete_n: {elapsed_ms}ms -> {candidates:?}");
+    assert_eq!(candidates.len(), 1);
+    assert!(
+        elapsed_ms < 500,
+        "warm complete_n {elapsed_ms}ms exceeded 500ms"
+    );
+
+    Box::new(model).shutdown();
+}
+
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model; release gates run CPU and a macOS model gate must also run Metal; run with --ignored"]
 fn long_generation_observes_shutdown_within_250ms() {
@@ -356,6 +392,63 @@ fn prefix_reuse_matches_fresh_context_output() {
 
     Box::new(reused).shutdown();
     Box::new(fresh).shutdown();
+}
+
+// Guards prefix-KV reuse on the *production* completion path. The app always calls
+// `complete_n` (`crates/app/src/inference.rs`, `DEFAULT_CANDIDATES = 1`), and
+// `complete_candidates_on_worker` used to clear `prev_tokens` before candidate 0 too,
+// so every debounce re-decoded the whole prompt. Measured on the real model with a
+// ~300-token prompt: `complete` 14413ms then 731ms, but `complete_n` 14300ms then
+// 14046ms — no reuse at all. Candidate 0 must take the same reuse path `complete`
+// does and must still return byte-identical greedy output.
+#[test]
+#[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
+fn complete_n_reuses_prompt_prefix_across_requests() {
+    if !require_model_tests() {
+        return;
+    }
+
+    let path = model_path();
+    if !ensure_model_exists(&path) {
+        return;
+    }
+    let Some(model) = load_model_or_skip(&path) else {
+        return;
+    };
+    model.warm_up().expect("warm up");
+
+    // Long enough that a cold prompt decode dominates the 8 generated tokens, so a
+    // missing reuse shows up as a large ratio rather than as timing noise.
+    let prompt = terse_continuation_prompt(&"the quick brown fox jumps ".repeat(60));
+
+    let started = Instant::now();
+    let cold = model.complete_n(&prompt, 8, 1).expect("cold complete_n");
+    let cold_ms = started.elapsed().as_millis();
+
+    let started = Instant::now();
+    let warm = model.complete_n(&prompt, 8, 1).expect("warm complete_n");
+    let warm_ms = started.elapsed().as_millis();
+
+    // Correctness first: candidate 0 is greedy, so a reuse that corrupted the KV
+    // diverges here instead of only showing up as latency.
+    let single = model.complete(&prompt, 8).expect("complete");
+    assert_eq!(cold, warm, "prefix reuse changed complete_n output");
+    assert_eq!(
+        warm[0], single,
+        "complete_n candidate 0 diverged from complete on the same prompt"
+    );
+
+    let ratio = cold_ms as f64 / warm_ms.max(1) as f64;
+    println!("complete_n cold {cold_ms}ms / warm {warm_ms}ms = {ratio:.1}x");
+    // Reuse measured 21.4x on the CPU release gate (15968ms -> 747ms); the bug
+    // measured 1.0x (15986ms -> 16297ms). 3x separates them with room for noise.
+    assert!(
+        cold_ms >= warm_ms * 3,
+        "second complete_n ({warm_ms}ms) did not reuse the prompt KV prefix \
+         (first was {cold_ms}ms, {ratio:.1}x)"
+    );
+
+    Box::new(model).shutdown();
 }
 
 #[test]
