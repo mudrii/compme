@@ -180,8 +180,8 @@ syntax_matches = syntax_steps.select { |step| step.is_a?(Hash) && step["name"] =
 abort("missing release gate: #{label} keeps exactly one script syntax validation") unless syntax_matches.length == 1
 syntax_lines = active_shell_lines(syntax_matches.first.fetch("run"))
 expected_syntax_lines = [
-  "find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \\",
-  "xargs -0 bash -n",
+  "find tools/acceptance tools/bundle tools/dev tools/release -type f \\( -name '*.sh' -o -path tools/dev/pre-push \\) -print0 \\",
+  "xargs -0 -n1 bash -n",
 ]
 abort("missing release gate: #{label} script syntax is the approved traversal only") unless
   syntax_lines.length == 2 &&
@@ -204,6 +204,10 @@ abort("missing release gate: CI preserves main runs while cancelling superseded 
     "cancel-in-progress" => "${{ github.ref != 'refs/heads/main' }}",
   }
 jobs = workflow.fetch("jobs")
+linux_shellcheck = jobs.fetch("linux").fetch("steps").find { |step| step["name"] == "Shellcheck (errors only)" }
+abort("missing release gate: CI linux shellchecks every tool script and the pre-push hook") unless
+  linux_shellcheck &&
+  linux_shellcheck.fetch("run") == "find tools -type f \\( -name '*.sh' -o -path tools/dev/pre-push \\) -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
 checkout = "actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1"
 toolchain = "dtolnay/rust-toolchain@4be7066ada62dd38de10e7b70166bc74ed198c30"
 cache = "Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6"
@@ -394,13 +398,12 @@ abort("missing release gate: docs lane exact action provenance") unless actions 
 {
   "Version docs check" => "tools/release/check-version-docs.sh",
   "Privacy policy" => "tools/release/check-privacy-policy.sh",
-  "Script syntax" => "bash -n",
-  "Shellcheck (errors only)" => "shellcheck --severity=error",
+  "Script syntax" => "find tools/acceptance tools/bundle tools/dev tools/release -type f \\( -name '*.sh' -o -path tools/dev/pre-push \\) -print0 \\\n  | xargs -0 -n1 bash -n\n",
+  "Shellcheck (errors only)" => "find tools -type f \\( -name '*.sh' -o -path tools/dev/pre-push \\) -print0 \\\n  | xargs -0 shellcheck --severity=error\n",
   "Homebrew cask syntax" => "ruby -c Casks/compme.rb",
-}.each do |name, fragment|
+}.each do |name, run|
   step = steps.find { |candidate| candidate["name"] == name }
-  exact = ["Version docs check", "Privacy policy", "Homebrew cask syntax"].include?(name)
-  retained = step && (exact ? step.fetch("run") == fragment : step.fetch("run").include?(fragment))
+  retained = step && step.fetch("run") == run
   abort("missing release gate: docs lane retains #{name}") unless retained
 end
 RUBY
@@ -680,7 +683,7 @@ abort("missing release gate: release validation runs the bundle icon generator s
   icon_step && icon_step.fetch("run") == "tools/bundle/make-icon.sh --self-test"
 validate_steps = jobs.fetch("validate").fetch("steps")
 required_validate_steps = {
-  "Shellcheck (errors only)" => "find tools -type f -name '*.sh' -print0 \\\n  | xargs -0 shellcheck --severity=error\n",
+  "Shellcheck (errors only)" => "find tools -type f \\( -name '*.sh' -o -path tools/dev/pre-push \\) -print0 \\\n  | xargs -0 shellcheck --severity=error\n",
   "Rustdoc (deny warnings)" => 'RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace',
   "Doc tests (macOS crates)" => "cargo test --locked --doc -p platform_macos -p app",
   "Release model gate policy self-test" => "bash tools/release/check-model-gates.sh --self-test",
@@ -1657,8 +1660,8 @@ jobs:
     steps:
       - name: Script syntax
         run: |
-          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
-            | xargs -0 bash -n
+          find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
+            | xargs -0 -n1 bash -n
 YAML
   check_no_automated_a2_validation "$good_pipeline" "fixture"
 
@@ -1673,9 +1676,21 @@ YAML
 
   bad_pipeline="$tmp_dir/bad-generic-syntax.yml"
   cp "$good_pipeline" "$bad_pipeline"
-  ruby -0pi -e 'sub(/find tools\/acceptance.*xargs -0 bash -n/m, "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh")' "$bad_pipeline"
+  ruby -0pi -e 'sub(/find tools\/acceptance.*xargs -0 -n1 bash -n/m, "bash -n tools/acceptance/*.sh tools/bundle/*.sh tools/release/*.sh")' "$bad_pipeline"
   if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: wildcard A2 syntax validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  # The legacy traversal parsed only the first file of each xargs batch
+  # (`bash -n a b` treats b as a positional argument) and never reached
+  # tools/dev or the extensionless tools/dev/pre-push hook.
+  bad_pipeline="$tmp_dir/bad-legacy-syntax.yml"
+  cp "$good_pipeline" "$bad_pipeline"
+  ruby -0pi -e 'sub(/find tools\/acceptance.*xargs -0 -n1 bash -n/m) { "find tools/acceptance tools/bundle tools/release -type f -name \x27*.sh\x27 -print0 \\\n            | xargs -0 bash -n" }' "$bad_pipeline"
+  if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: legacy first-file-only script syntax traversal was accepted" >&2
     cleanup
     return 1
   fi
@@ -1698,8 +1713,8 @@ jobs:
     steps:
       - name: Script syntax
         run: |
-          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
-            | xargs -0 bash -n
+          find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
+            | xargs -0 -n1 bash -n
 YAML
   if check_no_automated_a2_validation "$bad_pipeline" "fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: job-level A2 environment was accepted" >&2
@@ -2818,7 +2833,7 @@ YAML
   check_ci_integrity_controls "$ci_workflow"
   ci_integrity_fixture="$tmp_dir/ci-integrity.yml"
 
-  for mutation in concurrency shared-main-group doc-tests portable-doc-tests quality-gate all-targets; do
+  for mutation in concurrency shared-main-group legacy-shellcheck doc-tests portable-doc-tests quality-gate all-targets; do
     cp "$ci_workflow" "$ci_integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -2831,6 +2846,9 @@ YAML
         # One group per ref keeps a single pending run: a third main push
         # would replace the queued second one instead of waiting behind it.
         workflow.fetch("concurrency")["group"] = "ci-${{ github.ref }}"
+      when "legacy-shellcheck"
+        step = jobs.fetch("linux").fetch("steps").find { |candidate| candidate["name"] == "Shellcheck (errors only)" }
+        step["run"] = "find tools -type f -name \x27*.sh\x27 -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
       when "doc-tests"
         jobs.fetch("check").fetch("steps").reject! { |step| step["name"] == "Doc tests (macOS crates)" }
       when "portable-doc-tests"
@@ -3166,7 +3184,7 @@ YAML
     return 1
   fi
 
-  for mutation in shared-main-group cancel-main; do
+  for mutation in shared-main-group cancel-main legacy-syntax legacy-shellcheck; do
     cp "$docs_workflow" "$docs_integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -3174,6 +3192,12 @@ YAML
       case mutation
       when "shared-main-group" then workflow.fetch("concurrency")["group"] = "docs-${{ github.ref }}"
       when "cancel-main" then workflow.fetch("concurrency")["cancel-in-progress"] = true
+      when "legacy-syntax"
+        step = workflow.fetch("jobs").fetch("docs").fetch("steps").find { |candidate| candidate["name"] == "Script syntax" }
+        step["run"] = "find tools/acceptance tools/bundle tools/release -type f -name \x27*.sh\x27 -print0 \\\n  | xargs -0 bash -n\n"
+      when "legacy-shellcheck"
+        step = workflow.fetch("jobs").fetch("docs").fetch("steps").find { |candidate| candidate["name"] == "Shellcheck (errors only)" }
+        step["run"] = "find tools -type f -name \x27*.sh\x27 -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
       end
       File.write(path, YAML.dump(workflow))
     ' "$docs_integrity_fixture" "$mutation"
@@ -3200,7 +3224,7 @@ YAML
     portable-all-targets portable-doc-tests credential-scrubs prebuild-fail-open \
     publish-runner finalize-runner signer-workflow post-attestation \
     finalize-attestation-order post-attestation-order \
-    draft-preparation finalizer-repository shared-release-group cancel-release; do
+    draft-preparation finalizer-repository shared-release-group cancel-release validate-shellcheck-pre-push; do
     cp "$canonical_release_workflow" "$integrity_fixture"
     ruby -ryaml -e '
       path, mutation = ARGV
@@ -3253,6 +3277,9 @@ YAML
         # replace the queued second release instead of waiting behind it.
         workflow.fetch("concurrency")["group"] = "release"
       when "cancel-release" then workflow.fetch("concurrency")["cancel-in-progress"] = true
+      when "validate-shellcheck-pre-push"
+        step = jobs.fetch("validate").fetch("steps").find { |candidate| candidate["name"] == "Shellcheck (errors only)" }
+        step["run"] = "find tools -type f -name \x27*.sh\x27 -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
       end
       File.write(path, YAML.dump(workflow))
     ' "$integrity_fixture" "$mutation"
@@ -4373,7 +4400,7 @@ ruby -ryaml -e '
   abort("missing release gate: hosted-runner model gates skip only the latency budget") unless model_gate_step && model_gate_step.fetch("env", {})["COMPME_REQUIRE_LATENCY_BUDGET"].to_s == "0"
   release_shellcheck = validate_steps.find { |step| step["name"] == "Shellcheck (errors only)" }
   abort("missing release gate: release validate shellchecks all tool scripts") unless
-    release_shellcheck && release_shellcheck.fetch("run") == "find tools -type f -name #{39.chr}*.sh#{39.chr} -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
+    release_shellcheck && release_shellcheck.fetch("run") == "find tools -type f \\( -name #{39.chr}*.sh#{39.chr} -o -path tools/dev/pre-push \\) -print0 \\\n  | xargs -0 shellcheck --severity=error\n"
   prebuild_needs = Array(prebuild.fetch("needs"))
   %w[validate windows linux].each do |job|
     abort("missing release gate: prebuild job depends on #{job}") unless prebuild_needs.include?(job)
@@ -5043,8 +5070,8 @@ require_development_gate_line '^tools/release/notarize-app\.sh --self-test[[:spa
 require_development_gate_line '^tools/release/write-update-manifest\.sh --self-test[[:space:]]*$' "DEVELOPMENT update manifest self-test"
 require_development_gate_line '^cargo build --locked -p platform_macos --examples[[:space:]]*$' "DEVELOPMENT platform_macos examples build"
 require_development_gate_line '^bash tools/release/run-model-gates\.sh[[:space:]]*$' "DEVELOPMENT model-backed release gate"
-require_development_gate_line '^find tools/acceptance tools/bundle tools/release -type f -name .\*\.sh. -print0 \| xargs -0 bash -n[[:space:]]*$' "DEVELOPMENT script syntax gate"
-require_development_gate_line '^find tools -type f -name .\*\.sh. -print0 \| xargs -0 shellcheck --severity=error[[:space:]]*$' "DEVELOPMENT shellcheck gate"
+require_development_gate_line '^find tools/acceptance tools/bundle tools/dev tools/release -type f \\\( -name .\*\.sh. -o -path tools/dev/pre-push \\\) -print0 \| xargs -0 -n1 bash -n[[:space:]]*$' "DEVELOPMENT script syntax gate"
+require_development_gate_line '^find tools -type f \\\( -name .\*\.sh. -o -path tools/dev/pre-push \\\) -print0 \| xargs -0 shellcheck --severity=error[[:space:]]*$' "DEVELOPMENT shellcheck gate"
 require_development_gate_line '^RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace[[:space:]]*$' "DEVELOPMENT rustdoc gate"
 require_development_gate_line '^tools/release/check-version-docs\.sh --self-test[[:space:]]*$' "DEVELOPMENT version docs check self-test"
 require_development_gate_line '^tools/release/check-quality\.sh --self-test[[:space:]]*$' "DEVELOPMENT quality gate self-test"

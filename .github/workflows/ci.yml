@@ -142,8 +142,8 @@ jobs:
 
       - name: Script syntax
         run: |
-          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
-            | xargs -0 bash -n
+          find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
+            | xargs -0 -n1 bash -n
 
       - name: Bundle metadata
         run: tools/bundle/check-bundle-metadata.sh
@@ -361,7 +361,7 @@ jobs:
       # toolchain install because scripts need no Rust.
       - name: Shellcheck (errors only)
         run: |
-          find tools -type f -name '*.sh' -print0 \
+          find tools -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
             | xargs -0 shellcheck --severity=error
 
       - name: Install Rust (stable)

@@ -271,8 +271,8 @@ cargo build --locked -p platform_macos --examples
 RUSTDOCFLAGS="-D warnings" cargo doc --no-deps --workspace
 cargo audit --deny unsound --deny yanked
 
-find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 | xargs -0 bash -n
-find tools -type f -name '*.sh' -print0 | xargs -0 shellcheck --severity=error
+find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 -n1 bash -n
+find tools -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 shellcheck --severity=error
 tools/release/validate-version.sh --self-test
 tools/release/check-version-docs.sh --self-test
 tools/bundle/check-bundle-metadata.sh
@@ -376,7 +376,8 @@ a single assertion. A green cross-target check is a compile proof, never a
 behaviour proof — the platform's own CI lane remains the authority, and the
 live gates remain the authority for anything with a GUI.
 Branch/PR CI also lints the workflow YAML itself (`actionlint`, with shellcheck
-over inline `run:` steps), shellchecks every `tools/**/*.sh` at error severity,
+over inline `run:` steps), shellchecks every `tools/**/*.sh` plus the
+extensionless `tools/dev/pre-push` hook at error severity,
 and runs native Windows/Linux portability jobs covering
 portable-workspace clippy/tests excluding `platform_macos` and an app-binary
 build through each fail-closed target facade (workspace fmt runs once on the

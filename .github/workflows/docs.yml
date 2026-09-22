@@ -48,14 +48,14 @@ jobs:
 
       - name: Script syntax
         run: |
-          find tools/acceptance tools/bundle tools/release -type f -name '*.sh' -print0 \
-            | xargs -0 bash -n
+          find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
+            | xargs -0 -n1 bash -n
 
       # ubuntu-latest ships shellcheck preinstalled (no setup needed). Error
       # severity only — style findings stay out of CI.
       - name: Shellcheck (errors only)
         run: |
-          find tools -type f -name '*.sh' -print0 \
+          find tools -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 \
             | xargs -0 shellcheck --severity=error
 
       - name: Homebrew cask syntax
