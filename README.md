@@ -256,6 +256,11 @@ tools/spike/models/qwen2.5-0.5b-instruct-q4_k_m.gguf
 
 Settings layer as `env > config.env file > default`; keys with Settings
 switches persist to the file, and an env var overrides the file at relaunch.
+For every Settings-persisted key (and `COMPME_MODEL_PATH`) that is set in the
+environment, startup prints a `compme: <KEY> is set in the environment …`
+warning that the env value shadows `config.env`. A hand-written `config.env`
+value may be wrapped in one matching pair of `"` or `'` quotes (for example
+`COMPME_MODEL_PATH="/path with spaces/a.gguf"`); the pair is stripped.
 Missing `config.env` is treated as empty, but any other read failure aborts
 startup and names the unreadable path rather than falling back to permissive
 defaults.
