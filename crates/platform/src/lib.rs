@@ -180,7 +180,10 @@ pub enum InsertStrategy {
     /// Adapter-native atomic range replacement (Windows UIA
     /// TextPattern/ValuePattern, Linux AT-SPI2 `EditableText`). Same contract
     /// as `AxSet`: all-or-nothing, expected-text verified where the API
-    /// allows. No adapter reports it yet (Tier 1.1 Windows/Linux impls).
+    /// allows. Linux reports it — `platform_linux::atspi_caps::insert_strategy_from`
+    /// returns `NativeRangeSet` for a field that is editable, sensitive and
+    /// exposes `EditableText`. The Windows UIA scaffold still reports `None`
+    /// (Tier 1.1).
     NativeRangeSet,
     SyntheticKeys,
     Clipboard,

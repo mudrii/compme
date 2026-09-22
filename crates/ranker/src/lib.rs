@@ -153,11 +153,14 @@ pub fn strip_suffix_overlap(candidate: &str, right: &str) -> String {
     candidate.to_string()
 }
 
-/// Report whether a completion is a single word or phrase repeated three or more
-/// times (`the the the`, `go home go home go home`) — a classic small-model
-/// degenerate loop that should be dropped rather than shown. Attached edge
-/// punctuation is ignored, while punctuation-only tokens such as emoji remain
-/// significant.
+/// Report whether a completion is *entirely* one word or phrase repeated three
+/// or more times (`the the the`, `go home go home go home`) — a classic
+/// small-model degenerate loop that should be dropped rather than shown. The
+/// whole text must tile: for each `phrase_len` in `1..=len/3` the words are cut
+/// into `phrase_len`-word chunks and flagged only when every chunk equals the
+/// leading one, so a repeated run that carries anything else (`the the the
+/// and`) is not detected. Attached edge punctuation is ignored, while
+/// punctuation-only tokens such as emoji remain significant.
 pub fn is_degenerate_repetition(text: &str) -> bool {
     let words: Vec<String> = text
         .split_whitespace()

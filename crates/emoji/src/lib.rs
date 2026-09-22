@@ -174,7 +174,9 @@ const TABLE: &[Entry] = &[
     },
     Entry {
         // The neutral glyph 🙋 accepts a Fitzpatrick modifier, so skin_tone is
-        // true; the female/male ZWJ variants keep the default tone (see `render`).
+        // true; `render` splices that same modifier into the base of the
+        // female/male ZWJ sequences too (`with_skin_tone_zwj`) — see
+        // `gendered_match_combines_skin_tone`.
         shortcode: "raising_hand",
         base: "🙋",
         skin_tone: true,
