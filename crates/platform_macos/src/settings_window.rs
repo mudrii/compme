@@ -29,8 +29,9 @@ use objc2_app_kit::{
 use objc2_foundation::{NSObjectProtocol, NSPoint, NSRect, NSSize, NSString};
 use platform::PlatformError;
 use shell_flags::{
-    AppsPolicyEditSlot, CurrentAcceptKeys, KeyWithMods, PersonalizationEdit, RebindRequest,
-    SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES, SETUP_ROWS, STATS_ROWS,
+    lock_recover, AppsPolicyEditSlot, CurrentAcceptKeys, KeyWithMods, PersonalizationEdit,
+    RebindRequest, SettingsFlags, APPS_ROWS, APP_POLICY_FIELDS, APP_POLICY_FIELD_TITLES,
+    SETUP_ROWS, STATS_ROWS,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1103,18 +1104,21 @@ impl MacosSettingsWindow {
         }
         // Refresh data rows on EVERY show — the lazily built window is reused
         // across opens, so stale strings would otherwise survive a reopen.
-        if let Ok(lines) = self.flags.stats_lines.lock() {
+        {
+            let lines = lock_recover(&self.flags.stats_lines);
             for (label, line) in self.stats_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
         }
-        if let Ok(lines) = self.flags.setup_lines.lock() {
+        {
+            let lines = lock_recover(&self.flags.setup_lines);
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
             refresh_setup_action_buttons(&self.setup_action_buttons, &lines);
         }
-        if let Ok(lines) = self.flags.apps_lines.lock() {
+        {
+            let lines = lock_recover(&self.flags.apps_lines);
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
@@ -1126,9 +1130,10 @@ impl MacosSettingsWindow {
         // Per-row policy checkboxes re-seed from the run-loop-published bits —
         // a per-app override edited via the web UI / config reload while the
         // window was closed would otherwise leave the checkboxes stale.
-        if let Ok(bits) = self.flags.apps_policy_bits.lock() {
-            refresh_apps_policy_checkbox_states(&self.apps_policy_checkboxes, &bits);
-        }
+        refresh_apps_policy_checkbox_states(
+            &self.apps_policy_checkboxes,
+            &lock_recover(&self.flags.apps_policy_bits),
+        );
         if let Some(popup) = &self.apps_memory_mode_popup {
             popup.selectItemAtIndex(
                 self.flags.apps_memory_mode_index.load(Ordering::Relaxed) as isize
@@ -1138,23 +1143,24 @@ impl MacosSettingsWindow {
         // while the window was closed updates flags.personalization_* and the
         // fields would otherwise show the build-time values (c95 staleness).
         if let Some(field) = &self.personalization_instructions_field {
-            if let Ok(text) = self.flags.personalization_instructions.lock() {
-                field.setStringValue(&NSString::from_str(&text));
-            }
+            field.setStringValue(&NSString::from_str(&lock_recover(
+                &self.flags.personalization_instructions,
+            )));
         }
         if let Some(field) = &self.personalization_name_field {
-            if let Ok(text) = self.flags.personalization_sender_name.lock() {
-                field.setStringValue(&NSString::from_str(&text));
-            }
+            field.setStringValue(&NSString::from_str(&lock_recover(
+                &self.flags.personalization_sender_name,
+            )));
         }
         if let Some(field) = &self.personalization_email_field {
-            if let Ok(text) = self.flags.personalization_sender_email.lock() {
-                field.setStringValue(&NSString::from_str(&text));
-            }
+            field.setStringValue(&NSString::from_str(&lock_recover(
+                &self.flags.personalization_sender_email,
+            )));
         }
         // Shortcuts text re-reads its mutex — a live rebind (recorder 5b)
         // recomposes it while the window is closed.
-        if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
+        if let Some(label) = &self.shortcuts_label {
+            let text = lock_recover(&self.flags.shortcuts_text);
             label.setStringValue(&NSString::from_str(&text));
         }
         // Recorder boxes re-sync to the effective keymap so they never disagree
@@ -1260,7 +1266,8 @@ impl MacosSettingsWindow {
     /// Re-render the Setup rows from `flags.setup_lines` while the window
     /// stays open (the visible-only poll edge; show() covers the open edge).
     pub fn refresh_setup_labels(&self) {
-        if let Ok(lines) = self.flags.setup_lines.lock() {
+        {
+            let lines = lock_recover(&self.flags.setup_lines);
             for (label, line) in self.setup_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
@@ -1273,7 +1280,8 @@ impl MacosSettingsWindow {
     /// recorder lives INSIDE this window, so the window is open at exactly
     /// the moment the text changes; show() covers the reopen edge).
     pub fn refresh_shortcuts_label(&self) {
-        if let (Some(label), Ok(text)) = (&self.shortcuts_label, self.flags.shortcuts_text.lock()) {
+        if let Some(label) = &self.shortcuts_label {
+            let text = lock_recover(&self.flags.shortcuts_text);
             label.setStringValue(&NSString::from_str(&text));
         }
         let (word, full, grammar_accept) = crate::effective_accept_keys_with_mods_and_grammar();
@@ -1295,7 +1303,8 @@ impl MacosSettingsWindow {
                 self.flags.apps_memory_mode_index.load(Ordering::Relaxed) as isize
             );
         }
-        if let Ok(lines) = self.flags.apps_lines.lock() {
+        {
+            let lines = lock_recover(&self.flags.apps_lines);
             for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
                 label.setStringValue(&NSString::from_str(line));
             }
@@ -1306,9 +1315,10 @@ impl MacosSettingsWindow {
         }
         // The app set may have shifted (a delete reindexes rows), so re-seed
         // the checkbox states from the freshly published bits, mirroring show().
-        if let Ok(bits) = self.flags.apps_policy_bits.lock() {
-            refresh_apps_policy_checkbox_states(&self.apps_policy_checkboxes, &bits);
-        }
+        refresh_apps_policy_checkbox_states(
+            &self.apps_policy_checkboxes,
+            &lock_recover(&self.flags.apps_policy_bits),
+        );
     }
 
     /// Whether the window is visible to the app — TRUE while miniaturized

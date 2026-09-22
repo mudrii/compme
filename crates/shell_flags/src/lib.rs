@@ -9,7 +9,7 @@
 //! direction ever cycling back.
 
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 pub type UrlCallback = dyn Fn(String) + Send + Sync + 'static;
 pub type KeyWithMods = (i64, u32);
@@ -296,6 +296,15 @@ pub enum DisableArm {
     Always,
 }
 
+/// Lock `mutex`, recovering the guard when a panicking holder poisoned it.
+/// The flag bags here hold plain display data (row strings, bits, text) with
+/// no multi-step invariant a panic could leave half-applied, so the last
+/// written value is still the right one to read — whereas skipping the read
+/// on `Err` would silently freeze the UI row on its old value.
+pub fn lock_recover<T: ?Sized>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -406,5 +415,20 @@ mod tests {
             KeymapError::InvalidKeycode(-1).to_string(),
             "invalid keycode: -1 (must be non-negative)"
         );
+    }
+
+    #[test]
+    fn lock_recover_reads_through_a_poisoned_mutex() {
+        let lines = Arc::new(Mutex::new(vec!["old".to_string()]));
+        let poisoner = Arc::clone(&lines);
+        let _ = std::thread::spawn(move || {
+            let mut guard = poisoner.lock().unwrap();
+            guard[0] = "latest".to_string();
+            panic!("poison the settings row mutex");
+        })
+        .join();
+        assert!(lines.is_poisoned());
+
+        assert_eq!(*lock_recover(&lines), vec!["latest".to_string()]);
     }
 }
