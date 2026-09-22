@@ -152,7 +152,11 @@ once per batch and read per-step conclusions, not the job verdict.
   is fatal at startup.
 - **Batch D** (owner decisions): D1 CI concurrency group drops queued main
   runs (10 cancelled on 2026-09-20) and `protect-main` has no required checks;
-  D2 three different macOS test counts in docs; D3 document the Linux-host
+  D2 three different macOS test counts in docs — **closed 2026-09-23**: every
+  live count pin (README, DEVELOPMENT ×2, ROADMAP:3, grammar spec:5) reads
+  2226; ROADMAP row 34's "2,222" (tied to `baa89c9`) and
+  IMPLEMENTATION-EVIDENCE's "2,226" are dated citations, not live counts;
+  D3 document the Linux-host
   portable fence and make `check.sh` non-zero when cargo lines are skipped;
   D4 `check-model-gates.sh` (5,010 lines) has no EXIT trap; D5 consolidate the
   dated 2026-09-19/20 docs and root `2FIX.md`/`FIXED.md`.
