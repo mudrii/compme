@@ -12810,6 +12810,125 @@ fn apps_domain_delete_phase_blank_domain_or_missing_store_never_prompts() {
     assert_eq!(fx.previous.recent("com.a"), vec!["live prose"]);
 }
 
+// memory_mode_phase
+
+/// The volatile state a memory-mode change must drop (or, on failure, keep):
+/// a live ring, a partial buffer, and a queued boundary for `com.a`.
+fn phase_memory_mode_volatile_state() -> (PreviousInputs, MonitoredInput) {
+    let previous = PreviousInputs::default();
+    previous.record_with_cross_app("com.a", "live prose".into(), true);
+    let field = field_with_app("com.a");
+    let mut monitored = phase_monitored_with_buffer(&field);
+    let pending = typed_change_after_baseline(&field, "", "queued before mode change ");
+    enqueue_monitored_change(
+        &mut monitored.pending_monitored,
+        &pending,
+        Some(field.app.clone()),
+        None,
+    );
+    (previous, monitored)
+}
+
+#[test]
+fn memory_mode_phase_switch_persists_and_drops_rings_and_monitored_state() {
+    let home = PhaseConfigHome::new("memory-mode-ok");
+    let mut config = startup_test_config();
+    config.memory.mode = memory::StorageMode::AllMonitored;
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let (store, ids) = phase_memory_with_two_apps();
+    let mut memory = Some(store);
+    let mut settings = phase_settings_state(Vec::new());
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let (previous, mut monitored) = phase_memory_mode_volatile_state();
+    flags.apps_memory_mode_index.store(1, Ordering::Relaxed);
+
+    memory_mode_phase(MemoryModeCtx {
+        settings_flags: &flags,
+        settings_window: &window,
+        shell: &host,
+        config: &mut config,
+        memory: &mut memory,
+        prefs: &prefs,
+        previous_inputs: &previous,
+        monitored: &mut monitored,
+        settings: &mut settings,
+    });
+
+    assert_eq!(config.memory.mode, memory::StorageMode::AcceptedOnly);
+    assert_eq!(
+        memory.as_ref().unwrap().mode(),
+        memory::StorageMode::AcceptedOnly
+    );
+    assert_eq!(
+        home.persisted().get("COMPME_MEMORY").map(String::as_str),
+        Some("accepted")
+    );
+    assert_eq!(flags.apps_memory_mode_index.load(Ordering::Relaxed), 1);
+    assert!(
+        previous.recent("com.a").is_empty() && previous.recent_for_scope("com.a", true).is_empty(),
+        "text captured under the old policy must not keep steering completions"
+    );
+    assert!(
+        monitored.pending_monitored.is_empty(),
+        "queued boundary dropped"
+    );
+    assert!(monitored.monitored_buffers.is_empty(), "partial dropped");
+    assert_eq!(settings.apps_ids, ids, "rows recomposed from the store");
+    assert_eq!(flags.apps_policy_bits.lock().unwrap().len(), 2);
+    assert!(
+        !flags.apps_lines.lock().unwrap().is_empty(),
+        "apps_lines republished"
+    );
+}
+
+#[test]
+fn memory_mode_phase_persist_failure_rolls_back_the_selection_and_keeps_state() {
+    let home = PhaseConfigHome::new("memory-mode-persist-fail");
+    // A directory where config.env belongs makes the persist read fail.
+    std::fs::create_dir(home.config_path()).unwrap();
+    let mut config = startup_test_config();
+    config.memory.mode = memory::StorageMode::AllMonitored;
+    let flags = phase_settings_flags(&config);
+    let (_shell, host) = phase_shell(PhaseShell::new());
+    let (store, _) = phase_memory_with_two_apps();
+    let mut memory = Some(store);
+    let mut settings = phase_settings_state(Vec::new());
+    let prefs = Prefs::default();
+    let window = crate::shell::SettingsWindow::new(flags.clone());
+    let (previous, mut monitored) = phase_memory_mode_volatile_state();
+    flags.apps_memory_mode_index.store(1, Ordering::Relaxed);
+
+    memory_mode_phase(MemoryModeCtx {
+        settings_flags: &flags,
+        settings_window: &window,
+        shell: &host,
+        config: &mut config,
+        memory: &mut memory,
+        prefs: &prefs,
+        previous_inputs: &previous,
+        monitored: &mut monitored,
+        settings: &mut settings,
+    });
+
+    assert_eq!(
+        flags.apps_memory_mode_index.load(Ordering::Relaxed),
+        2,
+        "the popup selection rolls back to the mode still in force"
+    );
+    assert_eq!(config.memory.mode, memory::StorageMode::AllMonitored);
+    assert_eq!(
+        memory.as_ref().unwrap().mode(),
+        memory::StorageMode::AllMonitored
+    );
+    assert_eq!(previous.recent("com.a"), vec!["live prose"]);
+    assert_eq!(monitored.pending_monitored.len(), 1);
+    assert_eq!(monitored.monitored_buffers.len(), 1);
+    assert!(settings.apps_ids.is_empty(), "no recompose");
+    assert!(flags.apps_lines.lock().unwrap().is_empty(), "no re-render");
+}
+
 // previous_input_context_chars
 
 #[test]
