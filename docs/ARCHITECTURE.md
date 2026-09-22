@@ -526,7 +526,7 @@ errors. Everything here is pure; the host owns the implemented RAM probe and I/O
 
 `model_fetch` is the model downloader (§15 D14), two halves in one crate: a
 pure core (SHA-256 integrity, resume planning — unit-testable with no IO) and a
-blocking network half (`download_url` over `ureq` with resume/restart/verify,
+blocking network half (`download_url_bounded` over `ureq` with resume/restart/verify,
 plus a `ModelDownloader` worker thread). The download protocol is
 `.part` → verify SHA-256 → atomic rename, so a partial download never
 masquerades as complete. Catalog downloads also carry a catalog-derived byte
