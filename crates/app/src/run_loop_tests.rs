@@ -9682,12 +9682,37 @@ fn failed_inference_worker_surfaces_model_unavailable_instead_of_loading() {
             true,
             AccessibilitySubscriptions::Ready,
             false,
-            effective_model_available(true, true),
+            effective_model_available(true, true, false),
             false,
             true,
         ),
         AppStatus::Blocked(BlockReason::ModelUnavailable)
     );
+}
+
+#[test]
+fn degraded_inference_worker_surfaces_model_unavailable_instead_of_ready() {
+    // A6: a failed warm-up leaves the worker ALIVE — `InferenceHandle::submit`
+    // still enqueues and a completion can still come back — so it must not be
+    // reported as terminal failure. But the tray must stop claiming Ready while
+    // decode is failing, and the status path is the only consumer widened:
+    // ready=true + enabled=true + trusted still yields Blocked(ModelUnavailable).
+    assert!(!effective_model_available(true, false, true));
+    assert_eq!(
+        derive_status(
+            true,
+            AccessibilitySubscriptions::Ready,
+            false,
+            effective_model_available(true, false, true),
+            true,
+            true,
+        ),
+        AppStatus::Blocked(BlockReason::ModelUnavailable)
+    );
+    // The healthy worker and the dead worker are unchanged by the new input.
+    assert!(effective_model_available(true, false, false));
+    assert!(!effective_model_available(true, true, false));
+    assert!(!effective_model_available(false, false, false));
 }
 
 #[test]

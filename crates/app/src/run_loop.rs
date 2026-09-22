@@ -4143,8 +4143,18 @@ fn status_drops_pending_requests(status: AppStatus) -> bool {
     )
 }
 
-fn effective_model_available(configured_available: bool, worker_failed: bool) -> bool {
-    configured_available && !worker_failed
+/// Whether the status path may treat the model as usable. A configured source
+/// is not enough on its own: a worker that panicked (`worker_failed`) or whose
+/// warm-up decode failed (`worker_degraded`) cannot be reported as healthy.
+/// The two are deliberately distinct below this line — a degraded worker is
+/// still alive and `InferenceHandle::submit` still enqueues — but the tray must
+/// not claim Ready while decode is failing, so the status folds them together.
+fn effective_model_available(
+    configured_available: bool,
+    worker_failed: bool,
+    worker_degraded: bool,
+) -> bool {
+    configured_available && !worker_failed && !worker_degraded
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -6681,7 +6691,11 @@ pub fn run() -> Result<(), String> {
             trusted,
             accessibility_subscriptions,
             policy.secure,
-            effective_model_available(model_available, inference.has_failed()),
+            effective_model_available(
+                model_available,
+                inference.has_failed(),
+                inference.is_degraded(),
+            ),
             inference.is_ready(),
             enabled,
         );

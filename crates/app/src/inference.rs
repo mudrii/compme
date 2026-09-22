@@ -431,10 +431,13 @@ fn recv_latest(requests: &Receiver<CompletionRequest>) -> Option<CompletionReque
 }
 
 /// The worker body. Warms the model, signals readiness, then serves requests
-/// until the channel closes; finally releases the model.
+/// until the channel closes. A non-shutdown warm-up failure is non-fatal — the
+/// worker keeps serving — but it is recorded as [`WorkerHealth::Degraded`] on
+/// `health` so the status path stops reporting a healthy model (A6). Model
+/// teardown is the caller's, not this function's.
 // Internal plumbing fn: the parameters are the worker's whole context (model,
-// prompt config, the two channels, the ready flag); bundling them into a struct
-// would not improve clarity here.
+// prompt config, the two channels, the ready flag, the health record it reports
+// through); bundling them into a struct would not improve clarity here.
 #[allow(clippy::too_many_arguments)]
 fn serve(
     model: &dyn LocalModel,
@@ -445,12 +448,20 @@ fn serve(
     requests: Receiver<CompletionRequest>,
     outcomes: Sender<CompletionOutcome>,
     ready: Arc<AtomicBool>,
+    health: &Mutex<WorkerHealth>,
     stopping: &AtomicBool,
 ) {
     crate::write_stderr(format_args!("compme: state=loading"));
     if let Err(err) = model.warm_up() {
         if err.kind() != LocalModelErrorKind::ShutdownRequested {
             crate::write_stderr(format_args!("compme: warm-up failed: {err}"));
+            // Not `Failed`: that variant means "the worker is gone" and makes
+            // `submit` refuse every request. Decode may still work, so the
+            // worker stays alive and only the status/tray path is widened.
+            *health
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()) =
+                WorkerHealth::Degraded(err.to_string());
         }
     }
     if stopping.load(Ordering::SeqCst) {
@@ -562,14 +573,25 @@ fn run(
         requests,
         outcomes,
         ready,
+        // This helper drives `serve` on the test thread for loop-exit
+        // behaviour; no caller inspects worker health, so it gets a throwaway.
+        &Mutex::new(WorkerHealth::Running),
         &AtomicBool::new(false),
     );
     model.shutdown();
 }
 
+/// What the inference worker's own thread has reported about itself.
 #[derive(Debug)]
 enum WorkerHealth {
+    /// Warm-up succeeded (or has not finished); the worker is serving.
     Running,
+    /// The model loaded but its warm-up decode failed. The worker is ALIVE and
+    /// keeps serving, so this must not make `submit` refuse — it only tells the
+    /// status path that the model is not healthy (A6).
+    Degraded(String),
+    /// The worker thread is gone (it panicked). Nothing will ever be served
+    /// again, so `submit` fails closed.
     Failed(String),
 }
 
@@ -632,6 +654,7 @@ impl InferenceHandle {
                         request_rx,
                         outcome_tx,
                         Arc::clone(&ready_for_thread),
+                        &health_for_thread,
                         stopping_for_thread.as_ref(),
                     )
                 }));
@@ -703,13 +726,32 @@ impl InferenceHandle {
         self.ready.load(Ordering::SeqCst)
     }
 
+    /// Why the worker is GONE, if it is. Deliberately `None` for a degraded
+    /// worker: [`Self::has_failed`] gates [`Self::submit`], and a degraded
+    /// worker is still alive and still serving.
     pub(crate) fn failure_reason(&self) -> Option<String> {
         match &*self.health.lock().unwrap_or_else(|err| err.into_inner()) {
-            WorkerHealth::Running => None,
+            WorkerHealth::Running | WorkerHealth::Degraded(_) => None,
             WorkerHealth::Failed(reason) => Some(reason.clone()),
         }
     }
 
+    /// The warm-up error, when the model loaded but its warm-up decode failed.
+    /// Consumed by the status path only — see [`Self::failure_reason`] for why
+    /// this is not folded into it.
+    pub(crate) fn degraded_reason(&self) -> Option<String> {
+        match &*self.health.lock().unwrap_or_else(|err| err.into_inner()) {
+            WorkerHealth::Degraded(reason) => Some(reason.clone()),
+            WorkerHealth::Running | WorkerHealth::Failed(_) => None,
+        }
+    }
+
+    pub(crate) fn is_degraded(&self) -> bool {
+        self.degraded_reason().is_some()
+    }
+
+    /// True only when the worker thread is gone and nothing will be served
+    /// again. A degraded worker is NOT failed — see [`Self::degraded_reason`].
     pub(crate) fn has_failed(&self) -> bool {
         self.failure_reason().is_some()
     }
@@ -2329,7 +2371,10 @@ mod tests {
 
     #[test]
     fn warm_up_failure_is_non_fatal() {
-        // A failing warm-up must not block readiness or completions.
+        // A failing warm-up must not block readiness or completions — but it
+        // must not read as healthy either (A6): the worker reports Degraded,
+        // which is distinct from the Failed state a panicked worker records,
+        // and `submit` keeps enqueuing because the worker is still alive.
         let inference = InferenceHandle::spawn(
             Box::new(WarmUpFailModel),
             PromptMode::Raw,
@@ -2344,6 +2389,41 @@ mod tests {
             .expect("outcome despite warm-up failure");
         assert_eq!(outcome.candidates[0], "served");
         assert!(inference.is_ready());
+        // The served outcome proves the worker passed warm-up, so the degraded
+        // record is already in place — no polling needed.
+        let reason = inference
+            .degraded_reason()
+            .expect("a failed warm-up must surface as a degraded worker");
+        assert!(reason.contains("boom"), "{reason}");
+        assert!(
+            !inference.has_failed(),
+            "a degraded worker is alive, so it must not report terminal failure"
+        );
+        assert!(
+            inference.submit(request("still served", 2)),
+            "degraded health must not make submit refuse"
+        );
+        assert!(!inference.shutdown().timed_out());
+    }
+
+    #[test]
+    fn a_warmed_worker_is_neither_degraded_nor_failed() {
+        // The other half of A6: Degraded must not be recorded spuriously, or
+        // every healthy launch would report an unusable model.
+        let inference = InferenceHandle::spawn(
+            Box::new(StubModel::new("x")),
+            PromptMode::Terse,
+            PersonalizationProfile::default(),
+            1,
+            WorkerContext::default(),
+        )
+        .unwrap();
+        inference.submit(request("p", 1));
+        let _ = inference.recv_outcome();
+        assert!(inference.is_ready());
+        assert_eq!(inference.degraded_reason(), None);
+        assert!(!inference.is_degraded());
+        assert!(!inference.has_failed());
         assert!(!inference.shutdown().timed_out());
     }
 

@@ -16,7 +16,10 @@ pub enum BlockReason {
     RelaunchRequired,
     /// Secure input is active (password field / global secure input).
     SecureInput,
-    /// The configured model source failed permanently at startup.
+    /// The configured model source is unusable: it failed at startup, or its
+    /// inference worker died (panic) or failed its warm-up decode. Which one is
+    /// on stderr (`compme: warm-up failed: …` / `compme: inference worker
+    /// panicked`); the tray only carries the severity.
     ModelUnavailable,
 }
 
