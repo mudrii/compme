@@ -574,13 +574,13 @@ fn complete_on_worker(
     }
 
     // All position arithmetic comes from the pure, unit-tested `plan_decode`:
-    // clamp the prompt to the context window (drop leading tokens, keep the
-    // caret-adjacent tail) and reuse the shared KV prefix, re-decoding only the
-    // divergent suffix from `reuse` onward (which also drops any generated tokens
-    // left over from the previous completion).
+    // clamp the prompt to the context window (keep the BOS and the caret-adjacent
+    // tail, dropping a step-aligned span after the BOS) and reuse the shared KV
+    // prefix, re-decoding only the divergent suffix from `reuse` onward (which
+    // also drops any generated tokens left over from the previous completion).
     let plan = plan_decode(prev_tokens, &tokens, max_tokens, n_ctx);
     if plan.skip > 0 {
-        tokens.drain(..plan.skip);
+        tokens.drain(plan.keep..plan.keep + plan.skip);
     }
     let reuse = plan.reuse;
     let reset_on_err = |context: &mut LlamaContext<'_>, prev: &mut Vec<LlamaToken>| {
@@ -897,17 +897,45 @@ pub(crate) fn reusable_prefix_len<T: PartialEq>(prev: &[T], next: &[T]) -> usize
     shared.min(next.len() - 1)
 }
 
-/// How many leading prompt tokens to drop so the prompt plus the generation
+/// The minimum number of prompt tokens to drop so the prompt plus the generation
 /// budget fit in the context window. The completion needs `max_tokens` of room,
 /// so the prompt may use at most `n_ctx - max_tokens` tokens (at least 1). When
-/// the prompt is longer we drop from the *front*, keeping the caret-adjacent tail
-/// (the most relevant context). Without this, an over-long prompt makes every
-/// `decode` fail → reset → no completion at all for large-context fields.
+/// the prompt is longer we drop from near the *front* (`prompt_window` keeps the
+/// BOS), keeping the caret-adjacent tail (the most relevant context). Without
+/// this, an over-long prompt makes every `decode` fail → reset → no completion
+/// at all for large-context fields.
 pub(crate) fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx: usize) -> usize {
-    // Reserve room for the generated tokens; always leave the prompt at least one
-    // token so a tiny/zero window still decodes the caret-adjacent token.
-    let budget = n_ctx.saturating_sub(max_tokens).max(1);
-    prompt_len.saturating_sub(budget)
+    prompt_len.saturating_sub(prompt_budget(max_tokens, n_ctx))
+}
+
+/// The prompt's share of the context window: room is reserved for the generated
+/// tokens, and the prompt always keeps at least one token so a tiny/zero window
+/// still decodes the caret-adjacent token.
+fn prompt_budget(max_tokens: usize, n_ctx: usize) -> usize {
+    n_ctx.saturating_sub(max_tokens).max(1)
+}
+
+/// Where an over-long prompt is cut, as `(keep, skip)`: keep the first `keep`
+/// tokens (the BOS, whenever the budget has room for it plus one tail token),
+/// then drop the next `skip`. The drop is rounded UP to a whole quarter of the
+/// budget, so consecutive keystrokes (about one token each) keep the same window
+/// start — and so the cached KV prefix — until the next quarter boundary.
+/// Dropping exactly the overflow slid the window one token per keystroke, which
+/// defeated prefix reuse and re-decoded the whole window on every request.
+fn prompt_window(prompt_len: usize, max_tokens: usize, n_ctx: usize) -> (usize, usize) {
+    let min_skip = prompt_tokens_to_skip(prompt_len, max_tokens, n_ctx);
+    if min_skip == 0 {
+        return (0, 0);
+    }
+    let budget = prompt_budget(max_tokens, n_ctx);
+    let keep = usize::from(budget >= 2);
+    let step = (budget / 4).max(1);
+    // prompt_len > budget >= keep + 1, so at least one tail token survives.
+    let skip = min_skip
+        .div_ceil(step)
+        .saturating_mul(step)
+        .min(prompt_len - keep - 1);
+    (keep, skip)
 }
 
 /// The arithmetic for one decode, derived purely from the previous (clamped)
@@ -915,13 +943,16 @@ pub(crate) fn prompt_tokens_to_skip(prompt_len: usize, max_tokens: usize, n_ctx:
 /// window. Separated from the FFI so the position math — the part a "wrong
 /// `seq_rm` / position" bug would corrupt — is unit-testable without a model.
 ///
-/// Given a plan, `complete_on_worker` must: drop the first `skip` tokens, keep
-/// KV positions `[0, reuse)` and clear `[reuse, ∞)`, decode the clamped tokens
-/// `[reuse, prompt_len)` at those same positions, then generate starting at
-/// position `prompt_len`.
+/// Given a plan, `complete_on_worker` must: drop the `skip` tokens after the
+/// first `keep`, keep KV positions `[0, reuse)` and clear `[reuse, ∞)`, decode
+/// the clamped tokens `[reuse, prompt_len)` at those same positions, then
+/// generate starting at position `prompt_len`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct DecodePlan {
-    /// Leading prompt tokens to drop so prompt + generation fit the window.
+    /// Leading prompt tokens (the BOS) kept ahead of the dropped span.
+    pub keep: usize,
+    /// Prompt tokens dropped after the kept head so prompt + generation fit the
+    /// window (see `prompt_window`).
     pub skip: usize,
     /// KV-cache prefix (of the clamped prompt) to reuse; the suffix is re-decoded.
     pub reuse: usize,
@@ -961,21 +992,31 @@ pub(crate) fn prompt_suffix_position(reuse: usize, index: usize) -> i32 {
 
 /// Compute the [`DecodePlan`] for `current` prompt tokens against the `prev`
 /// (clamped) tokens still in the KV cache.
-pub(crate) fn plan_decode<T: PartialEq>(
+pub(crate) fn plan_decode<T: PartialEq + Clone>(
     prev: &[T],
     current: &[T],
     max_tokens: usize,
     n_ctx: usize,
 ) -> DecodePlan {
-    let skip = prompt_tokens_to_skip(current.len(), max_tokens, n_ctx);
-    let clamped = &current[skip..];
-    let reuse = reusable_prefix_len(prev, clamped);
+    let (keep, skip) = prompt_window(current.len(), max_tokens, n_ctx);
+    let clamped: std::borrow::Cow<'_, [T]> = if skip == 0 {
+        current.into()
+    } else {
+        current[..keep]
+            .iter()
+            .chain(&current[keep + skip..])
+            .cloned()
+            .collect::<Vec<_>>()
+            .into()
+    };
+    let reuse = reusable_prefix_len(prev, &clamped);
     let generation_tokens = if clamped.is_empty() {
         0
     } else {
         max_tokens.min(n_ctx.saturating_sub(clamped.len()))
     };
     DecodePlan {
+        keep,
         skip,
         reuse,
         prompt_len: clamped.len(),
@@ -1408,6 +1449,7 @@ mod tests {
         assert_eq!(
             plan,
             DecodePlan {
+                keep: 0,
                 skip: 0,
                 reuse: 0,
                 prompt_len: 4,
@@ -1423,6 +1465,7 @@ mod tests {
         assert_eq!(
             plan,
             DecodePlan {
+                keep: 0,
                 skip: 0,
                 reuse: 2,
                 prompt_len: 3,
@@ -1433,9 +1476,10 @@ mod tests {
 
     #[test]
     fn plan_decode_clamps_then_computes_reuse_on_clamped_tokens() {
-        // n_ctx=6, max_tokens=2 → budget 4. current len 6 → skip 2, clamped is the
-        // last 4 tokens. reuse is computed against prev using the CLAMPED tokens.
-        let prev = vec![3, 4, 5, 6]; // matches the clamped tail [3,4,5,6]
+        // n_ctx=6, max_tokens=2 → budget 4 (step 1). current len 6 → keep the BOS,
+        // skip 2, clamped is [1,4,5,6]. reuse is computed against prev using the
+        // CLAMPED tokens.
+        let prev = vec![1, 4, 5, 6]; // matches the clamped window
         let current = vec![1, 2, 3, 4, 5, 6];
         let plan = plan_decode(&prev, &current, 2, 6);
         assert_eq!(plan.skip, 2);
@@ -1464,10 +1508,10 @@ mod tests {
     }
 
     #[test]
-    fn plan_decode_skip_with_divergent_prev_reuses_nothing() {
+    fn plan_decode_skip_with_divergent_prev_reuses_only_the_kept_bos() {
         // Over-long prompt (skip>0) whose CLAMPED tail shares no prefix with the
-        // stale cache: reuse must be 0, forcing a full re-decode of the clamped
-        // window. Pins that reuse is computed against the CLAMPED tokens, not the
+        // stale cache beyond the kept BOS: reuse must be 1, forcing a re-decode
+        // of the whole clamped tail. Pins that reuse is computed against the CLAMPED tokens, not the
         // raw `current` — a bug measuring reuse on raw tokens could match the
         // dropped front and wrongly skip re-decoding caret-adjacent context.
         let prev = vec![1, 2, 3, 4]; // matches the DROPPED front, not the tail
@@ -1476,9 +1520,38 @@ mod tests {
         assert_eq!(plan.skip, 2);
         assert_eq!(plan.prompt_len, 4);
         assert_eq!(
-            plan.reuse, 0,
-            "stale prefix on dropped front must not reuse"
+            plan.reuse, 1,
+            "only the kept BOS may reuse; the stale dropped span must not"
         );
+    }
+
+    /// The clamped tokens `complete_on_worker` decodes for `plan`.
+    fn clamped_tokens(current: &[i32], plan: DecodePlan) -> Vec<i32> {
+        let mut tokens = current.to_vec();
+        tokens.drain(plan.keep..plan.keep + plan.skip);
+        tokens
+    }
+
+    #[test]
+    fn plan_decode_over_window_keeps_bos_and_reuses_prefix_across_keystrokes() {
+        // A long field (prompt > n_ctx - max_tokens) typed one token per
+        // keystroke. budget = 42 - 2 = 40. Dropping exactly the overflow slid
+        // the window by one token per keystroke, so the cached prefix never
+        // matched (a full re-decode every request) and the BOS went first.
+        let first: Vec<i32> = (0..45).collect();
+        let plan = plan_decode::<i32>(&[], &first, 2, 42);
+        let cached = clamped_tokens(&first, plan);
+        assert_eq!(cached[0], 0, "the BOS token must survive the clamp");
+        assert!(cached.len() <= 40);
+
+        let second: Vec<i32> = (0..46).collect();
+        let next = plan_decode(&cached, &second, 2, 42);
+        assert_eq!(
+            next.reuse,
+            next.prompt_len - 1,
+            "the next keystroke must reuse the whole cached window"
+        );
+        assert_eq!(clamped_tokens(&second, next)[..cached.len()], cached[..]);
     }
 
     #[test]
@@ -1659,6 +1732,7 @@ mod tests {
         assert_eq!(
             plan,
             DecodePlan {
+                keep: 0,
                 skip: 0,
                 reuse: 0,
                 prompt_len: 0,
@@ -1670,17 +1744,17 @@ mod tests {
     #[test]
     fn plan_decode_skip_with_partial_clamped_reuse() {
         // Over-long prompt whose CLAMPED tail DOES share a prefix with the cache.
-        // prev=[3,4,5,9], current=[1,2,3,4,5,6], max=2, n_ctx=6:
-        //   budget = 6 - 2 = 4; skip = 6 - 4 = 2 -> clamped tail = [3,4,5,6]
-        //   reuse = shared([3,4,5,9],[3,4,5,6]) = 3 (leaves >=1: min(3, 4-1)=3)
-        let prev = vec![3, 4, 5, 9];
+        // prev=[1,4,5,9], current=[1,2,3,4,5,6], max=2, n_ctx=6:
+        //   budget = 6 - 2 = 4; keep the BOS, skip 2 -> clamped = [1,4,5,6]
+        //   reuse = shared([1,4,5,9],[1,4,5,6]) = 3 (leaves >=1: min(3, 4-1)=3)
+        let prev = vec![1, 4, 5, 9];
         let current = vec![1, 2, 3, 4, 5, 6];
         let plan = plan_decode(&prev, &current, 2, 6);
-        assert_eq!(plan.skip, 2, "drop the over-budget front");
-        assert_eq!(plan.prompt_len, 4, "clamped tail [3,4,5,6]");
+        assert_eq!(plan.skip, 2, "drop the over-budget span after the BOS");
+        assert_eq!(plan.prompt_len, 4, "clamped [1,4,5,6]");
         assert_eq!(
             plan.reuse, 3,
-            "clamped tail shares [3,4,5] with the cache; re-decode only the last"
+            "clamped window shares [1,4,5] with the cache; re-decode only the last"
         );
     }
 
