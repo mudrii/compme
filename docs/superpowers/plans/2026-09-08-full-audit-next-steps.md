@@ -88,7 +88,8 @@ branches).
   `tools/release/check-version-docs.sh` (same exact-phrase style as the
   existing eight) so the next release cannot leave them behind.
 - Flip the satisfied rows: Qfd §10 item 7, §13 item 3, §14 item 6, §19
-  "first live proof is still the next tag"; `FIXED.md:33` A53. Correct Qfd
+  "first live proof is still the next tag"; `docs/superpowers/plans/FIXED.md:36`
+  A53. Correct Qfd
   §14 `:460,552` (doctests now run in CI). Record `ce39c50`, `ec3247e`,
   `fcbc8f6` in the ROADMAP delivery log.
 - ROADMAP counts: `run()` 1,557 lines (measured `pub fn run` to its closing

@@ -1,5 +1,8 @@
 # 2FIX implementation record
 
+> **Superseded — historical record.** Moved from the repository root on
+> 2026-09-23 (audit item D5); current status lives in `docs/ROADMAP.md`.
+
 This file records what actually changed for each active item in `2FIX.md`.
 It is evidence, not a second plan: unresolved scope and ordering remain in
 `2FIX.md`; `docs/ROADMAP.md` remains the project status source of truth.

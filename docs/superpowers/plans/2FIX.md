@@ -40,7 +40,7 @@ Spot-checked, not re-derived:
 | A12 plan sequencing | Linux 2.1–2.5 no longer listed as remaining (`ROADMAP.md:1415-1424`). `AGENTS.md:65-67` is Linux-wired / Windows-scaffold. |
 | A41 fatal-without-a11y | `PlatformError::AccessibilityUnavailable` exists; G1 later reused the same variant for a missing accept tap (`b8d3626`). |
 | A50 trailing `\|` panic | `is_go_command` uses `tokens.first()` (`compat/src/lib.rs:513-516`). |
-| A53 `post_verify` | **Verified** on the v0.1.6 run (`2d18c34` / `FIXED.md:33`). |
+| A53 `post_verify` | **Verified** on the v0.1.6 run (`2d18c34` / `FIXED.md:36`). |
 
 The other A16–A75 items remain historical WP work. `FIXED.md` is the
 per-ID evidence. Do not clone them into a new A-list.
