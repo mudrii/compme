@@ -3631,14 +3631,24 @@ fn carbon_slot_stale_disarm_never_clears_a_newer_arm() {
     // The R2-5 out-of-order guard: resource A armed (id 1), resource B
     // arms (id 2) before A's drop runs — A's disarm must be a no-op.
     let slot = CarbonHandlerSlot::new();
-    let log = Arc::new(Mutex::new(Vec::new()));
-    slot.arm(1, keep_handler(Arc::clone(&log)));
-    slot.arm(2, keep_handler(Arc::clone(&log)));
+    let older_log = Arc::new(Mutex::new(Vec::new()));
+    let newer_log = Arc::new(Mutex::new(Vec::new()));
+    slot.arm(1, keep_handler(Arc::clone(&older_log)));
+    slot.arm(2, keep_handler(Arc::clone(&newer_log)));
 
     slot.disarm(1);
+    let armed = slot
+        .current()
+        .expect("a stale disarm must not clear the newer arm");
+    let _ = armed(tap_event(50));
+    assert_eq!(
+        *newer_log.lock().unwrap(),
+        vec![50],
+        "the slot still holds the NEWER handler"
+    );
     assert!(
-        slot.current().is_some(),
-        "a stale disarm must not clear the newer arm"
+        older_log.lock().unwrap().is_empty(),
+        "the older handler was replaced, not kept"
     );
     slot.disarm(2);
     assert!(slot.current().is_none());
