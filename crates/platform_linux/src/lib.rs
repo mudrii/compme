@@ -277,6 +277,78 @@ impl LinuxAdapter {
         }
     }
 
+    /// [`PlatformAdapter::subscribe_accept`] with the two X11 installers
+    /// injected, so the degrade policy is testable without an X server.
+    #[cfg(target_os = "linux")]
+    fn subscribe_accept_with(
+        &self,
+        cb: AcceptCallback,
+        install_accept: impl FnOnce(AcceptCallback) -> Result<Arc<x11_tap::X11AcceptTap>, PlatformError>,
+        install_shortcuts: impl FnOnce(
+            AcceptCallback,
+        ) -> Result<
+            Option<Arc<x11_shortcuts::X11ShortcutTap>>,
+            PlatformError,
+        >,
+    ) -> Result<AcceptSubscription, PlatformError> {
+        // The probe proved the grab possible, but install can still fail (the
+        // X server went away, a worker would not spawn). The run loop treats
+        // any error but `AccessibilityUnavailable` as fatal, so degrade to no
+        // accept tap exactly as an uninstallable one does.
+        let accept_tap = if self.accept_tap_installable {
+            match install_accept(Arc::clone(&cb)) {
+                Ok(tap) => Some(tap),
+                Err(err) => {
+                    eprintln!("compme: Linux X11 accept tap unavailable: {err}");
+                    None
+                }
+            }
+        } else {
+            None
+        };
+        let shortcut_tap = match install_shortcuts(cb) {
+            Ok(tap) => tap,
+            Err(err) if accept_tap.is_some() => {
+                // Shortcut registration is independent from suggestion-scoped
+                // accept. A desktop-reserved shortcut must not take working
+                // Tab/grave interception down with it; report the missing
+                // surface and retain the accept path.
+                eprintln!("compme: Linux global shortcuts unavailable: {err}");
+                None
+            }
+            Err(err) => return Err(Self::control_taps_unavailable(&err)),
+        };
+        if accept_tap.is_none() && shortcut_tap.is_none() {
+            return Err(Self::accept_tap_unavailable());
+        }
+        let for_visible = accept_tap.clone();
+        let for_hide = accept_tap.clone();
+        let for_action = accept_tap.clone();
+        let for_rearm = accept_tap.clone();
+        Ok(AcceptSubscription::new(
+            // The shortcut tap is process-lifetime for this subscription and
+            // is otherwise not referenced by the control closures. The cancel
+            // owns it so dropping the subscription releases its grabs.
+            new_cancelling_subscription(move || drop(shortcut_tap)),
+            move |visible| match &for_visible {
+                Some(tap) => tap.set_suggestion_visible(visible),
+                None => Ok(()),
+            },
+            move |delay| match &for_hide {
+                Some(tap) => tap.hide_suggestion_after(delay),
+                None => Ok(()),
+            },
+            move |action| match &for_action {
+                Some(tap) => tap.set_accept_action(action),
+                None => Ok(()),
+            },
+        )
+        .with_rearm(move || match &for_rearm {
+            Some(tap) => tap.rearm(),
+            None => Ok(()),
+        }))
+    }
+
     /// Validate a field against the adapter's current focus identity before an
     /// AT-SPI proxy is constructed or called.
     #[cfg(target_os = "linux")]
@@ -376,52 +448,11 @@ impl PlatformAdapter for LinuxAdapter {
     /// `AccessibilityUnavailable` as "no accept tap this session".
     #[cfg(target_os = "linux")]
     fn subscribe_accept(&self, cb: AcceptCallback) -> Result<AcceptSubscription, PlatformError> {
-        let accept_tap = if self.accept_tap_installable {
-            Some(x11_tap::X11AcceptTap::install(Arc::clone(&cb))?)
-        } else {
-            None
-        };
-        let shortcut_tap = match x11_shortcuts::X11ShortcutTap::install(cb) {
-            Ok(tap) => tap,
-            Err(err) if accept_tap.is_some() => {
-                // Shortcut registration is independent from suggestion-scoped
-                // accept. A desktop-reserved shortcut must not take working
-                // Tab/grave interception down with it; report the missing
-                // surface and retain the accept path.
-                eprintln!("compme: Linux global shortcuts unavailable: {err}");
-                None
-            }
-            Err(err) => return Err(Self::control_taps_unavailable(&err)),
-        };
-        if accept_tap.is_none() && shortcut_tap.is_none() {
-            return Err(Self::accept_tap_unavailable());
-        }
-        let for_visible = accept_tap.clone();
-        let for_hide = accept_tap.clone();
-        let for_action = accept_tap.clone();
-        let for_rearm = accept_tap.clone();
-        Ok(AcceptSubscription::new(
-            // The shortcut tap is process-lifetime for this subscription and
-            // is otherwise not referenced by the control closures. The cancel
-            // owns it so dropping the subscription releases its grabs.
-            new_cancelling_subscription(move || drop(shortcut_tap)),
-            move |visible| match &for_visible {
-                Some(tap) => tap.set_suggestion_visible(visible),
-                None => Ok(()),
-            },
-            move |delay| match &for_hide {
-                Some(tap) => tap.hide_suggestion_after(delay),
-                None => Ok(()),
-            },
-            move |action| match &for_action {
-                Some(tap) => tap.set_accept_action(action),
-                None => Ok(()),
-            },
+        self.subscribe_accept_with(
+            cb,
+            x11_tap::X11AcceptTap::install,
+            x11_shortcuts::X11ShortcutTap::install,
         )
-        .with_rearm(move || match &for_rearm {
-            Some(tap) => tap.rearm(),
-            None => Ok(()),
-        }))
     }
 
     /// Real impl: the X11 `XGrabKey` tap above; a compositor/IME path on Wayland.
@@ -1372,6 +1403,42 @@ mod tests {
             reason.contains("X11 accept tap"),
             "reason explains the missing tap: {reason:?}"
         );
+    }
+
+    /// A tap that probed installable can still fail to install (the X server
+    /// went away, a worker thread would not spawn). The run loop treats every
+    /// variant but `AccessibilityUnavailable` as fatal, so that failure must
+    /// degrade to "no accept tap", never end startup.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn accept_tap_install_failure_degrades_to_no_accept_tap() {
+        let adapter = LinuxAdapter {
+            accept_tap_installable: true,
+            ..LinuxAdapter::new()
+        };
+        let failed_install = |_| {
+            Err(PlatformError::CannotComplete {
+                reason: "platform_linux x11 tap watchdog thread: injected".to_string(),
+            })
+        };
+
+        let Err(PlatformError::AccessibilityUnavailable { reason }) =
+            adapter.subscribe_accept_with(Arc::new(|_| {}), failed_install, |_| Ok(None))
+        else {
+            panic!("a failed accept-tap install must degrade, not be fatal");
+        };
+        assert!(reason.contains("X11 accept tap"), "{reason:?}");
+
+        let Err(PlatformError::AccessibilityUnavailable { reason }) = adapter
+            .subscribe_accept_with(Arc::new(|_| {}), failed_install, |_| {
+                Err(PlatformError::CannotComplete {
+                    reason: "no DISPLAY".to_string(),
+                })
+            })
+        else {
+            panic!("no accept tap and no shortcuts must degrade, not be fatal");
+        };
+        assert!(reason.contains("no DISPLAY"), "{reason:?}");
     }
 
     #[test]
