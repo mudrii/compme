@@ -30,6 +30,13 @@ const KEY_PREFIXES: &[&str] = &[
 
 /// Matches API-key / secret-like tokens: vendor-prefixed keys and long
 /// high-entropy tokens (base64/base64url incl. padding and JWT dots).
+///
+/// The vendor-prefix branch captures its left separator as group 1 because the
+/// `regex` crate has no lookbehind: without a boundary that branch fired on the
+/// `sk-` inside `risk-`, the `sk_` inside `task_` and the `rk-` inside
+/// `network-`, shredding ordinary compound words. The caller re-emits the
+/// separator and judges only the key that follows it. Every other branch leaves
+/// group 1 unmatched, so the key is the whole match there.
 fn secret_re() -> &'static Regex {
     static RE: OnceLock<Regex> = OnceLock::new();
     RE.get_or_init(|| {
@@ -40,7 +47,7 @@ fn secret_re() -> &'static Regex {
             | xox[baprs]-[A-Za-z0-9-]{10,}
             | SG\.[A-Za-z0-9._-]{10,}
             | (?:whsec_|glpat-)[A-Za-z0-9_-]{16,}
-            | (?:sk|ghp|gho|ghu|ghs|ghr|pk|rk)[-_][A-Za-z0-9_-]{16,}
+            | (^|[^A-Za-z0-9])(?:sk|ghp|gho|ghu|ghs|ghr|pk|rk)[-_][A-Za-z0-9_-]{16,}
             | [A-Za-z0-9+/=._-]{32,}
             ",
         )
@@ -280,9 +287,15 @@ pub fn redact(input: &str) -> String {
     });
     let stage3 = secret_re().replace_all(&stage2b, |caps: &regex::Captures| {
         let m = &caps[0];
-        let is_keyed = KEY_PREFIXES.iter().any(|prefix| m.starts_with(prefix));
-        if is_keyed || looks_high_entropy(m) {
-            "[redacted-secret]".to_string()
+        // Group 1 is the vendor branch's captured left separator (empty for the
+        // `^` case, absent for every other branch). Judge the KEY that follows
+        // it, and re-emit the separator — it may be multi-byte, so slice by byte
+        // length, not char count.
+        let boundary = caps.get(1).map_or("", |sep| sep.as_str());
+        let key = &m[boundary.len()..];
+        let is_keyed = KEY_PREFIXES.iter().any(|prefix| key.starts_with(prefix));
+        if is_keyed || looks_high_entropy(key) {
+            format!("{boundary}[redacted-secret]")
         } else {
             m.to_string()
         }
@@ -1262,5 +1275,52 @@ mod tests {
         let out = redact("code=abc123");
         assert_eq!(out, "code=[redacted-secret]");
         assert!(!out.contains("abc123"), "secret value leaked: {out:?}");
+    }
+
+    #[test]
+    fn ordinary_compound_words_are_not_treated_as_vendor_prefixed_keys() {
+        // The vendor-prefix branch `(?:sk|ghp|gho|ghu|ghs|ghr|pk|rk)[-_]…{16,}`
+        // had no left boundary, so it fired on the `sk-` inside `risk-`, the
+        // `sk_` inside `task_` and the `rk-` inside `network-`. Probe before the
+        // fix:
+        //   redact("risk-assessment-framework task_management_service network-security-policies")
+        //     -> "ri[redacted-secret] ta[redacted-secret] netwo[redacted-secret]"
+        //
+        // GIVEN ordinary hyphen/snake compound words that merely CONTAIN a vendor
+        // prefix mid-word, WHEN they are redacted, THEN each survives verbatim.
+        for word in [
+            "risk-assessment-framework",
+            "task_management_service",
+            "network-security-policies",
+            "desk-organisation-checklist",
+            "disk_cache_directory_structure",
+        ] {
+            let text = format!("see {word} here");
+            assert_eq!(redact(&text), text, "compound word scrubbed: {word}");
+        }
+        let prose = "risk-assessment-framework task_management_service network-security-policies";
+        assert_eq!(redact(prose), prose);
+
+        // POSITIVE — a real vendor key still redacts behind every left boundary
+        // the pattern accepts: start of string, after a space, and after `(`.
+        for key in ["sk-abcdefghijklmnop123456", "ghp_abcdefghijklmnop123456"] {
+            for input in [
+                key.to_string(),
+                format!("key {key} done"),
+                format!("({key})"),
+            ] {
+                let out = redact(&input);
+                assert!(
+                    out.contains("[redacted-secret]"),
+                    "{input} not redacted -> {out}"
+                );
+                assert!(!out.contains(key), "{input} leaked -> {out}");
+            }
+        }
+
+        // The boundary character is re-emitted, not swallowed — including a
+        // multi-byte one, which a char-count slice would corrupt.
+        assert_eq!(redact("(sk-abcdefghijklmnop123456)"), "([redacted-secret])");
+        assert_eq!(redact("«sk-abcdefghijklmnop123456»"), "«[redacted-secret]»");
     }
 }
