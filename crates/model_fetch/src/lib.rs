@@ -472,6 +472,36 @@ fn download_with_agent(
     Ok(dest.to_path_buf())
 }
 
+/// The dest-exists guard: whether `dest` already holds the model, so a repeat
+/// Download click neither re-fetches nor clobbers a good file. An interrupted
+/// 0-byte stub is not present. With a pinned hash the file must also match it
+/// — hashing a multi-GB model is why this runs on the worker thread, never on
+/// the caller's UI loop.
+fn dest_already_present(
+    dest: &std::path::Path,
+    expected_sha256: Option<&str>,
+) -> Result<bool, FetchError> {
+    if !std::fs::metadata(dest).is_ok_and(|meta| meta.len() > 0) {
+        return Ok(false);
+    }
+    let Some(expected) = expected_sha256 else {
+        return Ok(true);
+    };
+    let file = std::fs::File::open(dest).map_err(|err| {
+        FetchError::Io(format!(
+            "failed to read existing model {}: {err}",
+            dest.display()
+        ))
+    })?;
+    let actual = read_sha256_hex(std::io::BufReader::new(file)).map_err(|err| {
+        FetchError::Io(format!(
+            "failed to hash existing model {}: {err}",
+            dest.display()
+        ))
+    })?;
+    Ok(actual == expected.to_ascii_lowercase())
+}
+
 /// Where a queued download stands. The run loop polls this (no callbacks
 /// into AppKit from the worker thread).
 #[derive(Debug, Default)]
@@ -533,25 +563,31 @@ impl ModelDownloader {
                     *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) =
                         DownloadState::Running;
                     let status = std::sync::Arc::clone(&req.status);
-                    let result = download_with_agent(
-                        &agent,
-                        &req.url,
-                        &req.dest,
-                        req.expected_sha256.as_deref(),
-                        req.max_bytes,
-                        move |written, total| {
-                            status
-                                .downloaded
-                                .store(written, std::sync::atomic::Ordering::Relaxed);
-                            // total==0 is the "unknown total" sentinel (server sent
-                            // no Content-Length): a polling consumer computing a
-                            // percentage must treat 0 as indeterminate, not as a
-                            // known-zero/known-small total.
-                            status
-                                .total
-                                .store(total.unwrap_or(0), std::sync::atomic::Ordering::Relaxed);
-                        },
-                    );
+                    let result =
+                        match dest_already_present(&req.dest, req.expected_sha256.as_deref()) {
+                            Ok(true) => Ok(req.dest.clone()),
+                            Ok(false) => download_with_agent(
+                                &agent,
+                                &req.url,
+                                &req.dest,
+                                req.expected_sha256.as_deref(),
+                                req.max_bytes,
+                                move |written, total| {
+                                    status
+                                        .downloaded
+                                        .store(written, std::sync::atomic::Ordering::Relaxed);
+                                    // total==0 is the "unknown total" sentinel (server sent
+                                    // no Content-Length): a polling consumer computing a
+                                    // percentage must treat 0 as indeterminate, not as a
+                                    // known-zero/known-small total.
+                                    status.total.store(
+                                        total.unwrap_or(0),
+                                        std::sync::atomic::Ordering::Relaxed,
+                                    );
+                                },
+                            ),
+                            Err(err) => Err(err),
+                        };
                     *req.status.state.lock().unwrap_or_else(|e| e.into_inner()) = match result {
                         Ok(path) => DownloadState::Done(path),
                         Err(err) => DownloadState::Failed(err.to_string()),
@@ -1873,6 +1909,25 @@ mod tests {
         let err = download_url(&url, &dest, None, |_, _| {}).unwrap_err();
         assert!(matches!(err, FetchError::Http(416)), "got: {err}");
         assert!(!part.exists(), "the stale part was dropped by the retry");
+    }
+
+    #[test]
+    fn dest_already_present_requires_a_nonempty_file_matching_the_pinned_hash() {
+        // The worker's dest-exists guard: a repeat Download click on a good
+        // model skips the fetch, but a missing file, a 0-byte stub (an
+        // interrupted finalize), or a pinned-hash mismatch still downloads.
+        let dest = temp_dest("present");
+        let _ = std::fs::remove_file(&dest);
+        let matching = sha256_hex(b"expected model bytes");
+        assert!(!dest_already_present(&dest, Some(&matching)).unwrap());
+        std::fs::write(&dest, b"").unwrap();
+        assert!(!dest_already_present(&dest, None).unwrap());
+        std::fs::write(&dest, b"wrong model bytes").unwrap();
+        assert!(!dest_already_present(&dest, Some(&matching)).unwrap());
+        assert!(dest_already_present(&dest, None).unwrap());
+        std::fs::write(&dest, b"expected model bytes").unwrap();
+        assert!(dest_already_present(&dest, Some(&matching.to_ascii_uppercase())).unwrap());
+        let _ = std::fs::remove_file(&dest);
     }
 
     #[test]

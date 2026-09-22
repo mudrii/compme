@@ -640,9 +640,9 @@ download block. To exercise:
    log`), proving the picker index drives the target, not just `recommended()`.
 4. On a machine below a model's minimum RAM, picking that row and clicking
    Download logs a blocked message and does not enqueue a fetch.
-5. Re-click Download on a model already on disk → the dest-exists guard logs
-   `<model> already downloaded at <path> — delete it to re-download` (no
-   re-fetch / clobber).
+5. Re-click Download on a model already on disk → the worker's dest-exists
+   guard verifies it with no network fetch and logs `model downloaded to <path>
+   — COMPME_MODEL_PATH set, relaunch to use` (no re-fetch / clobber).
 6. Pick an **encumbered** model (`llama-3.2-1b-q4_k_m` /
    `gemma-2-2b-q4_k_m`) with no prior acceptance → the **license click-through
    prompt** appears (the `download_gate` `NeedsLicense` path) before any fetch.

@@ -172,9 +172,9 @@ are wired (D14):
   silently; gated entries (Llama Community, Gemma Terms) prompt a terms
   click-through that fails closed and is remembered once-per-model in
   `COMPME_LICENSE_ACCEPTED`.
-- **Dest-exists guard** — a present, non-empty `.gguf` at the destination is not
-  re-downloaded (`model_present`), so a repeat "Download" click never clobbers a
-  good file; an interrupted 0-byte stub is treated as absent and re-fetched.
+- **Dest-exists guard** — the `ModelDownloader` worker (never the UI loop) skips a
+  present, non-empty, pinned-hash-matching `.gguf` and reports it done, so a
+  repeat "Download" never clobbers a good file; a 0-byte stub is re-fetched.
 
 On a completed download (or when a model is already present, or via
 "Choose Model…") the app persists `COMPME_MODEL_PATH` to `config.env` so the

@@ -36,9 +36,9 @@ use crate::adapter::SharedAdapter;
 use crate::builders::{
     app_support_models_dir, build_emoji_prefs, build_personalization, build_prefs, comma_list,
     downloaded_model_to_adopt, emoji_config_enabled, emoji_gender_from_index, emoji_gender_index,
-    emoji_skin_tone_from_index, emoji_skin_tone_index, layered, model_download_dest_present,
-    model_download_ram_block_message, parse_enabled_default, prepare_model_download_dest,
-    show_models_folder_with, validate_gguf_model, EMOJI_GENDER_VALUES, EMOJI_SKIN_TONE_VALUES,
+    emoji_skin_tone_from_index, emoji_skin_tone_index, layered, model_download_ram_block_message,
+    parse_enabled_default, prepare_model_download_dest, show_models_folder_with,
+    validate_gguf_model, EMOJI_GENDER_VALUES, EMOJI_SKIN_TONE_VALUES,
 };
 #[cfg(test)]
 use crate::builders::{emoji_gender_value, emoji_skin_tone_value, parse_gender, parse_skin_tone};
@@ -847,7 +847,6 @@ fn catalog_download_request(
 #[derive(Debug, PartialEq, Eq)]
 enum DownloadStartResult {
     PreparedFailed(String),
-    AlreadyPresent,
     SpawnFailed(String),
     Queued,
     Busy,
@@ -909,36 +908,27 @@ fn model_download_click_decision(
     }
 }
 
-struct ModelDownloadEdge<'a, D, Prepare, ExistingModel, Spawn, Request> {
+struct ModelDownloadEdge<'a, D, Prepare, Spawn, Request> {
     entry: &'a model_catalog::ModelEntry,
     dest: &'a std::path::Path,
     downloader: &'a mut Option<D>,
     model_download_status: &'a mut Option<std::sync::Arc<model_fetch::DownloadStatus>>,
     model_download_logged: &'a mut u8,
     prepare: Prepare,
-    existing_model: ExistingModel,
     spawn: Spawn,
     request: Request,
 }
 
-fn start_model_download_edge<D, Prepare, ExistingModel, Spawn, Request>(
-    edge: ModelDownloadEdge<'_, D, Prepare, ExistingModel, Spawn, Request>,
+fn start_model_download_edge<D, Prepare, Spawn, Request>(
+    edge: ModelDownloadEdge<'_, D, Prepare, Spawn, Request>,
 ) -> DownloadStartResult
 where
     Prepare: for<'p> FnOnce(&'p std::path::Path) -> Result<(), String>,
-    ExistingModel: for<'p> FnOnce(&'p std::path::Path, Option<&str>) -> Result<bool, String>,
     Spawn: FnOnce() -> Result<D, String>,
     Request: for<'d> FnOnce(&'d D, model_fetch::DownloadRequest) -> bool,
 {
     if let Err(err) = (edge.prepare)(edge.dest) {
         return DownloadStartResult::PreparedFailed(err);
-    }
-    let already_present = match (edge.existing_model)(edge.dest, edge.entry.expected_sha256) {
-        Ok(already_present) => already_present,
-        Err(err) => return DownloadStartResult::PreparedFailed(err),
-    };
-    if already_present {
-        return DownloadStartResult::AlreadyPresent;
     }
     if edge.downloader.is_none() {
         match (edge.spawn)() {
@@ -4874,16 +4864,18 @@ fn model_download_phase(
                     );
                 }
                 let dest = models_dir.join(format!("{}.gguf", entry.name));
-                // Skip the fetch when the model is already on disk — a
-                // repeat "Download" click on a present model would otherwise
-                // re-fetch and clobber a good file. An interrupted 0-byte
-                // stub is NOT present, so it still re-downloads. This check
-                // sits AFTER the license gate on purpose: keeping every
-                // download-triggering path behind the gate is the simpler
-                // invariant, and accepted licenses are remembered, so a
-                // normal re-click on a present encumbered model never
-                // re-prompts (the prompt-then-skip is an unaccepted-yet
-                // edge case, inert for today's unencumbered catalog).
+                // The downloader worker skips the fetch when the model is
+                // already on disk (its pinned hash verified off this thread —
+                // hashing a multi-GB file here would stall the heartbeat) and
+                // reports Done, whose edge below persists COMPME_MODEL_PATH.
+                // An interrupted 0-byte stub is NOT present, so it still
+                // re-downloads. The request sits AFTER the license gate on
+                // purpose: keeping every download-triggering path behind the
+                // gate is the simpler invariant, and accepted licenses are
+                // remembered, so a normal re-click on a present encumbered
+                // model never re-prompts (the prompt-then-skip is an
+                // unaccepted-yet edge case, inert for today's unencumbered
+                // catalog).
                 match start_model_download_edge(ModelDownloadEdge {
                     entry,
                     dest: &dest,
@@ -4891,7 +4883,6 @@ fn model_download_phase(
                     model_download_status: &mut download.model_download_status,
                     model_download_logged: &mut download.model_download_logged,
                     prepare: prepare_model_download_dest,
-                    existing_model: model_download_dest_present,
                     spawn: || model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string()),
                     request: |downloader: &model_fetch::ModelDownloader, request| {
                         downloader.request(request)
@@ -4899,27 +4890,6 @@ fn model_download_phase(
                 }) {
                     DownloadStartResult::PreparedFailed(err) => {
                         eprintln!("compme: {err}");
-                    }
-                    DownloadStartResult::AlreadyPresent => {
-                        // The model is already on disk (this build or an
-                        // older one). A download Done edge will never fire,
-                        // so wire it here: persist the SELECTED model's path
-                        // so a re-click on a present model adopts it instead
-                        // of being an inert "already present" no-op.
-                        if let Some(cfg) = config::config_file_path() {
-                            if let Err(err) = config::persist_setting(
-                                &cfg,
-                                "COMPME_MODEL_PATH",
-                                &dest.to_string_lossy(),
-                            ) {
-                                eprintln!("compme: failed to persist COMPME_MODEL_PATH: {err}");
-                            }
-                        }
-                        eprintln!(
-                            "compme: {} already downloaded at {} \u{2014} COMPME_MODEL_PATH set, relaunch to use",
-                            entry.name,
-                            dest.display()
-                        )
                     }
                     DownloadStartResult::SpawnFailed(err) => {
                         eprintln!("compme: failed to start model downloader \u{2014} {err}");

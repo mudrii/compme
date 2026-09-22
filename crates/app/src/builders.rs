@@ -116,15 +116,6 @@ pub(crate) fn emoji_gender_value(gender: Gender) -> &'static str {
         .unwrap_or("neutral")
 }
 
-/// Whether the destination model file is already present and complete — a
-/// non-empty `.gguf`, from the file's length (`None` = missing). A missing
-/// file or a 0-byte stub (an interrupted finalize) is NOT present, so the
-/// picker re-downloads rather than treating the stub as done. Guards a repeat
-/// "Download" click from re-fetching and clobbering a good file.
-fn model_present(dest_len: Option<u64>) -> bool {
-    matches!(dest_len, Some(len) if len > 0)
-}
-
 /// Build the personalization profile from config (A2 §6). The global
 /// instructions key steers every request; optional per-app/per-domain target
 /// lists activate supplemental value keys without delimiter-parsing free text.
@@ -323,10 +314,6 @@ pub(crate) fn prepare_model_download_dest(dest: &std::path::Path) -> Result<(), 
     Ok(())
 }
 
-fn model_download_dest_len(dest: &std::path::Path) -> Option<u64> {
-    std::fs::metadata(dest).ok().map(|m| m.len())
-}
-
 /// Validate a bring-your-own-model file: a readable, non-empty `.gguf` whose
 /// header carries the GGUF magic. Checked at the trust boundary (the file
 /// panel) so a bad pick fails at the click, not deep in the model loader after
@@ -414,23 +401,6 @@ pub(crate) fn downloaded_model_to_adopt(
         return None;
     }
     models_dir.and_then(discover_downloaded_model)
-}
-
-pub(crate) fn model_download_dest_present(
-    dest: &std::path::Path,
-    expected_sha256: Option<&str>,
-) -> Result<bool, String> {
-    if !model_present(model_download_dest_len(dest)) {
-        return Ok(false);
-    }
-    let Some(expected) = expected_sha256 else {
-        return Ok(true);
-    };
-    let file = std::fs::File::open(dest)
-        .map_err(|err| format!("failed to read existing model {}: {err}", dest.display()))?;
-    let actual = model_fetch::read_sha256_hex(std::io::BufReader::new(file))
-        .map_err(|err| format!("failed to hash existing model {}: {err}", dest.display()))?;
-    Ok(actual == expected.to_ascii_lowercase())
 }
 
 pub(crate) fn model_download_ram_block_message(
@@ -796,18 +766,6 @@ mod tests {
         assert_eq!(layered(None, Some("file".into())), Some("file".into()));
         // neither present → None, so `from_lookup` applies the built-in default.
         assert_eq!(layered(None, None), None);
-    }
-
-    #[test]
-    fn model_present_only_for_a_nonempty_existing_file() {
-        // The dest-exists guard: a complete .gguf already on disk skips the
-        // re-download (avoid clobber + wasted bandwidth on a repeat click).
-        assert!(model_present(Some(1)), "a 1-byte+ file is present");
-        assert!(model_present(Some(500_000_000)), "a real model is present");
-        // A missing file OR a 0-byte stub (an interrupted finalize) is NOT
-        // present — re-download rather than treat the stub as done.
-        assert!(!model_present(None), "missing file → re-download");
-        assert!(!model_present(Some(0)), "0-byte stub → re-download");
     }
 
     #[test]

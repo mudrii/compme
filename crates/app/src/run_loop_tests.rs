@@ -9239,11 +9239,6 @@ fn model_download_requeues_existing_file_when_hash_mismatches() {
     ));
     let _ = std::fs::remove_file(&dest);
     std::fs::write(&dest, b"wrong model bytes").unwrap();
-    assert_eq!(
-        model_download_dest_present(&dest, Some(EXPECTED_HASH)),
-        Ok(false),
-        "the helper must hash nonempty pinned files before trusting them"
-    );
     let mut downloader = Some(());
     let mut status = None;
     let mut logged = 7;
@@ -9256,7 +9251,6 @@ fn model_download_requeues_existing_file_when_hash_mismatches() {
         model_download_status: &mut status,
         model_download_logged: &mut logged,
         prepare: |_: &std::path::Path| Ok(()),
-        existing_model: model_download_dest_present,
         spawn: || Ok(()),
         request: |_: &(), request: model_fetch::DownloadRequest| {
             *requested_hash.borrow_mut() = request.expected_sha256;
@@ -9276,17 +9270,14 @@ fn model_download_requeues_existing_file_when_hash_mismatches() {
         "queued re-download must expose a fresh status block"
     );
     assert_eq!(logged, 0);
-    std::fs::write(&dest, b"expected model bytes").unwrap();
-    assert_eq!(
-        model_download_dest_present(&dest, Some(EXPECTED_HASH)),
-        Ok(true),
-        "a matching pinned model may skip the download"
-    );
-    let _ = std::fs::remove_file(&dest);
 }
 
 #[test]
-fn model_download_skips_existing_file_when_hash_matches() {
+fn download_click_on_present_model_does_not_hash_on_run_loop_thread() {
+    // Given a present model whose pinned hash matches, a Download click must
+    // not hash the 0.4–1.7 GB file on the run-loop heartbeat: the edge queues
+    // at once, and the downloader worker thread verifies the file and
+    // short-circuits to Done(dest) without fetching (the URL is unreachable).
     const EXPECTED_HASH: &str = "de516b3d3641c9011fbf3cea3198c39f339fd92066b124279b69949640b171a5";
     let entry = model_catalog::ModelEntry {
         name: "test-model",
@@ -9302,14 +9293,9 @@ fn model_download_skips_existing_file_when_hash_matches() {
     ));
     let _ = std::fs::remove_file(&dest);
     std::fs::write(&dest, b"matching model bytes").unwrap();
-    let mut downloader = Some(());
-    let original_status = std::sync::Arc::new(model_fetch::DownloadStatus::default());
-    *original_status.state.lock().unwrap() =
-        model_fetch::DownloadState::Done("/tmp/previous.gguf".into());
-    let original_ptr = std::sync::Arc::as_ptr(&original_status);
-    let mut status = Some(original_status);
+    let mut downloader = None;
+    let mut status = None;
     let mut logged = 2;
-    let requested = std::cell::Cell::new(false);
 
     let result = start_model_download_edge(ModelDownloadEdge {
         entry: &entry,
@@ -9318,23 +9304,31 @@ fn model_download_skips_existing_file_when_hash_matches() {
         model_download_status: &mut status,
         model_download_logged: &mut logged,
         prepare: |_: &std::path::Path| Ok(()),
-        existing_model: model_download_dest_present,
-        spawn: || Ok(()),
-        request: |_: &(), _request: model_fetch::DownloadRequest| {
-            requested.set(true);
-            true
-        },
+        spawn: || model_fetch::ModelDownloader::spawn().map_err(|err| err.to_string()),
+        request: |downloader: &model_fetch::ModelDownloader, request| downloader.request(request),
     });
-    let _ = std::fs::remove_file(&dest);
 
-    assert_eq!(result, DownloadStartResult::AlreadyPresent);
-    assert!(!requested.get(), "matching existing model skips enqueue");
+    assert_eq!(result, DownloadStartResult::Queued);
+    assert_eq!(logged, 0);
+    let status = status.expect("queued download exposes its status block");
+    let deadline = std::time::Instant::now() + Duration::from_secs(10);
+    let state = loop {
+        let state = format!("{:?}", status.state.lock().unwrap());
+        if state.starts_with("Done") || state.starts_with("Failed") {
+            break state;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "worker never finished"
+        );
+        std::thread::sleep(Duration::from_millis(5));
+    };
+    let _ = std::fs::remove_file(&dest);
     assert_eq!(
-        status.as_ref().map(std::sync::Arc::as_ptr),
-        Some(original_ptr),
-        "skip path must not replace the tracked status block"
+        state,
+        format!("{:?}", model_fetch::DownloadState::Done(dest.clone())),
+        "the worker verified the present model instead of fetching"
     );
-    assert_eq!(logged, 2);
 }
 
 #[test]
@@ -9356,7 +9350,6 @@ fn model_download_busy_does_not_replace_tracked_status() {
         model_download_status: &mut status,
         model_download_logged: &mut logged,
         prepare: |_: &std::path::Path| Ok(()),
-        existing_model: |_: &std::path::Path, _: Option<&str>| Ok(false),
         spawn: || Ok(()),
         request: |_: &(), _request: model_fetch::DownloadRequest| false,
     });
@@ -9646,7 +9639,6 @@ fn model_download_prepare_failure_does_not_spawn_or_enqueue() {
     let mut status = Some(std::sync::Arc::new(model_fetch::DownloadStatus::default()));
     let previous_status = status.as_ref().map(std::sync::Arc::as_ptr).unwrap();
     let mut logged = 7;
-    let metadata_checked = std::cell::Cell::new(false);
     let spawned = std::cell::Cell::new(false);
     let requested = std::cell::Cell::new(false);
 
@@ -9657,10 +9649,6 @@ fn model_download_prepare_failure_does_not_spawn_or_enqueue() {
         model_download_status: &mut status,
         model_download_logged: &mut logged,
         prepare: |_: &std::path::Path| Err("no model directory".into()),
-        existing_model: |_: &std::path::Path, _: Option<&str>| {
-            metadata_checked.set(true);
-            Ok(false)
-        },
         spawn: || {
             spawned.set(true);
             Ok(())
@@ -9674,10 +9662,6 @@ fn model_download_prepare_failure_does_not_spawn_or_enqueue() {
     assert_eq!(
         result,
         DownloadStartResult::PreparedFailed("no model directory".into())
-    );
-    assert!(
-        !metadata_checked.get(),
-        "metadata must not run after prep fails"
     );
     assert!(!spawned.get(), "downloader must not spawn after prep fails");
     assert!(
@@ -9707,7 +9691,6 @@ fn model_download_spawn_failure_does_not_enqueue_or_mark_running() {
         model_download_status: &mut status,
         model_download_logged: &mut logged,
         prepare: |_: &std::path::Path| Ok(()),
-        existing_model: |_: &std::path::Path, _: Option<&str>| Ok(false),
         spawn: || Err("thread unavailable".into()),
         request: |_: &(), _| {
             requested.set(true);
