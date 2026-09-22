@@ -1473,6 +1473,26 @@ mod tests {
     }
 
     #[test]
+    fn failed_force_show_does_not_retract_an_earlier_shown_stat() {
+        // ForceShow re-presents an already-shown ghost and records no new
+        // Shown. If that re-show fails, the rewind must not retract the Shown
+        // of the earlier, successfully-painted presentation.
+        let (mut engine, _adapter, _overlay) = showing("hi there");
+        engine.adapter.fail_caret_rect = true;
+
+        assert!(engine.on_force_show().is_err());
+
+        assert_eq!(
+            engine
+                .take_stat_events()
+                .iter()
+                .filter(|e| **e == StatEvent::Shown)
+                .count(),
+            1,
+            "the earlier real presentation stays counted as shown"
+        );
+    }
+    #[test]
     fn on_replacement_gated_after_suppress_records_no_show() {
         // Engine-layer gate: after Esc-suppress in the focused field, a
         // replacement offer must be swallowed by the machine guard — the overlay

@@ -301,6 +301,11 @@ pub struct SuggestionMachine {
     /// every loop turn. Appended only via `record_stat`, which caps the queue at
     /// [`STAT_EVENTS_CAP`] so a non-draining host can't grow it without bound.
     stat_events: Vec<StatEvent>,
+    /// Whether the most recent presentation buffered its own `Shown` — the only
+    /// one `cancel_last_shown` may retract. `ForceShow` and `Cycle` re-present
+    /// an already-counted suggestion without a new `Shown`, so they clear it:
+    /// a failed re-show must not retract the earlier real presentation's stat.
+    retractable_shown: bool,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -338,6 +343,7 @@ impl SuggestionMachine {
             suppressed: false,
             trailing_space_single_word: false,
             stat_events: Vec::new(),
+            retractable_shown: false,
         }
     }
 
@@ -353,6 +359,9 @@ impl SuggestionMachine {
     fn record_stat(&mut self, event: StatEvent) {
         if self.stat_events.len() < STAT_EVENTS_CAP {
             self.stat_events.push(event);
+            if event == StatEvent::Shown {
+                self.retractable_shown = true;
+            }
         }
     }
 
@@ -572,6 +581,7 @@ impl SuggestionMachine {
                 );
             }
             Event::Cycle => {
+                self.retractable_shown = false;
                 if let Some(showing) = self.showing.as_mut() {
                     if showing.candidates.len() > 1 {
                         showing.index = (showing.index + 1) % showing.candidates.len();
@@ -596,6 +606,7 @@ impl SuggestionMachine {
                 }
             }
             Event::ForceShow => {
+                self.retractable_shown = false;
                 // Re-assert the held candidate verbatim (no rotation, no fresh
                 // inference). Reuses the same `showing` state `Cycle` relies on,
                 // so it can only re-present a suggestion the engine still holds;
@@ -1001,7 +1012,13 @@ impl SuggestionMachine {
     /// Retract the most recent `Shown` stat event — used by the host when an
     /// overlay placement failed, so a ghost that was emitted but never actually
     /// presented to the user is not counted as shown (design spec §11).
+    /// Only a `Shown` buffered by the most recent presentation is retracted: a
+    /// failed `ForceShow`/`Cycle` re-show leaves the earlier, successfully
+    /// presented suggestion counted.
     pub fn cancel_last_shown(&mut self) {
+        if !std::mem::take(&mut self.retractable_shown) {
+            return;
+        }
         if let Some(pos) = self
             .stat_events
             .iter()
@@ -3439,6 +3456,30 @@ mod tests {
         assert_eq!(machine.take_stat_events(), vec![]);
     }
 
+    #[test]
+    fn cancel_last_shown_after_a_cycle_or_force_show_re_show_keeps_the_earlier_shown() {
+        // Cycle on a selection replacement and ForceShow re-present an
+        // already-counted suggestion without buffering a new Shown; the host's
+        // failed-show rewind after them must not retract the original Shown.
+        let mut cycled = focused_machine();
+        cycled.offer_selection_replacement_multi(
+            &field("field-a"),
+            "happy".into(),
+            vec!["glad".into(), "joyful".into()],
+            CorrectionRange { start: 0, end: 5 },
+        );
+        assert!(matches!(
+            cycled.on_event(Event::Cycle).as_slice(),
+            [Command::ShowCorrection { .. }]
+        ));
+        cycled.cancel_last_shown();
+        assert_eq!(cycled.take_stat_events(), vec![StatEvent::Shown]);
+
+        let mut forced = machine_showing();
+        assert!(!forced.on_event(Event::ForceShow).is_empty());
+        forced.cancel_last_shown();
+        assert_eq!(forced.take_stat_events(), vec![StatEvent::Shown]);
+    }
     #[test]
     fn cancel_last_shown_removes_only_the_trailing_shown() {
         // The host calls this when an overlay placement failed: the emitted-but-
