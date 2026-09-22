@@ -394,12 +394,9 @@ LOG
   self_test_assert "focus-only-is-not-baseline" 0 has_unsupported_block_evidence "$focus_only" || failures=$((failures + 1))
   self_test_assert "baseline-missing" 0 has_terminal_cmd_block_evidence "$empty" || failures=$((failures + 1))
   hostile_prefix=$'quote " backslash \\ dollar $PREFIX\nline two'
-  if round_tripped_prefix=$(/usr/bin/osascript - "$hostile_prefix" <<'OSA'
-on run argv
-  return item 1 of argv
-end run
-OSA
-  ); then
+  # `-e` lines, not a heredoc inside `$(...)`: macOS /bin/bash 3.2 cannot parse
+  # that form. Arguments after the -e script still arrive as the run handler's argv.
+  if round_tripped_prefix=$(/usr/bin/osascript -e 'on run argv' -e 'return item 1 of argv' -e 'end run' "$hostile_prefix"); then
     if [[ "$round_tripped_prefix" == "$hostile_prefix" ]]; then
       echo "PASS self-test-applescript-prefix-argv-roundtrip"
     else
