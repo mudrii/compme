@@ -5,7 +5,7 @@ use std::io::Write;
 use std::num::NonZeroU32;
 use std::panic::{catch_unwind, AssertUnwindSafe};
 use std::path::Path;
-use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::mpsc::{channel, Sender};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::thread::JoinHandle;
@@ -279,6 +279,8 @@ pub struct LlamaModel {
     handle: Option<JoinHandle<()>>,
     health: Arc<Mutex<ModelWorkerHealth>>,
     cancellation: ModelCancellation,
+    /// Worker-shared telemetry for [`LlamaModel::last_prompt_tokens_decoded`].
+    last_prompt_tokens_decoded: Arc<AtomicUsize>,
 }
 
 impl LlamaModel {
@@ -292,6 +294,8 @@ impl LlamaModel {
         let health_for_worker = Arc::clone(&health);
         let cancellation = ModelCancellation::default();
         let cancellation_for_worker = cancellation.clone();
+        let last_prompt_tokens_decoded = Arc::new(AtomicUsize::new(0));
+        let last_decode_for_worker = Arc::clone(&last_prompt_tokens_decoded);
 
         let handle = std::thread::Builder::new()
             .name("model-client-llama".into())
@@ -354,6 +358,7 @@ impl LlamaModel {
                                     max_tokens,
                                     &mut sampler_for_candidate(0),
                                     &cancellation_for_worker,
+                                    &last_decode_for_worker,
                                 );
                                 let _ = reply.send(result);
                             }
@@ -371,6 +376,7 @@ impl LlamaModel {
                                     max_tokens,
                                     n,
                                     &cancellation_for_worker,
+                                    &last_decode_for_worker,
                                 );
                                 let _ = reply.send(result);
                             }
@@ -383,6 +389,7 @@ impl LlamaModel {
                                     1,
                                     &mut sampler_for_candidate(0),
                                     &cancellation_for_worker,
+                                    &last_decode_for_worker,
                                 )
                                 .map(|_| ());
                                 let _ = reply.send(result);
@@ -408,6 +415,7 @@ impl LlamaModel {
                 handle: Some(handle),
                 health,
                 cancellation,
+                last_prompt_tokens_decoded,
             }),
             Ok(Err(message)) => {
                 let _ = handle.join();
@@ -495,6 +503,7 @@ fn dispatch_error(stage: &'static str, failure: DispatchFailure) -> LocalModelEr
 /// Candidate 0 must keep the cross-request reuse: the app always asks for one
 /// candidate (`DEFAULT_CANDIDATES = 1`), so clearing here would make every
 /// debounce re-decode the whole prompt.
+#[allow(clippy::too_many_arguments)]
 fn complete_candidates_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,
@@ -503,6 +512,7 @@ fn complete_candidates_on_worker(
     max_tokens: usize,
     n: usize,
     cancellation: &ModelCancellation,
+    prompt_tokens_decoded: &AtomicUsize,
 ) -> LocalModelResult<Vec<String>> {
     let mut candidates = Vec::with_capacity(n);
     for index in 0..n {
@@ -521,6 +531,7 @@ fn complete_candidates_on_worker(
             max_tokens,
             &mut sampler_for_candidate(index),
             cancellation,
+            prompt_tokens_decoded,
         )?;
         candidates.push(text);
     }
@@ -531,6 +542,7 @@ fn complete_candidates_on_worker(
 /// Run one completion on the worker thread against the persistent context,
 /// reusing the KV cache for the shared prefix and re-decoding only the divergent
 /// suffix. On any FFI error the cache is reset so the next call starts clean.
+#[allow(clippy::too_many_arguments)]
 fn complete_on_worker(
     model: &LlamaCppModel,
     context: &mut LlamaContext<'_>,
@@ -539,6 +551,7 @@ fn complete_on_worker(
     max_tokens: usize,
     sampler: &mut LlamaSampler,
     cancellation: &ModelCancellation,
+    prompt_tokens_decoded: &AtomicUsize,
 ) -> LocalModelResult<String> {
     check_shutdown(cancellation)?;
     let mut tokens = model
@@ -621,6 +634,16 @@ fn complete_on_worker(
     // The cache now holds the full prompt; record it so the next call can reuse
     // it. Generated-token KV (added below) is dropped by the next call's trim.
     *prev_tokens = tokens.clone();
+
+    // Telemetry: how much of the prompt this completion actually fed through
+    // `decode` — the whole clamped prompt when nothing was reusable, exactly the
+    // one mandatory fresh-logits token when the cache already held the prefix
+    // (see `reusable_prefix_len`). Written only after the prompt decode fully
+    // succeeded, so a failed request leaves the previous value.
+    prompt_tokens_decoded.store(
+        plan.prompt_len.saturating_sub(plan.reuse),
+        Ordering::Relaxed,
+    );
 
     // Position math lives in the pure, unit-tested `generation_range`: the first
     // generated token sits right after the decoded prompt and the end saturates
@@ -724,6 +747,19 @@ impl LocalModel for LlamaModel {
 }
 
 impl LlamaModel {
+    /// Telemetry, not a test seam: how many prompt tokens the worker actually
+    /// decoded (fed through `context.decode`) for the most recent completion it
+    /// finished — for `complete_n`, the last candidate. The full clamped prompt
+    /// when nothing was reusable; exactly `1` when the persistent KV cache
+    /// already held the prompt (llama.cpp needs one live decode for fresh
+    /// logits, see `reusable_prefix_len`); `0` before the first completion.
+    /// Written only after a prompt decode fully succeeded, so a failed or
+    /// cancelled request leaves the previous value. Read-only observability
+    /// about the decode path: it never influences behaviour.
+    pub fn last_prompt_tokens_decoded(&self) -> usize {
+        self.last_prompt_tokens_decoded.load(Ordering::Relaxed)
+    }
+
     /// Drop the sender so the worker's `recv` returns and it runs its ordered
     /// teardown, then join the thread. Idempotent: a second call (e.g. `Drop`
     /// after an explicit `shutdown`) finds the channel already closed and the
@@ -1157,6 +1193,7 @@ mod tests {
             handle: None,
             health,
             cancellation: ModelCancellation::default(),
+            last_prompt_tokens_decoded: Arc::new(AtomicUsize::new(0)),
         };
         let err = model
             .complete("must not enqueue", 1)
@@ -1311,6 +1348,7 @@ mod tests {
             handle: Some(handle),
             health: Arc::new(Mutex::new(ModelWorkerHealth::Running)),
             cancellation: ModelCancellation::default(),
+            last_prompt_tokens_decoded: Arc::new(AtomicUsize::new(0)),
         };
         let poisoner = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             let _guard = model.job_tx.lock().unwrap();

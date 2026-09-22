@@ -401,6 +401,22 @@ fn prefix_reuse_matches_fresh_context_output() {
 // ~300-token prompt: `complete` 14413ms then 731ms, but `complete_n` 14300ms then
 // 14046ms — no reuse at all. Candidate 0 must take the same reuse path `complete`
 // does and must still return byte-identical greedy output.
+//
+// The reuse observable is `last_prompt_tokens_decoded`, not wall-clock time. Two
+// earlier assertion shapes both proved host-dependent:
+//
+// 1. A cold/warm timing ratio. On the paravirtualised macOS CI runner a generated
+//    token costs roughly as much as a prompt batch, so even a *working* cache
+//    measures only ~1.2x there (the same run on Linux measures ~22x). A ratio
+//    assertion fails on the mac lane with the fix in place.
+// 2. Greedy-output equality on a degenerate prompt ("the quick brown fox jumps "
+//    x60). The greedy next token there is a near-tie, and the argmax flips
+//    between the two decode *shapes*: a batched full-prompt decode yields
+//    "1. The quick…" while the single-token reuse decode yields " the quick
+//    brown…" — deterministically on every run, for `complete` and `complete_n`
+//    alike. That is backend numerics on tied logits, not a cache-trim bug: on
+//    near-natural prose fresh, reuse, and `complete_n` outputs are identical,
+//    which is why the equality assertions below use a natural paragraph.
 #[test]
 #[ignore = "requires the qwen2.5-0.5b GGUF model; release gates force CPU with COMPME_MODEL_GPU_LAYERS=0; run with --ignored"]
 fn complete_n_reuses_prompt_prefix_across_requests() {
@@ -417,35 +433,67 @@ fn complete_n_reuses_prompt_prefix_across_requests() {
     };
     model.warm_up().expect("warm up");
 
-    // Long enough that a cold prompt decode dominates the 8 generated tokens, so a
-    // missing reuse shows up as a large ratio rather than as timing noise.
-    let prompt = terse_continuation_prompt(&"the quick brown fox jumps ".repeat(60));
+    // Natural, non-repetitive prose (~300 tokens over three paragraphs) so the
+    // greedy continuation is far from a logit tie and the equality assertions
+    // below — which compare a batched full-prompt decode against a one-token
+    // reuse decode — hold. See the shape/numerics comment above.
+    let paragraph = "The committee met on Tuesday to review the quarterly report. \
+Revenue grew across the third quarter on strong renewals and a few new \
+enterprise accounts, while operating costs held close to the budget the board \
+approved in the spring. Several members asked whether the hiring pause would \
+extend into the next fiscal year, and the chair promised a detailed forecast \
+before the next meeting. ";
+    let prompt = terse_continuation_prompt(&paragraph.repeat(3));
 
     let started = Instant::now();
     let cold = model.complete_n(&prompt, 8, 1).expect("cold complete_n");
     let cold_ms = started.elapsed().as_millis();
+    let cold_decoded = model.last_prompt_tokens_decoded();
 
     let started = Instant::now();
     let warm = model.complete_n(&prompt, 8, 1).expect("warm complete_n");
     let warm_ms = started.elapsed().as_millis();
+    let warm_decoded = model.last_prompt_tokens_decoded();
 
-    // Correctness first: candidate 0 is greedy, so a reuse that corrupted the KV
-    // diverges here instead of only showing up as latency.
+    // Deterministic reuse observable, immune to host timing: only the warm-up
+    // tokens precede the first call, so the bulk of the prompt is decoded live.
+    assert!(
+        cold_decoded > 1,
+        "first complete_n decoded only {cold_decoded} prompt tokens; \
+         expected the full prompt (nothing reusable yet)"
+    );
+    // Second identical call: the cache already holds the whole prompt, so
+    // exactly the one mandatory fresh-logits token is decoded. The pre-fix code
+    // cleared `prev_tokens` before candidate 0 and re-decoded the entire prompt
+    // here (~250 tokens), which is the regression this pins.
+    assert_eq!(
+        warm_decoded, 1,
+        "second identical complete_n re-decoded {warm_decoded} prompt tokens; \
+         prefix-KV reuse must leave exactly the one mandatory fresh-logits decode"
+    );
+
+    // Correctness: candidate 0 is greedy, so a reuse that corrupted the KV
+    // diverges here instead of only showing up as latency. Held on natural
+    // prose; see the numerics comment above for why degenerate repeated text
+    // cannot carry this comparison.
     let single = model.complete(&prompt, 8).expect("complete");
+    assert_eq!(
+        model.last_prompt_tokens_decoded(),
+        1,
+        "complete must reuse the cached prefix exactly like complete_n"
+    );
     assert_eq!(cold, warm, "prefix reuse changed complete_n output");
     assert_eq!(
         warm[0], single,
         "complete_n candidate 0 diverged from complete on the same prompt"
     );
 
-    let ratio = cold_ms as f64 / warm_ms.max(1) as f64;
-    println!("complete_n cold {cold_ms}ms / warm {warm_ms}ms = {ratio:.1}x");
-    // Reuse measured 21.4x on the CPU release gate (15968ms -> 747ms); the bug
-    // measured 1.0x (15986ms -> 16297ms). 3x separates them with room for noise.
-    assert!(
-        cold_ms >= warm_ms * 3,
-        "second complete_n ({warm_ms}ms) did not reuse the prompt KV prefix \
-         (first was {cold_ms}ms, {ratio:.1}x)"
+    // Diagnostic only: the ratio is host-dependent (see the comment above), so
+    // it is printed for triage but never asserted.
+    println!(
+        "complete_n cold {cold_ms}ms / warm {warm_ms}ms = {:.1}x; \
+         prompt tokens decoded cold {cold_decoded} / warm {warm_decoded}",
+        cold_ms as f64 / warm_ms.max(1) as f64
     );
 
     Box::new(model).shutdown();
