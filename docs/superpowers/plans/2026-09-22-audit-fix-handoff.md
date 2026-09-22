@@ -1,11 +1,14 @@
 # Handoff — 2026-09-22 audit fix batch (resume from here)
 
-**Date:** 2026-09-22 · **Main HEAD when written:** `b1b38ba` · **Status:** paused
-by the owner; Qwen's provider quota was exhausted (resets 2026-09-22 18:35 UTC).
+**Date:** 2026-09-22 · **Main HEAD when written:** `b1b38ba` · **Updated:** same
+day at `a357b94` — Batches A and C are complete and **pushed**; CI run
+35737431131 is green on every lane with every mac-lane step (model gates,
+count-pin policy, C2's four serialised tests) individually confirmed.
 **Brief being executed:** [`2026-09-22-audit-fix-brief.md`](2026-09-22-audit-fix-brief.md)
 (all findings, fix directions, gate commands, tripwires).
-**Nothing is pushed.** `main` is 21 commits ahead of `origin/main`
-(`070197e..b1b38ba`). The owner chose "push now and watch CI" for after C5.
+Development resumed on the pi agent (GLM) after Qwen's quota ran out; the
+first push (`a861d96`) failed only the mac model gate on A1's timing-based
+regression, fixed in `a357b94` (see §4).
 
 This file is written so any model or person can resume without the previous
 session's context. Read `AGENTS.md` first, then the brief, then this file.
@@ -110,40 +113,30 @@ session's context. Read `AGENTS.md` first, then the brief, then this file.
 | C2 shared `HOTKEY_GLOBALS_TEST_LOCK` for four mac tests + ci.yml comment | `e20912d` | Darwin cross-check compiles incl. tests, actionlint OK; **execution unproven until the mac lane runs** |
 | docs: pasteboard attribution (DEVELOPMENT.md, pre-push) | `b1b38ba` | shellcheck, bash -n, pinned phrases intact |
 
-## 4. In flight — C5 (not committed)
+## 4. Landed after the pause (all validated the same way)
 
-Owner chose option (c): rewrite the `host_event_route` tests to drive the
-production events, delete the `#[cfg(test)]` `HostEventRoute`/`host_event_route`
-from `crates/app/src/run_loop.rs:363-380`. The uncommitted work is in the
-worktree `.qwen/worktrees/c5` (detached at `b1b38ba`) and is preserved
-verbatim as [`2026-09-22-c5-wip.patch`](2026-09-22-c5-wip.patch)
-(`run_loop.rs` −17, `run_loop_tests.rs` +202/−20; the patch adds a `readable`
-test helper and rewrites bodies, and adds or removes no `#[test]` attribute, so
-the expected count delta is 0 unless the tests are still being restructured —
-measure it). To resume:
+| Item | Commit | Notes |
+|---|---|---|
+| C5 routing tests driven through production paths, `HostEventRoute` seam deleted | `a861d96` | no `#[test]` delta (pins stay 2226); mutation proofs: dropping the Correction-only gating fails the accept test, neutralising the Armed arm fails the grammar-check test |
+| A1 regression made deterministic | `a357b94` | `LlamaModel::last_prompt_tokens_decoded()` telemetry; test asserts 223 prompt tokens decoded cold, exactly 1 on the identical repeat, on a natural paragraph prompt; red with the pre-A1 `clear()` restored (`left: 223, right: 1`) |
 
-```sh
-git apply docs/superpowers/plans/2026-09-22-c5-wip.patch   # on main, or keep using .qwen/worktrees/c5
-```
+Why `a357b94` was needed (recorded so nobody re-adds a timing assertion): on
+the paravirtual mac runner a generated token costs about as much as a prompt
+batch, so cold/warm timing ratios are ~1.2x even with reuse working (22x on
+Linux); and on the degenerate `"the quick brown fox jumps " x60` prompt the
+greedy next token is a near-tie whose argmax flips deterministically between a
+batched full-prompt decode and a single-token reuse decode (backend numerics,
+not a cache-trim bug: on natural prose fresh, `complete` and `complete_n`
+outputs are byte-identical).
 
-Then: review the rewritten tests (they must assert observable run-loop
-behaviour through `handle_control_event`/host events, not a mapping), run the
-app lane serially, measure the test delta (`cargo test -p app -- --list | wc
--l` before/after), re-stamp the five pins from 2226, check that none of the
-nine `run_loop_tests.rs` symbols pinned by `check-model-gates.sh` were
-renamed, commit as `test(app): …` with the usual body, and delete the patch
-file in the same commit. Then push.
+## 5. CI state
 
-## 5. After the push (owner's decision: push, then watch CI)
-
-- `gh run list --branch main --workflow ci.yml` — the `ci-${{ github.ref }}`
-  concurrency group keeps only one pending run, so push once with everything
-  landed. Read per-step conclusions (`gh run view <id> --json jobs`), not the job
-  verdict.
-- The mac lane is the only proof for: the count pin (2226 minus C5's delta),
-  C2's four serialised tests, and every `platform_macos` doc pin in
-  `check-model-gates.sh` live mode.
-- The Windows lane proves C1 (two fewer tests there) and the app-crate changes.
+`gh run view 35737431131` (CI) and `35737429746` (CodeQL) for `a357b94`: all
+jobs green; on the mac lane the steps `Test (serial, macOS state)`,
+`Model-backed smoke gate`, `Model-quality gate`, `Version docs check`, `Agent
+brief alignment` and `Release model gate policy` each report `success`. The
+`ci-${{ github.ref }}` concurrency group keeps only one pending run, so push
+once per batch and read per-step conclusions, not the job verdict.
 
 ## 6. Still open from the review (not started)
 
@@ -174,5 +167,5 @@ file in the same commit. Then push.
 - `target/validate/` (coordinator's isolated build dir) and any
   `target/validate-wt-*` worktrees (`git worktree list`; remove with
   `git worktree remove --force`).
-- `.qwen/worktrees/c5` once C5 is committed.
+- `.qwen/worktrees/c5` (C5 is committed; the worktree is stale).
 - `.gate/*.log` predate this batch and are unrelated.
