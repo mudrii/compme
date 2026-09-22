@@ -2259,13 +2259,14 @@ fn env_shadow_warnings_name_only_set_switch_keys() {
         "COMPME_ACCEPT_FULL_KEY",
         "COMPME_GRAMMAR_ACCEPT_KEY",
         "COMPME_GRAMMAR_CHECK_KEY",
+        "COMPME_MODEL_PATH",
     ] {
         assert!(
             every_warning.iter().any(|warning| warning.starts_with(key)),
             "{key} must warn when env shadows persisted config"
         );
     }
-    assert_eq!(every_warning.len(), 37);
+    assert_eq!(every_warning.len(), 38);
 }
 
 #[test]
@@ -2280,6 +2281,49 @@ fn startup_env_shadow_notice_lines_keep_runtime_prefix_and_unset_keys_quiet() {
         ]
     );
     assert!(startup_env_shadow_notice_lines(|_| false).is_empty());
+}
+
+#[test]
+fn persisting_a_model_path_under_a_set_env_var_warns_at_startup() {
+    // Every COMPME_MODEL_PATH persist flow (auto-adopt, download Done, deep
+    // link, file pick) writes config.env, but a launch environment carrying
+    // the same key wins at relaunch: the user downloads a model, relaunches,
+    // and silently keeps the OLD one. The startup notice must name the key so
+    // the shadow is discoverable. Uses the production predicate (`run()`
+    // passes `|key| env::var(key).is_ok()`), so the assertion fails if the key
+    // ever leaves `SWITCH_KEYS`.
+    let home = PhaseConfigHome::new("model-path-shadow");
+    let previous = std::env::var_os("COMPME_MODEL_PATH");
+    std::env::set_var("COMPME_MODEL_PATH", "/env/old.gguf");
+
+    let adopted = home.models_dir().join("downloaded.gguf");
+    let persisted = config::persist_setting(
+        &home.config_path(),
+        "COMPME_MODEL_PATH",
+        &adopted.to_string_lossy(),
+    );
+    let notices = startup_env_shadow_notice_lines(|key| std::env::var(key).is_ok());
+    let on_disk = home.persisted();
+
+    // Restore before asserting so a failure cannot leak the env var into the
+    // rest of the lane.
+    match previous {
+        Some(value) => std::env::set_var("COMPME_MODEL_PATH", value),
+        None => std::env::remove_var("COMPME_MODEL_PATH"),
+    }
+
+    persisted.expect("the adopted model path persists to config.env");
+    assert_eq!(
+        on_disk.get("COMPME_MODEL_PATH").map(String::as_str),
+        Some(adopted.to_string_lossy().as_ref()),
+        "the file layer holds the newly adopted path"
+    );
+    assert!(
+        notices
+            .iter()
+            .any(|notice| notice.starts_with("compme: COMPME_MODEL_PATH is set in the environment")),
+        "a shadowed model path must be named at startup: {notices:?}"
+    );
 }
 
 #[test]

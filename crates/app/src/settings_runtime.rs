@@ -18,7 +18,7 @@ use crate::shell::SettingsFlags;
 ///
 /// Deliberately conservative: a key set to `""` still warns because it still
 /// occupies the environment layer.
-pub(crate) const SWITCH_KEYS: [&str; 37] = [
+pub(crate) const SWITCH_KEYS: [&str; 38] = [
     "COMPME_ENABLED",
     "COMPME_MIDLINE",
     "COMPME_AUTOCORRECT",
@@ -61,6 +61,10 @@ pub(crate) const SWITCH_KEYS: [&str; 37] = [
     "COMPME_ACCEPT_FULL_KEY",
     "COMPME_GRAMMAR_ACCEPT_KEY",
     "COMPME_GRAMMAR_CHECK_KEY",
+    // Not a Settings switch, but the same shadow hazard: model auto-adopt,
+    // download completion, deep links and the file picker all persist it, and
+    // an env shadow silently keeps the OLD model at relaunch.
+    "COMPME_MODEL_PATH",
 ];
 
 /// One warning line per switch key currently set in the environment.
