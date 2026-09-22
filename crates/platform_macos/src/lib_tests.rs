@@ -738,6 +738,40 @@ fn cf_string_conversion_refuses_lone_surrogate_ax_values() {
 }
 
 #[test]
+fn optional_ax_string_attribute_is_lossy_for_unpaired_surrogates() {
+    use core_foundation::base::kCFAllocatorDefault;
+    use core_foundation::string::CFStringCreateWithCharacters;
+
+    // The identity attributes (`AXIdentifier`/`AXRole`/`AXSubrole`) and the
+    // URL domain gate are read on the AX worker. core-foundation's
+    // `to_string()` asserts full UTF-8 convertibility and panics on a lone
+    // surrogate, so those readers must decode lossily instead.
+    let units: [u16; 1] = [0xD800];
+    let lone_surrogate = unsafe {
+        CFString::wrap_under_create_rule(CFStringCreateWithCharacters(
+            kCFAllocatorDefault,
+            units.as_ptr(),
+            units.len() as isize,
+        ))
+    };
+    let value = lone_surrogate.as_CFType();
+
+    assert_eq!(
+        optional_ax_string_value(&value).as_deref(),
+        Some("\u{FFFD}")
+    );
+    assert_eq!(
+        optional_ax_string_value(&CFString::new("AXTextField").as_CFType()).as_deref(),
+        Some("AXTextField")
+    );
+    assert_eq!(
+        optional_ax_string_value(&CFBoolean::true_value().as_CFType()),
+        None,
+        "a non-string value is absent, not an error"
+    );
+}
+
+#[test]
 fn focus_token_factory_assigns_new_generation_for_each_focus_event() {
     let mut factory = FocusTokenFactory::new();
 

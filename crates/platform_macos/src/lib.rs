@@ -4942,6 +4942,27 @@ fn cf_string_round_trips(cf_string: &CFString, converted: &str) -> bool {
 /// lossy), strict [`String::from_utf16`] rejects unpaired surrogates, and
 /// [`cf_string_round_trips`] pins the exact round-trip the callers depend on.
 fn cf_string_to_exact_string(cf_string: &CFString) -> Result<String, PlatformError> {
+    let units = cf_string_utf16_units(cf_string);
+    let converted = String::from_utf16(&units).map_err(|_| ax_value_not_round_trippable())?;
+    if !cf_string_round_trips(cf_string, &converted) {
+        return Err(ax_value_not_round_trippable());
+    }
+    Ok(converted)
+}
+
+/// Convert a `CFString` to a Rust `String`, replacing each unpaired
+/// surrogate with U+FFFD — for values that are only compared or matched
+/// (identity attributes, the URL domain gate), never written back. Never
+/// panics: core-foundation's `to_string()` asserts full UTF-8
+/// convertibility and panics on the lone surrogates JS-backed fields hand
+/// AX, which on the AX worker would take down every later adapter call.
+fn cf_string_to_lossy_string(cf_string: &CFString) -> String {
+    String::from_utf16_lossy(&cf_string_utf16_units(cf_string))
+}
+
+/// The exact UTF-16 units of `cf_string`, copied out with
+/// `CFStringGetCharacters` (never lossy, never truncated).
+fn cf_string_utf16_units(cf_string: &CFString) -> Vec<u16> {
     let mut units = vec![0u16; cf_string.char_len().max(0) as usize];
     if !units.is_empty() {
         // SAFETY: `CFStringGetCharacters` writes exactly `length` UTF-16
@@ -4958,11 +4979,16 @@ fn cf_string_to_exact_string(cf_string: &CFString) -> Result<String, PlatformErr
             );
         }
     }
-    let converted = String::from_utf16(&units).map_err(|_| ax_value_not_round_trippable())?;
-    if !cf_string_round_trips(cf_string, &converted) {
-        return Err(ax_value_not_round_trippable());
-    }
-    Ok(converted)
+    units
+}
+
+/// The payload of an optional string-valued AX attribute: `Some` for a
+/// `CFString` (decoded by [`cf_string_to_lossy_string`]), `None` for any
+/// other type.
+fn optional_ax_string_value(value: &CFType) -> Option<String> {
+    value
+        .downcast::<CFString>()
+        .map(|value| cf_string_to_lossy_string(&value))
 }
 
 unsafe fn read_required_ax_string_attribute(
@@ -5896,9 +5922,11 @@ unsafe fn read_optional_ax_url_attribute(
         // absolute() first: CFURLGetString returns the ORIGINAL string,
         // which for a base-relative CFURL is the relative half — a host can
         // only be extracted from the absolute form (review-c131).
-        return Ok(Some(url.absolute().get_string().to_string()));
+        return Ok(Some(cf_string_to_lossy_string(
+            &url.absolute().get_string(),
+        )));
     }
-    Ok(value.downcast::<CFString>().map(|s| s.to_string()))
+    Ok(optional_ax_string_value(&value))
 }
 
 /// The element's AX children, capped at `cap` (hang insurance on
@@ -6072,7 +6100,7 @@ unsafe fn read_optional_ax_string_attribute(
     }
 
     let value = CFType::wrap_under_create_rule(value);
-    Ok(value.downcast::<CFString>().map(|value| value.to_string()))
+    Ok(optional_ax_string_value(&value))
 }
 
 pub(crate) fn observer_caret_rect(

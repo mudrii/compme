@@ -109,6 +109,28 @@ trait AxWorkerLoop: Send + 'static {
     /// already-queued message, or `Empty` when the channel has none.
     fn try_recv(&mut self) -> Result<Message, mpsc::TryRecvError>;
     fn pump_run_loop(&mut self);
+
+    /// Resolve a coalesced observer callback into the event its consumer
+    /// sees. Overridable so tests can drive the worker's panic containment.
+    fn resolve_observer_event(
+        &mut self,
+        pid: i32,
+        notification: ObserverNotification,
+        retained_element: Option<usize>,
+        fallback_element_id: &str,
+    ) -> ObserverEvent {
+        resolve_retained_observer_event(pid, notification, retained_element, fallback_element_id)
+    }
+
+    /// Resolve the focused element for the safety poll. Overridable for the
+    /// same reason as [`AxWorkerLoop::resolve_observer_event`].
+    fn resolve_focused_event(
+        &mut self,
+        pid: i32,
+        notification: ObserverNotification,
+    ) -> Result<ObserverEvent, PlatformError> {
+        resolve_focused_or_app_event(pid, notification)
+    }
 }
 
 struct ChannelAxWorkerLoop {
@@ -763,13 +785,12 @@ fn start_focused_element_safety_poll(
 }
 
 fn dispatch_focused_element_poll(
-    pid: i32,
-    notification: ObserverNotification,
+    polled: Result<ObserverEvent, PlatformError>,
     dispatch: ObserverDispatch,
     callback_tx: mpsc::Sender<CallbackMessage>,
     last_dispatched: &mut HashMap<(i32, ObserverNotification), (String, Option<ScreenRect>)>,
 ) {
-    let Ok(event) = resolve_focused_or_app_event(pid, notification) else {
+    let Ok(event) = polled else {
         return;
     };
 
@@ -778,7 +799,7 @@ fn dispatch_focused_element_poll(
     // would only re-drive overlay geometry for the same answer.
     if !focused_poll_changed(
         last_dispatched,
-        (pid, notification),
+        (event.pid, event.notification),
         event.identity.field_element_id(),
         event.rect,
     ) {
@@ -998,12 +1019,31 @@ fn run_ax_worker_loop<L, F>(
                         Err(_) => break,
                     }
                 }
-                let event = resolve_retained_observer_event(
-                    pid,
-                    notification,
-                    retained_element,
-                    &fallback_element_id,
-                );
+                // Same containment as `Run`: resolution makes up to 7 AX
+                // round trips over foreign data, and a panic there must not
+                // end the worker. A panicked resolution takes the fallback a
+                // resolution error takes (pointer-only identity, no rect);
+                // the retained element's +1 is released by its create-rule
+                // owner as the panic unwinds.
+                let event = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    worker_loop.resolve_observer_event(
+                        pid,
+                        notification,
+                        retained_element,
+                        &fallback_element_id,
+                    )
+                }))
+                .unwrap_or_else(|_| {
+                    crate::write_stderr(format_args!(
+                        "compme: AX observer event resolution panicked"
+                    ));
+                    ObserverEvent {
+                        pid,
+                        notification,
+                        identity: AxElementIdentity::pointer_only(&fallback_element_id),
+                        rect: None,
+                    }
+                });
                 // G21: the poll memo follows what the consumer was told, so
                 // a later return to a previous state still reads as a change
                 // and the 250 ms safety net can re-announce it.
@@ -1036,9 +1076,19 @@ fn run_ax_worker_loop<L, F>(
                 dispatch,
                 callback_tx,
             }) => {
+                // Same containment as `Run`. A panicked poll is dropped like a
+                // failed one; the next 250 ms tick polls again.
+                let polled = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                    worker_loop.resolve_focused_event(pid, notification)
+                }))
+                .unwrap_or_else(|_| {
+                    crate::write_stderr(format_args!("compme: AX focused element poll panicked"));
+                    Err(PlatformError::CannotComplete {
+                        reason: "AX focused element poll panicked".into(),
+                    })
+                });
                 dispatch_focused_element_poll(
-                    pid,
-                    notification,
+                    polled,
                     dispatch,
                     callback_tx,
                     &mut last_focused_poll,
@@ -1688,6 +1738,7 @@ mod tests {
     struct FakeAxWorkerLoop {
         events: Arc<Mutex<Vec<String>>>,
         messages: VecDeque<Result<Message, mpsc::RecvTimeoutError>>,
+        panic_on_resolve: bool,
     }
 
     impl FakeAxWorkerLoop {
@@ -1695,7 +1746,15 @@ mod tests {
             Self {
                 events: Arc::new(Mutex::new(Vec::new())),
                 messages: messages.into(),
+                panic_on_resolve: false,
             }
+        }
+
+        /// Every AX element resolution panics — the shape a core-foundation
+        /// `to_string()` assertion on an unpaired surrogate takes.
+        fn panicking_on_resolve(mut self) -> Self {
+            self.panic_on_resolve = true;
+            self
         }
 
         fn events(&self) -> Arc<Mutex<Vec<String>>> {
@@ -1731,6 +1790,35 @@ mod tests {
 
         fn pump_run_loop(&mut self) {
             self.events.lock().unwrap().push("pump".into());
+        }
+
+        fn resolve_observer_event(
+            &mut self,
+            pid: i32,
+            notification: ObserverNotification,
+            retained_element: Option<usize>,
+            fallback_element_id: &str,
+        ) -> ObserverEvent {
+            if self.panic_on_resolve {
+                panic!("injected observer event resolution panic");
+            }
+            resolve_retained_observer_event(
+                pid,
+                notification,
+                retained_element,
+                fallback_element_id,
+            )
+        }
+
+        fn resolve_focused_event(
+            &mut self,
+            pid: i32,
+            notification: ObserverNotification,
+        ) -> Result<ObserverEvent, PlatformError> {
+            if self.panic_on_resolve {
+                panic!("injected focused element poll panic");
+            }
+            resolve_focused_or_app_event(pid, notification)
         }
     }
 
@@ -1813,6 +1901,51 @@ mod tests {
             }
         );
         assert_eq!(worker.run(|| 7usize).expect("next job succeeds"), 7);
+    }
+
+    #[test]
+    fn ax_worker_survives_a_panicking_observer_event_resolution() {
+        let (callback_tx, callback_rx) = mpsc::channel();
+        let (reply, reply_rx) = mpsc::channel();
+        let worker_loop = FakeAxWorkerLoop::new(VecDeque::from([
+            observer_message(Arc::new(|_| {}), callback_tx.clone()),
+            Ok(Message::PollFocusedElement {
+                pid: 42,
+                notification: ObserverNotification::CaretChanged,
+                dispatch: Arc::new(|_| {}),
+                callback_tx,
+            }),
+            Ok(Message::Run {
+                job: Box::new(|| Box::new(7usize) as Box<dyn Any + Send>),
+                reply,
+            }),
+            stop_message(),
+        ]))
+        .panicking_on_resolve();
+        let events = worker_loop.events();
+        let (started_tx, _started_rx) = mpsc::channel();
+
+        // Uncontained, the first panic unwinds out of the loop (failing this
+        // test) and, on the real worker thread, kills every later adapter call.
+        run_ax_worker_loop(worker_loop, started_tx, |_| Ok(()), 0.05);
+
+        // The observer event still reaches its consumer, as a pointer-only
+        // identity — the same fallback a resolution error takes.
+        let Ok(CallbackMessage::Dispatch { event, .. }) = callback_rx.try_recv() else {
+            panic!("observer event must still be dispatched");
+        };
+        assert_eq!(event.identity, pointer_identity("ax:null"));
+        assert_eq!(event.rect, None);
+        // The poll is dropped: a failed poll re-runs on the next 250 ms tick.
+        assert!(callback_rx.try_recv().is_err());
+        let result = reply_rx.try_recv().expect("the next job was served");
+        assert_eq!(*result.unwrap().downcast::<usize>().unwrap(), 7);
+        // The burst drain pulled the poll ahead, so it runs without a `recv`
+        // of its own; every handled message still pumps the run loop.
+        assert_eq!(
+            events.lock().unwrap().as_slice(),
+            ["recv", "pump", "pump", "recv", "pump", "recv"]
+        );
     }
 
     #[test]
