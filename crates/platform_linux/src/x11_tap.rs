@@ -104,6 +104,103 @@ mod tests {
         assert_eq!(expanded_lock_masks(1 << 1, 1 << 1), vec![1 << 1]);
     }
 
+    fn server_free_state() -> Arc<TapState> {
+        Arc::new(TapState {
+            epoch: std::time::Instant::now(),
+            root: 0,
+            plan: Mutex::new(GrabPlan {
+                bindings: AcceptBindings::default(),
+                keys: Vec::new(),
+                grabs: Vec::new(),
+            }),
+            action: Mutex::new(None),
+            grabbed: Mutex::new(false),
+            frozen_since_ms: AtomicU64::new(UNSET_MS),
+            armed_since_ms: AtomicU64::new(UNSET_MS),
+            hide_deadline_ms: AtomicU64::new(UNSET_MS),
+            active: AtomicBool::new(true),
+            stopping: AtomicBool::new(false),
+        })
+    }
+
+    /// The race this pins: an arm publishing its action before taking `grabbed`
+    /// lets a concurrent disarm write `None` and find nothing to ungrab, after
+    /// which the arm installs a grab with no action armed — keys are swallowed
+    /// with nothing to accept. The test holds the action lock so an arm that
+    /// publishes first can never reach `grabbed`.
+    #[test]
+    fn set_action_publishes_action_and_grab_under_one_lock() {
+        let state = server_free_state();
+        let action_gate = state.action.lock().unwrap_or_else(PoisonError::into_inner);
+        let arming = {
+            let state = Arc::clone(&state);
+            std::thread::spawn(move || {
+                apply_action(
+                    &state,
+                    Some(AcceptAction::Full),
+                    |_| {
+                        assert!(
+                            state.grabbed.try_lock().is_err(),
+                            "the grab must be installed under the `grabbed` lock"
+                        );
+                        assert_eq!(state.armed_action(), Some(AcceptAction::Full));
+                        Ok(())
+                    },
+                    |_| panic!("arming never ungrabs"),
+                )
+            })
+        };
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        while state.grabbed.try_lock().is_ok() {
+            assert!(
+                std::time::Instant::now() < deadline,
+                "the arm must take `grabbed` before publishing its action"
+            );
+            std::thread::yield_now();
+        }
+        drop(action_gate);
+        arming.join().expect("arm thread").expect("arm succeeds");
+
+        assert!(*state.grabbed.lock().unwrap_or_else(PoisonError::into_inner));
+        assert_eq!(state.armed_action(), Some(AcceptAction::Full));
+    }
+
+    #[test]
+    fn watchdog_disarm_skips_an_arm_published_after_its_deadline_read() {
+        let state = server_free_state();
+        apply_action(&state, Some(AcceptAction::Full), |_| Ok(()), |_| {}).expect("arm");
+        // The engine's scheduled hide has passed: the watchdog's lock-free read
+        // decides to disarm.
+        state.hide_deadline_ms.store(0, Ordering::Release);
+        assert_eq!(
+            watchdog_action(
+                state.now_ms(),
+                state.frozen_since_ms.load(Ordering::Acquire),
+                state.armed_since_ms.load(Ordering::Acquire),
+                state.hide_deadline_ms.load(Ordering::Acquire),
+            ),
+            WatchdogAction::Disarm
+        );
+        // Before the watchdog applies it, the engine shows a fresh suggestion:
+        // `set_suggestion_visible(true)` clears the deadline and re-arms.
+        state.hide_deadline_ms.store(UNSET_MS, Ordering::Release);
+        apply_action(&state, Some(AcceptAction::Full), |_| Ok(()), |_| {}).expect("re-arm");
+
+        let ungrabbed = std::cell::Cell::new(false);
+        watchdog_disarm(&state, |_| ungrabbed.set(true));
+
+        assert!(!ungrabbed.get(), "a stale deadline must not ungrab");
+        assert!(*state.grabbed.lock().unwrap_or_else(PoisonError::into_inner));
+        assert_eq!(state.armed_action(), Some(AcceptAction::Full));
+
+        // A deadline still passed under the lock does disarm.
+        state.hide_deadline_ms.store(0, Ordering::Release);
+        watchdog_disarm(&state, |_| ungrabbed.set(true));
+        assert!(ungrabbed.get());
+        assert!(!*state.grabbed.lock().unwrap_or_else(PoisonError::into_inner));
+        assert_eq!(state.armed_action(), None);
+    }
+
     #[test]
     #[ignore = "needs an X session: run-linux-atspi-session.sh --run-in-session"]
     fn partial_worker_spawn_failure_joins_every_started_worker() {
@@ -579,39 +676,63 @@ fn set_action(
     state: &TapState,
     action: Option<AcceptAction>,
 ) -> Result<(), PlatformError> {
+    apply_action(
+        state,
+        action,
+        |plan| grab_plan(conn, state.root, plan),
+        |plan| ungrab_plan(conn, state.root, plan),
+    )
+}
+
+/// [`set_action`] with the X grab requests injected, so its lock discipline is
+/// testable without a server.
+fn apply_action(
+    state: &TapState,
+    action: Option<AcceptAction>,
+    grab: impl FnOnce(&GrabPlan) -> Result<(), PlatformError>,
+    ungrab: impl FnOnce(&GrabPlan),
+) -> Result<(), PlatformError> {
+    let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
+    apply_action_locked(state, &mut grabbed, action, grab, ungrab)
+}
+
+/// Publish `action` and install or release the grab while the caller holds
+/// `grabbed` — the lock order `clear_armed_state` and `regrab` use. Publishing
+/// before taking `grabbed` let a concurrent disarm write `None`, find nothing
+/// to ungrab, and then watch this arm install a grab with no action armed.
+fn apply_action_locked(
+    state: &TapState,
+    grabbed: &mut bool,
+    action: Option<AcceptAction>,
+    grab: impl FnOnce(&GrabPlan) -> Result<(), PlatformError>,
+    ungrab: impl FnOnce(&GrabPlan),
+) -> Result<(), PlatformError> {
     // Scoped so the action lock is never held across an X round trip — the
     // resolve path reads it per keystroke.
     {
         *state.action.lock().unwrap_or_else(PoisonError::into_inner) = action;
     }
-    let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
     match arm_transition(action, *grabbed) {
-        GrabTransition::Grab => match grab_plan(
-            conn,
-            state.root,
-            &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
-        ) {
-            Ok(()) => {
-                *grabbed = true;
-                state
-                    .armed_since_ms
-                    .store(state.now_ms(), Ordering::Release);
-                Ok(())
+        GrabTransition::Grab => {
+            match grab(&state.plan.lock().unwrap_or_else(PoisonError::into_inner)) {
+                Ok(()) => {
+                    *grabbed = true;
+                    state
+                        .armed_since_ms
+                        .store(state.now_ms(), Ordering::Release);
+                    Ok(())
+                }
+                Err(err) => {
+                    // Degrade, do not half-arm: the action goes back to None so the
+                    // invariant holds and nothing believes keys are being watched.
+                    clear_armed_state(state, grabbed);
+                    Err(err)
+                }
             }
-            Err(err) => {
-                // Degrade, do not half-arm: the action goes back to None so the
-                // invariant holds and nothing believes keys are being watched.
-                clear_armed_state(state, &mut grabbed);
-                Err(err)
-            }
-        },
+        }
         GrabTransition::Ungrab => {
-            ungrab_plan(
-                conn,
-                state.root,
-                &state.plan.lock().unwrap_or_else(PoisonError::into_inner),
-            );
-            clear_armed_state(state, &mut grabbed);
+            ungrab(&state.plan.lock().unwrap_or_else(PoisonError::into_inner));
+            clear_armed_state(state, grabbed);
             Ok(())
         }
         GrabTransition::Unchanged => Ok(()),
@@ -1118,6 +1239,24 @@ fn resolve_key_press(
     }
 }
 
+/// Apply a `Disarm` the watchdog decided from lock-free atomic reads. Between
+/// that read and here the engine may have cleared the deadline and re-armed a
+/// fresh suggestion, so the decision is re-made under `grabbed`, which every
+/// arm holds while publishing its action.
+fn watchdog_disarm(state: &TapState, ungrab: impl FnOnce(&GrabPlan)) {
+    let mut grabbed = state.grabbed.lock().unwrap_or_else(PoisonError::into_inner);
+    let still_due = watchdog_action(
+        state.now_ms(),
+        state.frozen_since_ms.load(Ordering::Acquire),
+        state.armed_since_ms.load(Ordering::Acquire),
+        state.hide_deadline_ms.load(Ordering::Acquire),
+    );
+    if still_due == WatchdogAction::Nothing {
+        return;
+    }
+    let _ = apply_action_locked(state, &mut grabbed, None, |_| Ok(()), ungrab);
+}
+
 fn spawn_watchdog(
     spawner: &mut WorkerSpawner,
     conn: Arc<RustConnection>,
@@ -1143,7 +1282,7 @@ fn spawn_watchdog(
                     let _ = set_action(&conn, &state, None);
                 }
                 WatchdogAction::Disarm => {
-                    let _ = set_action(&conn, &state, None);
+                    watchdog_disarm(&state, |plan| ungrab_plan(&conn, state.root, plan));
                 }
             }
         }
