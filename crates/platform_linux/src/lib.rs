@@ -1267,6 +1267,12 @@ mod tests {
     use super::*;
     use std::sync::Arc;
 
+    // Both URL-launcher tests below drive the spawn/poll/reap path through `sh`,
+    // whose latch loop (`while [ ! -e "$1" ]`) and `exit 3` are POSIX. The
+    // production half they exercise (`spawn_and_reap_with`,
+    // `poll_for_immediate_exit_with`) is host-independent and still compiles
+    // everywhere; only the shell fixture is Unix-only.
+    #[cfg(unix)]
     #[test]
     fn url_launcher_reaps_child_without_blocking_the_caller() {
         let (reaped_tx, reaped_rx) = std::sync::mpsc::channel();
@@ -1301,6 +1307,7 @@ mod tests {
         std::fs::remove_file(latch).unwrap();
     }
 
+    #[cfg(unix)]
     #[test]
     fn url_launcher_reports_a_failure_detected_during_the_poll_window() {
         let status = std::process::Command::new("sh")
