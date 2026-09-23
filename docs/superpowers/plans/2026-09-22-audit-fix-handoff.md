@@ -1,5 +1,10 @@
 # Handoff — 2026-09-22 audit fix batch (resume from here)
 
+> **Closed 2026-09-23.** Batches B and D and the §6 leftovers landed with a
+> second six-dimension audit; status and the items still open are in
+> [ROADMAP](../../ROADMAP.md#full-codebase-review-fixes--2026-092223) and
+> `Qfd.md` §25. This file is kept as the record of the 2026-09-22 run.
+
 **Date:** 2026-09-22 · **Main HEAD when written:** `b1b38ba` · **Updated:** same
 day at `a357b94` — Batches A and C are complete and **pushed**; CI run
 35737431131 is green on every lane with every mac-lane step (model gates,

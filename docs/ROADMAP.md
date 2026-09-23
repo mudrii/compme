@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-20 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2252 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-09-23 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2252 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -174,6 +174,42 @@ tested**. Everything below is what the plan still calls for.
 ---
 
 ## Current release — v0.1.6 audit remediation
+
+### Full-codebase review fixes — 2026-09-22/23
+
+Closes the 2026-09-22 review
+([brief](superpowers/plans/2026-09-22-audit-fix-brief.md),
+[handoff](superpowers/plans/2026-09-22-audit-fix-handoff.md)): Batches A and C
+landed 2026-09-22 (`070197e..a357b94`, handoff §3–§4); Batches B and D, the
+handoff §6 leftovers, and a second six-dimension audit (docs, core, app/model,
+platform, tests, tooling; `Qfd.md` §25) landed 2026-09-23 from `14ce149`
+onward — one commit per item, test-first, with the red evidence in each commit
+body. The mac-only changes are compile-proven here
+(`cargo check -p platform_macos --target aarch64-apple-darwin --all-targets`)
+and executed only by the native macOS CI lane.
+
+| Area | Items | Commits |
+|---|---|---|
+| Linux adapter | N1 `InsertText` gets a UTF-8 byte length plus span readback (non-ASCII accepts were truncated); B4 caret restored after range replace, outcome-unknown quarantine scoped per field (XTEST stays session-wide); B5 tap action published under the grab lock, watchdog re-checks before disarming; B6 accept-tap install failure degrades instead of ending startup; two timing tests made deterministic | `14ce149` `37defae` `8cc8dab` `d1b67a6` `9300572` `98247ea` |
+| macOS adapter | B1 observer/poll worker arms under `catch_unwind`, lossy UTF-16 identity decode; B2 `insert_for_field` rechecks secure input via the injected provider; B3 global synthetic/paste/AxSet-fallback inserts compare the focused AX element identity (fail closed, `StaleField` on mismatch) and the `FieldHandle` contract states what each adapter compares; poisoned settings mutexes read through `shell_flags::lock_recover` (12 readers); SAFETY contracts documented; one shared UTF-16 offset helper in `platform` | `6feda0f` `05f40c6` `837a2b8` `e82658e` `3fe763a` `8436343` |
+| App / model | cross-app off with per-app context off clears every previous-input ring; verified complete `.part` promoted on 416; already-present model hashed on the downloader thread, not the run loop; BOS kept and a step-aligned window on prompt overflow; one redaction owner for the ring; `submit_gated_request` extracted from `run()`; dead/over-public API narrowed | `4a6b4ed` `8413a0a` `1ac0021` `702d095` `4772c84` `221328f` `1b8289f` `0b459b5` |
+| Core crates | repetition penalty bounded to 160 chars before the caret; instruction budget spent most-specific scope first; rowid-range retention trim; failed re-show no longer retracts an earlier Shown stat; dead `preview_accept_correction` / `recent_for_domain` / `count_by_domain` removed; one domain-rule matcher in `webconfig`; `on_event` / `dispatch_with_commit` / stats counters de-duplicated | `d2652bd` `3f686ec` `6939443` `4271c0c` `0282f0d` `28ffe80` `47a2b54` `970a481` `d3d5287` |
+| Tests | `apps_domain_delete_phase` and `memory_mode_phase` edges pinned (erase tripwire); global key bindings locked and restored around startup tests (parallel Linux/Windows lanes); hang-prone and sleep-raced inference tests made deterministic; literal settings-flag mapping; exact-value assertions; shared fixtures | `f5e6a2d`–`ef74ef8`, `5038503` `2e032b9` `9f566fc` |
+| Tooling / CI | D1 per-commit concurrency group on `main` and per-tag release group; D3 `check.sh` fails on a missing required tool and gains `--fence` plus the Linux Host Gate; D4 EXIT traps; `pre-push` syntax-checked and shellchecked; `awk \| grep -q` SIGPIPE flake in the live pin checker fixed; bash-3.2 heredoc removed; governance caveat for main's missing required checks (D1b, accepted under direct-to-main) | `bf2b3fd` `70319e0` `301a8cd` `ed83334` `42b6b05` `2fab366` `7039921` |
+| Docs | ARCHITECTURE/README/DEVELOPMENT/TROUBLESHOOTING/ACCEPTANCE aligned to code; D2 closed; D5 dated docs consolidated (`2FIX.md`, `FIXED.md`, implementation evidence moved under `superpowers/plans/`, the 2026-09-20 repair record folded into `Qfd.md` §24) | `bf4c2e4`…`6e95c22` |
+
+Still open after this batch:
+
+- **Live macOS evidence for B3.** A focused element that resolved at focus
+  time but cannot be resolved at insert time now refuses the global insert
+  (fail closed) instead of posting; measure against the A2 app matrix at a Mac.
+- **Prompt overflow keeps the tail.** When the whole left context exceeds the
+  model window, the front (context block and personalization preamble) is what
+  gets dropped; capping the field text in the app instead is a design choice.
+- A4 still passes Arabic-Indic-digit PANs; a value grabbed from `(token=abc)`
+  still swallows the `)` (both pre-existing, handoff §6).
+- The model_fetch connect-timeout test cannot pin its message: it differs by
+  host routing (`timeout: connect` vs `Network is unreachable`).
 
 ### Full-codebase audit repairs — 2026-09-20
 

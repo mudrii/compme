@@ -1,6 +1,6 @@
 # compme — Full Architecture, Source, Test, Documentation, and CI Audit
 
-**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16) · **CI/CD + doc-gating audit:** 2026-07-29 (§17) · **Release-readiness pass:** 2026-07-29 (§18) · **Dependency catch-up:** 2026-08-11 (§19) · **Full-codebase audit:** 2026-09-08 (§20, tree `2d18c34`) · **Independent audit:** 2026-09-15 (§21, `8613a92`, AUD-1..14) · **Design of record:** 2026-09-16 (§22, G7 Carbon main-thread marshal) · **Decision of record:** 2026-09-17 (§23, UIA apartment) · **Audit repairs:** 2026-09-20 (§24)
+**Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16) · **CI/CD + doc-gating audit:** 2026-07-29 (§17) · **Release-readiness pass:** 2026-07-29 (§18) · **Dependency catch-up:** 2026-08-11 (§19) · **Full-codebase audit:** 2026-09-08 (§20, tree `2d18c34`) · **Independent audit:** 2026-09-15 (§21, `8613a92`, AUD-1..14) · **Design of record:** 2026-09-16 (§22, G7 Carbon main-thread marshal) · **Decision of record:** 2026-09-17 (§23, UIA apartment) · **Audit repairs:** 2026-09-20 (§24) · **Review + six-dimension audit fixes:** 2026-09-22/23 (§25)
 
 **Repository:** `compme`
 
@@ -1148,3 +1148,42 @@ The canonical local gate on Linux stops at step 2 because Apple framework
 dependencies cannot compile for the Linux host. Portable checks and native
 host CI are recorded separately; GUI and physical-input observations still
 belong in [ACCEPTANCE](docs/ACCEPTANCE.md).
+
+## 25. Full-codebase review and six-dimension audit — 2026-09-22/23
+
+The 2026-09-22 review's findings and fix directions are in
+[the brief](docs/superpowers/plans/2026-09-22-audit-fix-brief.md); Batches A
+and C and their validation are in
+[the handoff](docs/superpowers/plans/2026-09-22-audit-fix-handoff.md) §3–§4.
+On 2026-09-23 six read-only audits of `0258d90` (documentation alignment,
+core crates, app/model crates, platform crates, test quality, tooling/CI)
+re-verified the open Batch B/D items and added new findings; every finding
+below was fixed test-first, one commit per item, and integrated onto `main`
+from `14ce149`. [ROADMAP](docs/ROADMAP.md#full-codebase-review-fixes--2026-092223)
+holds the per-area commit table and the items still open.
+
+| ID | Finding (severity) | Status |
+|---|---|---|
+| N1 | Linux `InsertText` passed a scalar count where AT-SPI wants bytes; non-ASCII accepts truncated or rejected, reported as inserted (High) | Fixed `14ce149`; live test inserts "é😀ß" into entry and text view |
+| B1 | macOS AX worker observer/poll arms not under `catch_unwind`; core-foundation `CFString` `Display` panics on a lone surrogate (High) | Fixed `6feda0f`; mac lane |
+| B2 | `insert_for_field` bypassed the injected secure-input provider (Med) | Fixed `05f40c6`; mac lane |
+| B3 | Global insert stale-focus check was pid-only (High; owner chose to wire identity) | Fixed `837a2b8`; fail-closed; live Mac evidence open |
+| B4 | Linux range replace never restored the caret; quarantine session-wide (High) | Fixed `37defae`; 42/42 live |
+| B5 | X11 tap `set_action` wrote the action outside the grab lock; watchdog disarmed on a stale read (Med) | Fixed `8cc8dab` |
+| B6 | Linux accept-tap install failure fatal at startup (Low) | Fixed `d1b67a6` |
+| D1 | CI concurrency dropped queued `main` runs (High; owner approved per-commit groups) | Fixed `bf2b3fd`; D1b accepted, surfaced as a governance caveat `42b6b05` |
+| D2 | Conflicting macOS test counts | Closed: all live pins agree, others are citations |
+| D3 | `check.sh` exited 0 with cargo missing; no Linux host fence (High) | Fixed `7039921` |
+| D4 | Self-test temp dirs leaked on `set -e` exit | Fixed `ed83334` |
+| D5 | Dated docs scattered at the root and in `docs/` | Consolidated `1e13541`…`54a43d9` |
+| T1 | `apps_domain_delete_phase` (a user-data erase edge) had no test (High) | Pinned `2bf551b` |
+| T2 | Startup tests raced the global accept keymap on the parallel Linux/Windows lanes (Med) | Fixed `7e413eb` |
+| A-1 | Previous-input rings kept feeding prompts after cross-app sharing turned the feature fully off (Med) | Fixed `4a6b4ed` |
+| A-2 | Already-present model hashed on the run-loop thread (Med) | Fixed `1ac0021` |
+| A-3 | Complete `.part` deleted and refetched on 416 (Low-Med) | Fixed `8413a0a` |
+| A-4 | Prompt overflow dropped the BOS and defeated prefix reuse (Low) | Fixed `702d095`; front-drop policy left as a design choice |
+| C-1 | Repetition penalty scanned the whole field, suppressing short common continuations (Med) | Fixed `d2652bd` |
+| C-2 | Long global instructions truncated away per-app/per-domain ones (Med) | Fixed `3f686ec` |
+| C-3 | A failed re-show retracted an earlier real Shown stat | Fixed `4271c0c` (red before the fix) |
+| G-1 | Live pin checker flaked on `awk \| grep -q` SIGPIPE under `pipefail` | Fixed `70319e0` |
+| G-2 | Script syntax gate parsed only the first file per `xargs` batch; `pre-push` never linted | Fixed `2fab366` |
