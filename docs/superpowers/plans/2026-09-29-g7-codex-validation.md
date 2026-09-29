@@ -23,6 +23,33 @@ Baseline HEAD: `12d581555dcbcaa811654f9e4a98e998bf7383b9` plus the protected
 pre-existing working diff recorded by that plan. Implementation is delegated
 to Herdr `wA:tA` / `wA:pR`, pi `zai/glm-5.3-flash`; Codex owns this audit.
 
+## First native CI execution and follow-up
+
+Commit `789424312b88a3a9ff9af16c7b2563fa25044eb7` was pushed to `main`.
+[Native CI](https://github.com/mudrii/compme/actions/runs/36531557679/job/109286151247)
+ran the macOS suite: **390 passed, one failed**. The sole failure was
+`g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops`:
+its final cleanup called `worker_fifo_barrier` after an earlier
+`adapter.shutdown()` had already stopped and joined the worker. The expected
+`CannotComplete { reason: "AX worker is not running" }` therefore failed the
+test's barrier expectation. Failure excerpt:
+`.gate/g7-native-ci-7894243-failure.log`.
+
+The follow-up removes that invalid post-shutdown request and uses the earlier
+completed join as the synchronization boundary, then replays every recorded
+teardown and retains all slot/token/deferred-handler leak assertions. No
+production behavior or test inventory changes. The existing failing native
+test is the regression; final proof requires the follow-up commit's native CI.
+This is a concrete limitation of the earlier static/cross-compilation review,
+which did not identify the invalid cleanup call.
+
+Follow-up local checks: Linux Host Gate again passed 44/44 commands with
+zero skipped (`.gate/g7-ci-fix-linux-20260929.log`); Darwin all-targets check
+and clippy passed (`.gate/g7-ci-fix-darwin-clippy-20260929.log`). The required
+Full Local Gate attempt again stopped at command 2/57 on Apple-only dependencies
+(`.gate/g7-ci-fix-full-local-20260929.log`). No native pass is inferred from
+these Linux checks.
+
 ## Final verified evidence
 
 - Portable tests include the actual production `carbon_registry.rs` source.

@@ -287,6 +287,14 @@ cannot compile for this Linux host); evidence:
 Independent review ledger:
 `docs/superpowers/plans/2026-09-29-g7-codex-validation.md`.
 
+**First native CI:** pushed commit `7894243` ran 391 macOS tests, with 390
+passing and one new test failing because its cleanup requested a worker FIFO
+barrier after shutdown had already joined the worker. The follow-up removes
+that invalid request, relies on the completed join, and preserves all teardown
+replay/leak assertions. Production behavior and the 2284 inventory are unchanged.
+The follow-up candidate must pass native CI before the native-test boundary is
+closed; physical acceptance and release readiness remain separate.
+
 ### Full-codebase review fixes — 2026-09-22/23
 
 Closes the 2026-09-22 review

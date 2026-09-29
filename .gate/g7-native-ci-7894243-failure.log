@@ -1,0 +1,18 @@
+Native CI failure excerpt for commit 789424312b88a3a9ff9af16c7b2563fa25044eb7
+Source: https://github.com/mudrii/compme/actions/runs/36531557679/job/109286151247
+Retrieved with gh api actions/jobs/109286151247/logs; excerpt follows.
+
+2026-09-29T06:33:22.6671060Z failures:
+2026-09-29T06:33:22.6671400Z 
+2026-09-29T06:33:22.6672080Z ---- tests::g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops stdout ----
+2026-09-29T06:33:22.6672980Z 
+2026-09-29T06:33:22.6674080Z thread 'tests::g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops' (42342) panicked at crates/platform_macos/src/lib_tests.rs:8381:10:
+2026-09-29T06:33:22.6676090Z worker processed the queued operations (FIFO barrier): CannotComplete { reason: "AX worker is not running" }
+2026-09-29T06:33:22.6677130Z 
+2026-09-29T06:33:22.6677220Z 
+2026-09-29T06:33:22.6677490Z failures:
+2026-09-29T06:33:22.6678310Z     tests::g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops
+2026-09-29T06:33:22.6679090Z 
+2026-09-29T06:33:22.6679780Z test result: FAILED. 390 passed; 1 failed; 0 ignored; 0 measured; 0 filtered out; finished in 2.47s
+2026-09-29T06:33:22.6680710Z 
+2026-09-29T06:33:22.6698110Z [1m[91merror[0m: test failed, to rerun pass `-p platform_macos --lib`

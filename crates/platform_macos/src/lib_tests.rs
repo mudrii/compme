@@ -8701,13 +8701,14 @@ fn g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops() {
     // ...and the duplicate is a harmless no-op.
     apply_carbon_teardown(request);
     assert_eq!(state.lock().unwrap().unregister_count(), 4);
-    // Deterministic ending: the subscription was already dropped mid-test
-    // (the teardown initiator); replay the recorded requests, then shutdown
-    // and replay — proving no leaks (the empty shortcut plan armed a REAL
-    // zero-key slot).
-    worker_fifo_barrier(&adapter);
-    replay_recorded_teardowns(&teardown_log);
-    adapter.shutdown();
+    // Deterministic ending: the subscription was already dropped mid-test and
+    // `shutdown()` above already stopped and JOINED the worker — that join is
+    // the barrier (every queued removal, including the token drops it
+    // triggered, has been processed), so a FIFO round-trip is neither
+    // possible nor needed against the stopped worker. Replay the still-
+    // pending recorded requests (the subscription's Arm request and
+    // shutdown's OwnerAll) on this simulated-main thread and prove no leaks
+    // (the empty shortcut plan armed a REAL zero-key slot).
     replay_recorded_teardowns(&teardown_log);
     assert!(state.lock().unwrap().registered_ids().is_empty());
     assert!(CARBON_HANDLER_SLOT.current().is_none());
