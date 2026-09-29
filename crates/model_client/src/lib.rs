@@ -1073,12 +1073,6 @@ mod tests {
     }
 
     #[test]
-    fn complete_n_zero_is_empty() {
-        let model: Box<dyn LocalModel> = Box::new(Fixed("x"));
-        assert!(model.complete_n("x", 8, 0).unwrap().is_empty());
-    }
-
-    #[test]
     fn default_complete_n_propagates_complete_errors() {
         // The default complete_n is `Ok(vec![self.complete(...)?])`: a backend
         // that fails the single underlying complete() must surface that typed
@@ -1289,7 +1283,7 @@ mod tests {
     fn complete_n_zero_returns_empty_without_dispatch() {
         use std::sync::atomic::{AtomicUsize, Ordering};
 
-        struct Counting(AtomicUsize);
+        struct Counting(Arc<AtomicUsize>);
         impl LocalModel for Counting {
             fn complete(&self, _prompt: &str, _max_tokens: usize) -> LocalModelResult<String> {
                 self.0.fetch_add(1, Ordering::SeqCst);
@@ -1297,11 +1291,12 @@ mod tests {
             }
         }
 
-        let model = Counting(AtomicUsize::new(0));
+        let calls = Arc::new(AtomicUsize::new(0));
+        let model: Box<dyn LocalModel> = Box::new(Counting(Arc::clone(&calls)));
         let out = model.complete_n("prompt", 8, 0).expect("n==0 is Ok");
         assert!(out.is_empty(), "n==0 must return an empty vec");
         assert_eq!(
-            model.0.load(Ordering::SeqCst),
+            calls.load(Ordering::SeqCst),
             0,
             "n==0 must short-circuit BEFORE any complete()/dispatch call"
         );

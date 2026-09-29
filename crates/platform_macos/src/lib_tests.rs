@@ -298,6 +298,14 @@ struct TestAdapterConfig {
     /// drop-before-install pin): "install:<Kind>" per installer call,
     /// "drop" per fake tap-resource drop.
     accept_tap_events: Arc<Mutex<Vec<String>>>,
+    /// G7: when true the adapter uses the production Worker-arm installer
+    /// (real main-thread registry path with injected identity/executor/
+    /// native leaves) instead of the Custom fake (which is exempt from the
+    /// main-thread guard).
+    use_worker_accept_tap_installer: bool,
+    /// G7: teardown executor override for Worker-arm tests. `None` → inline
+    /// apply on the calling thread (deterministic with fake-ops registries).
+    carbon_teardown: Option<MainTeardownExecutor>,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
     /// Bundle-id lookup for the 2d AxSet-fallback allowlist. Defaults to
     /// `None` (no bundle) so tests see the fail-closed posture unless they
@@ -322,6 +330,8 @@ impl TestAdapterConfig {
             pasteboard_poster: Arc::new(|_, _| Ok(())),
             accept_tap_installs: Arc::new(Mutex::new(Vec::new())),
             accept_tap_events: Arc::new(Mutex::new(Vec::new())),
+            use_worker_accept_tap_installer: false,
+            carbon_teardown: None,
             ax_range_target: Arc::new(RawAxRangeTarget),
             bundle_id_for_pid: Arc::new(|_| None),
         }
@@ -455,6 +465,8 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
         pasteboard_poster,
         accept_tap_installs,
         accept_tap_events,
+        use_worker_accept_tap_installer,
+        carbon_teardown,
         ax_range_target,
         bundle_id_for_pid,
     } = config;
@@ -508,7 +520,14 @@ fn test_adapter_with_hooks(config: TestAdapterConfig) -> MacosPlatformAdapter {
             synthetic_key_poster,
             pasteboard_poster,
             observer_installer,
-            accept_tap_installer,
+            // Custom fake unless a test opts into the REAL Worker arm (G7
+            // native integration path with injected leaves).
+            accept_tap_installer: if use_worker_accept_tap_installer {
+                None
+            } else {
+                Some(accept_tap_installer)
+            },
+            carbon_teardown: carbon_teardown.unwrap_or_else(inline_teardown_executor),
             ax_range_target,
             bundle_id_for_pid,
         },
@@ -565,7 +584,8 @@ fn test_adapter_with_dynamic_frontmost_and_install_hook(
             synthetic_key_poster: Arc::new(|_, _| Ok(())),
             pasteboard_poster: Arc::new(|_, _| Ok(())),
             observer_installer,
-            accept_tap_installer,
+            accept_tap_installer: Some(accept_tap_installer),
+            carbon_teardown: inline_teardown_executor(),
             ax_range_target: Arc::new(RawAxRangeTarget),
             bundle_id_for_pid: Arc::new(|_| None),
         },
@@ -6991,7 +7011,7 @@ fn caret_diagnostics_falls_back_from_unusable_marker_rect() {
     let marker = ScreenRect {
         x: 0.0,
         y: 0.0,
-        w: 2500.0,
+        w: MAX_USABLE_CARET_RECT_WIDTH + 10.0,
         h: 18.0,
     };
     let native = ScreenRect {
@@ -7214,25 +7234,6 @@ fn caret_diagnostics_uses_native_when_marker_absent() {
         h: 12.0,
     });
     let diag = caret_diagnostics_from_rects(None, native);
-    assert_eq!(diag.source, MacosCaretRectSource::NativeFallback);
-    assert_eq!(diag.resolved_rect, native);
-}
-
-#[test]
-fn caret_diagnostics_falls_back_when_marker_unusable() {
-    let unusable_marker = Some(ScreenRect {
-        x: 0.0,
-        y: 0.0,
-        w: MAX_USABLE_CARET_RECT_WIDTH + 10.0,
-        h: 12.0,
-    });
-    let native = Some(ScreenRect {
-        x: 5.0,
-        y: 6.0,
-        w: 1.0,
-        h: 12.0,
-    });
-    let diag = caret_diagnostics_from_rects(unusable_marker, native);
     assert_eq!(diag.source, MacosCaretRectSource::NativeFallback);
     assert_eq!(diag.resolved_rect, native);
 }
@@ -8149,4 +8150,1859 @@ fn overlay_diagnostics_report_all_false_when_no_panel_present() {
             underline_frame: None,
         }
     );
+}
+
+// ===========================================================================
+// G7 Carbon main-thread marshal tests (2026-09-29).
+//
+// The production Worker-arm installer is exercised end-to-end with ONLY the
+// three native leaves swapped, per the authorized plan:
+//   * main identity  — a `FakeCarbonOps` installed into this thread's TLS
+//     registry whose `is_main_thread` is injected (a Rust test thread is
+//     never the OS main thread, so the real check would always reject);
+//   * executor       — an inline or recording `MainTeardownExecutor`;
+//   * native leaf    — the same `FakeCarbonOps` records every
+//     register/unregister with full ordering, which is the mutation
+//     surface for ordering / rollback / exactly-once assertions.
+// Everything else — plan hoisting, the installer closure, slot publish,
+// worker adoption, teardown tokens, shutdown — is the production code.
+//
+// Serial execution (`--test-threads=1`, the existing lane) keeps the shared
+// handler slots deterministic; each test ends with the world drained.
+// ===========================================================================
+
+#[derive(Default)]
+struct FakeCarbonState {
+    main_thread: bool,
+    handler_installed: bool,
+    handler_install_attempts: u32,
+    /// Number of remaining `install_handler` calls to fail (status -1).
+    fail_handler_installs: u32,
+    /// Fail the Nth (1-based) `register` call overall with this status.
+    fail_nth_register: Option<(usize, i32)>,
+    register_calls: usize,
+    next_token: usize,
+    /// Live registrations: token -> (family, hotkey id).
+    live: HashMap<usize, (Family, u32)>,
+    /// Ordered native-op log — the ordering/rollback mutation surface.
+    log: Vec<String>,
+}
+
+impl FakeCarbonState {
+    fn registered_ids(&self) -> Vec<u32> {
+        let mut ids: Vec<u32> = self.live.values().map(|(_, id)| *id).collect();
+        ids.sort_unstable();
+        ids
+    }
+
+    fn unregister_count(&self) -> usize {
+        self.log
+            .iter()
+            .filter(|e| e.starts_with("unregister:"))
+            .count()
+    }
+}
+
+fn carbon_family_name(family: Family) -> &'static str {
+    match family {
+        Family::Consumer => "consumer",
+        Family::Shortcut => "shortcut",
+    }
+}
+
+struct FakeCarbonOps {
+    state: Arc<Mutex<FakeCarbonState>>,
+}
+
+impl NativeOps for FakeCarbonOps {
+    type Token = RawHotKeyToken;
+
+    fn is_main_thread(&self) -> bool {
+        self.state.lock().unwrap().main_thread
+    }
+
+    fn install_handler(&mut self) -> Result<(), RegistryError> {
+        let mut state = self.state.lock().unwrap();
+        state.handler_install_attempts += 1;
+        if state.fail_handler_installs > 0 {
+            state.fail_handler_installs -= 1;
+            return Err(RegistryError::HandlerInstall { status: -1 });
+        }
+        state.handler_installed = true;
+        state.log.push("install-handler".into());
+        Ok(())
+    }
+
+    fn register(
+        &mut self,
+        family: Family,
+        binding: &KeyBinding,
+    ) -> Result<RawHotKeyToken, RegistryError> {
+        let mut state = self.state.lock().unwrap();
+        state.register_calls += 1;
+        let failing =
+            matches!(state.fail_nth_register, Some((nth, _)) if nth == state.register_calls);
+        if failing {
+            let (_, status) = state.fail_nth_register.expect("checked above");
+            return Err(RegistryError::Register {
+                family,
+                binding: *binding,
+                status,
+            });
+        }
+        state.next_token += 1;
+        let token_value = state.next_token;
+        state.live.insert(token_value, (family, binding.id));
+        state.log.push(format!(
+            "register:{}:{}",
+            carbon_family_name(family),
+            binding.id
+        ));
+        Ok(RawHotKeyToken(token_value))
+    }
+
+    fn unregister(&mut self, family: Family, token: RawHotKeyToken) {
+        let mut state = self.state.lock().unwrap();
+        // Exactly-once discipline, ASSERTED not logged through: a token this
+        // fake never issued — or already unregistered — is a caller bug and
+        // must fail the test with a precise message, never silently pass.
+        let Some(&(live_family, id)) = state.live.get(&token.0) else {
+            panic!(
+                "FakeCarbonOps: unregister of token {} in family {} was never issued by register \
+                 or was already unregistered (exactly-once discipline violated)",
+                token.0,
+                carbon_family_name(family)
+            );
+        };
+        assert_eq!(
+            live_family,
+            family,
+            "FakeCarbonOps: unregister family mismatch for token {}: registered under {}, \
+             unregistered as {}",
+            token.0,
+            carbon_family_name(live_family),
+            carbon_family_name(family)
+        );
+        state.live.remove(&token.0);
+        state
+            .log
+            .push(format!("unregister:{}:{}", carbon_family_name(family), id));
+    }
+}
+
+/// Clears this thread's TLS registry on drop so tests never leak registry
+/// state into each other (the TLS itself is per-thread, and the lane is
+/// serial, but a reset keeps each test's registry counters fresh).
+struct TestCarbonRegistryGuard {
+    /// The test's fake native state: inspected at drop for live native
+    /// tokens that explicit teardown should have removed.
+    state: Arc<Mutex<FakeCarbonState>>,
+}
+
+impl Drop for TestCarbonRegistryGuard {
+    fn drop(&mut self) {
+        // Snapshot leaks FIRST, reset SECOND, report LAST: cleanup always
+        // happens (even when the report panics), and reporting never runs
+        // during unwinding (a test's original panic must not be masked).
+        let deferred = CARBON_DEFERRED_HANDLERS.with(|cell| cell.borrow().len());
+        let consumer_armed = CARBON_HANDLER_SLOT.current().is_some();
+        let shortcut_armed = SHORTCUT_HANDLER_SLOT.current().is_some();
+        let fake_live = self
+            .state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .len();
+        CARBON_REGISTRY.with(|cell| *cell.borrow_mut() = None);
+        CARBON_HANDLER_SLOT.reset_for_test();
+        SHORTCUT_HANDLER_SLOT.reset_for_test();
+        // Extract the deferred batch INSIDE the borrow, drop it OUTSIDE —
+        // a reentrant callback capture must not hit a live mutable borrow.
+        let retired = CARBON_DEFERRED_HANDLERS.with(|cell| std::mem::take(&mut *cell.borrow_mut()));
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .live
+            .clear();
+        drop(retired);
+        if !std::thread::panicking()
+            && (deferred != 0 || consumer_armed || shortcut_armed || fake_live != 0)
+        {
+            panic!(
+                "G7 fixture leak: deferred_handlers={deferred} \
+                 consumer_slot_armed={consumer_armed} \
+                 shortcut_slot_armed={shortcut_armed} \
+                 fake_live_tokens={fake_live} — the test must end with \
+                 drop(subscription), adapter.shutdown(), and a full teardown replay"
+            );
+        }
+    }
+}
+
+fn install_test_carbon_registry(
+    main_thread: bool,
+) -> (TestCarbonRegistryGuard, Arc<Mutex<FakeCarbonState>>) {
+    let state = Arc::new(Mutex::new(FakeCarbonState {
+        main_thread,
+        ..FakeCarbonState::default()
+    }));
+    let registry = carbon_registry::CarbonRegistry::with_hooks(
+        DispatchCarbonOps(Box::new(FakeCarbonOps {
+            state: Arc::clone(&state),
+        })),
+        Box::new(NativeSlotHooks),
+    );
+    CARBON_REGISTRY.with(|cell| *cell.borrow_mut() = Some(registry));
+    (
+        TestCarbonRegistryGuard {
+            state: Arc::clone(&state),
+        },
+        state,
+    )
+}
+
+fn inline_teardown_executor() -> MainTeardownExecutor {
+    Arc::new(move |request: CarbonTeardown| apply_carbon_teardown(request))
+}
+
+fn recording_teardown_executor(log: &Arc<Mutex<Vec<CarbonTeardown>>>) -> MainTeardownExecutor {
+    let log = Arc::clone(log);
+    Arc::new(move |request| log.lock().unwrap().push(request))
+}
+
+/// Deterministic worker barrier: the `resource_count` round-trip is FIFO-
+/// queued behind every earlier worker message, so its reply proves the queued
+/// RemoveResource — and the worker-side token `Drop` it triggers — has been
+/// processed. No sleeps, no polling.
+fn worker_fifo_barrier(adapter: &MacosPlatformAdapter) {
+    let _ = adapter
+        .worker_handle_for_test()
+        .resource_count()
+        .expect("worker processed the queued operations (FIFO barrier)");
+}
+
+/// Replay recorded teardown requests on THIS thread — the simulated main
+/// side whose TLS registry carries the injected main identity. A worker
+/// thread (like any plain Rust test thread) is never the OS main thread, so
+/// an inline apply there would be rejected with zero effects; draining and
+/// replaying here is what makes worker-side token drops take effect
+/// deterministically. Returns the replayed requests.
+fn replay_recorded_teardowns(
+    teardown_log: &Arc<Mutex<Vec<CarbonTeardown>>>,
+) -> Vec<CarbonTeardown> {
+    let requests = std::mem::take(&mut *teardown_log.lock().unwrap());
+    for request in &requests {
+        apply_carbon_teardown(*request);
+    }
+    requests
+}
+
+/// Worker-arm adapter (REAL production installer) with injected leaves.
+fn worker_arm_test_adapter(teardown: MainTeardownExecutor) -> MacosPlatformAdapter {
+    let mut config = TestAdapterConfig::new(Some(42), Arc::new(Mutex::new(Vec::new())), None);
+    config.use_worker_accept_tap_installer = true;
+    config.carbon_teardown = Some(teardown);
+    test_adapter_with_hooks(config)
+}
+
+fn noop_accept_callback() -> AcceptCallback {
+    Arc::new(|_| {})
+}
+
+/// Assert a G7 install attempt failed with exactly `expected`. Generic over
+/// the success payload because `AcceptTapResource`/`AcceptSubscription` do
+/// not implement `Debug`.
+fn assert_g7_rejected<T>(result: Result<T, PlatformError>, expected: &PlatformError) {
+    match result {
+        Err(err) => assert_eq!(&err, expected, "unexpected rejection: {err:?}"),
+        Ok(_) => panic!("expected {expected:?}, got Ok"),
+    }
+}
+
+#[test]
+fn g7_worker_arm_registration_is_inline_on_injected_main() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    // Recording executor + replay: the teardown tokens drop on the WORKER
+    // thread, whose TLS has no registry — and no Rust test thread is ever the
+    // OS main thread — so an inline apply there would be rejected with zero
+    // effects. The recorded requests are replayed on this simulated-main side
+    // after a FIFO worker barrier.
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+
+    // Shortcut arm (empty default plan): handler install + slot arm, no keys.
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe installs the shortcut arm synchronously");
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.handler_install_attempts, 1);
+        assert!(
+            state.live.is_empty(),
+            "default shortcut plan registers nothing"
+        );
+    }
+    assert!(
+        SHORTCUT_HANDLER_SLOT.current().is_some(),
+        "zero-key plans still arm the delivery slot"
+    );
+    // Adoption is synchronous: the install reply was awaited, so the worker
+    // already owns the ID-only token when subscribe returns.
+    assert!(
+        adapter
+            .worker_handle_for_test()
+            .resource_count()
+            .expect("resource count")
+            >= 1,
+        "worker adopted the shortcut teardown token"
+    );
+
+    // Consumer arm: registration is INLINE — no wait/poll, the keys are live
+    // (in fake-native terms) the moment set_suggestion_visible returns.
+    subscription
+        .set_suggestion_visible(true)
+        .expect("arm consumer");
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+    assert!(CARBON_HANDLER_SLOT.current().is_some());
+
+    subscription
+        .set_suggestion_visible(false)
+        .expect("disarm consumer");
+    // The consumer teardown is queued through the worker (client drop →
+    // RemoveResource → worker-side token Drop → recorded request). The FIFO
+    // barrier proves the removal was processed; the replay then applies the
+    // recorded request on this simulated-main thread — deterministic, no
+    // sleeps.
+    worker_fifo_barrier(&adapter);
+    let replayed = replay_recorded_teardowns(&teardown_log);
+    assert_eq!(
+        replayed.len(),
+        1,
+        "the consumer token posted exactly one ID-scoped request"
+    );
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(
+        CARBON_HANDLER_SLOT.current().is_none(),
+        "matching teardown disarms the consumer slot"
+    );
+    // Shortcut family survives consumer teardown.
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_some());
+
+    // Retire the shortcut arm the same deterministic way, then shut down.
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    let replayed = replay_recorded_teardowns(&teardown_log);
+    assert_eq!(
+        replayed.len(),
+        1,
+        "the shortcut token posted exactly one ID-scoped request"
+    );
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    drop(adapter);
+}
+
+#[test]
+fn g7_off_main_caller_is_rejected_before_any_effect() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let installer = adapter.accept_tap_installer();
+    let before_log = state.lock().unwrap().log.clone();
+
+    // A spawned Rust thread is never the OS main thread and has no TLS
+    // registry, so the production guard must reject with zero side effects.
+    let result =
+        thread::spawn(move || installer(AcceptTapKind::Consumer, keep_handler(Default::default())))
+            .join()
+            .expect("no panic off main");
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "Carbon hotkey registration requires the macOS main thread; \
+                     no main-thread registry exists on this thread"
+                .into(),
+        },
+    );
+    let after = state.lock().unwrap();
+    assert_eq!(after.log, before_log, "zero native effects off main");
+    assert!(after.live.is_empty());
+    assert_eq!(after.handler_install_attempts, 0);
+}
+
+#[test]
+fn g7_off_main_identity_leaf_rejects_with_zero_effects() {
+    // The injected main-identity leaf (not the real OS check) drives the same
+    // rejection: a registry that reports off-main must reject before any
+    // Carbon call, slot mutation, or worker adoption.
+    let (_guard, state) = install_test_carbon_registry(false);
+    let adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let installer = adapter.accept_tap_installer();
+
+    let result = installer(AcceptTapKind::Shortcut, keep_handler(Default::default()));
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "Carbon hotkey registration requires the macOS main thread".into(),
+        },
+    );
+    let after = state.lock().unwrap();
+    assert!(after.log.is_empty());
+    assert!(after.live.is_empty());
+    assert!(
+        SHORTCUT_HANDLER_SLOT.current().is_none(),
+        "no slot mutation off main"
+    );
+}
+
+#[test]
+fn g7_replacement_unregisters_all_old_refs_before_first_new_registration() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let mut adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+
+    subscription.set_suggestion_visible(true).expect("arm #1");
+    let before_rearm = state.lock().unwrap().log.len();
+
+    subscription
+        .rearm_accept_tap()
+        .expect("rearm replaces the live arm");
+
+    let log_after = state.lock().unwrap().log.clone();
+    let tail = &log_after[before_rearm..];
+    let first_new_register = tail
+        .iter()
+        .position(|e| e.starts_with("register:"))
+        .expect("rearm registers a new plan");
+    let unregisters_before = tail[..first_new_register]
+        .iter()
+        .filter(|e| e.starts_with("unregister:"))
+        .count();
+    assert_eq!(
+        unregisters_before, 4,
+        "every old ref unregisters before the first new registration (tail: {tail:?})"
+    );
+    // Exactly-once: the drop's inline retire removed all four; the registry
+    // replace-drain found nothing left and added no second unregister.
+    assert_eq!(state.lock().unwrap().unregister_count(), 4);
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+    // Deterministic ending: release, join the worker via shutdown, then
+    // prove no leaks (the replacement left its arm live and its REAL slot
+    // armed; shutdown's inline owner-drain runs on this simulated-main
+    // thread, so no teardown_log replay is needed for the inline executor).
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    adapter.shutdown();
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_stale_duplicate_foreign_family_and_foreign_owner_teardown_are_no_ops() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let owner = adapter.carbon_owner;
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_suggestion_visible(true)
+        .expect("arm consumer");
+
+    // Stale arm id, both families: no-ops against the live arm.
+    apply_carbon_teardown(CarbonTeardown::Arm {
+        owner,
+        arm: ArmId(u64::MAX),
+        family: Family::Consumer,
+    });
+    apply_carbon_teardown(CarbonTeardown::Arm {
+        owner,
+        arm: ArmId(u64::MAX),
+        family: Family::Shortcut,
+    });
+    // Foreign owner shutdown: no-op.
+    apply_carbon_teardown(CarbonTeardown::OwnerAll {
+        owner: OwnerId(owner.0.wrapping_add(1)),
+    });
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+    assert_eq!(state.lock().unwrap().unregister_count(), 0);
+
+    // Capture the REAL teardown request: dropping the subscription posts the
+    // resource removal, and shutdown's worker join processes it — the token
+    // drops on the worker and its ID-scoped request lands in the log
+    // (recording executor: captured, not applied) BEFORE shutdown's own
+    // OwnerAll request. Deterministic — no polling.
+    drop(subscription);
+    let mut adapter = adapter;
+    adapter.shutdown();
+    let requests = teardown_log.lock().unwrap().clone();
+    assert!(
+        requests
+            .iter()
+            .any(|request| matches!(request, CarbonTeardown::OwnerAll { .. })),
+        "shutdown posts the owner-scoped drain through the executor"
+    );
+    let request = *requests
+        .iter()
+        .find(|request| {
+            matches!(
+                request,
+                CarbonTeardown::Arm {
+                    family: Family::Consumer,
+                    ..
+                }
+            )
+        })
+        .expect("the consumer token posted exactly one ID-scoped request");
+    let CarbonTeardown::Arm {
+        owner: request_owner,
+        arm: request_arm,
+        family: request_family,
+    } = request
+    else {
+        panic!("expected an Arm-scoped request, got {request:?}");
+    };
+    // Select by family AND id: the captured request must name the LIVE
+    // consumer arm exactly (same owner, same arm id) — not just "some"
+    // consumer-family request.
+    let live = try_main_carbon_registry(|registry| Ok(registry.armed_arm(Family::Consumer)))
+        .expect("read the live consumer arm");
+    assert_eq!(
+        live,
+        Some((request_owner, request_arm)),
+        "the captured request names the live consumer arm exactly"
+    );
+    assert_eq!(request_owner, owner);
+    assert_eq!(request_family, Family::Consumer);
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        [1, 2, 3, 4],
+        "recording executor defers the native retire"
+    );
+
+    // Foreign FAMILY with the real arm id: no-op, consumer stays live.
+    apply_carbon_teardown(CarbonTeardown::Arm {
+        owner: request_owner,
+        arm: request_arm,
+        family: Family::Shortcut,
+    });
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+
+    // The real request retires every ref exactly once...
+    apply_carbon_teardown(request);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert_eq!(state.lock().unwrap().unregister_count(), 4);
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+
+    // ...and the duplicate is a harmless no-op.
+    apply_carbon_teardown(request);
+    assert_eq!(state.lock().unwrap().unregister_count(), 4);
+    // Deterministic ending: the subscription was already dropped mid-test
+    // (the teardown initiator); replay the recorded requests, then shutdown
+    // and replay — proving no leaks (the empty shortcut plan armed a REAL
+    // zero-key slot).
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_old_adapter_teardown_cannot_clear_newer_adapter_registrations() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let mut old_adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let old_subscription = old_adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("old adapter subscribe");
+    old_subscription
+        .set_suggestion_visible(true)
+        .expect("old adapter consumer arm");
+
+    let _shortcuts = ShortcutBindingsGuard::set(Some("cmd+90"), None, None, None);
+    let new_adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let new_subscription = new_adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("new adapter subscribe (shortcut arm replaces the old one, owner-scoped)");
+
+    // Old adapter shuts down: drains ONLY its own owner's entries.
+    old_adapter.shutdown();
+    let live = state.lock().unwrap().registered_ids();
+    assert_eq!(
+        live,
+        [5],
+        "the newer adapter's shortcut registration survives the old adapter's shutdown"
+    );
+    assert!(
+        SHORTCUT_HANDLER_SLOT.current().is_some(),
+        "the newer arm keeps the delivery slot"
+    );
+
+    // The stale teardown of the old adapter's consumer arm is a no-op.
+    drop(old_subscription);
+    drop(old_adapter);
+    assert_eq!(state.lock().unwrap().registered_ids(), [5]);
+
+    // The newer adapter tears its own work down normally (its shutdown joins
+    // the worker and drains its owner inline — deterministic).
+    let mut new_adapter = new_adapter;
+    new_adapter.shutdown();
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    drop(new_subscription);
+    drop(new_adapter);
+}
+
+#[test]
+fn g7_consumer_nth_register_failure_rolls_back_owned_successes_and_stays_retryable() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    state.lock().unwrap().fail_nth_register = Some((3, -2));
+
+    let result = subscription.set_suggestion_visible(true);
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "failed to register Carbon accept-key 53: status -2".into(),
+        },
+    );
+    {
+        let state = state.lock().unwrap();
+        assert!(
+            state.live.is_empty(),
+            "all-or-error: no partial consumer arm survives"
+        );
+        let unregisters: Vec<u32> = state
+            .log
+            .iter()
+            .filter(|e| e.starts_with("unregister:consumer:"))
+            .filter_map(|e| e.rsplit(':').next().and_then(|id| id.parse().ok()))
+            .collect();
+        assert_eq!(
+            unregisters,
+            [1, 2],
+            "exactly the owned successes are rolled back, in order"
+        );
+    }
+    assert!(
+        CARBON_HANDLER_SLOT.current().is_none(),
+        "a failed consumer arm leaves no active slot"
+    );
+
+    // Retryable: clear the fault and the next visibility transition installs.
+    state.lock().unwrap().fail_nth_register = None;
+    subscription
+        .set_suggestion_visible(true)
+        .expect("retry after rollback succeeds");
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+}
+
+#[test]
+fn g7_handler_install_failure_propagates_and_a_later_attempt_retries() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let adapter = worker_arm_test_adapter(inline_teardown_executor());
+
+    state.lock().unwrap().fail_handler_installs = 1;
+    let result = adapter.subscribe_accept(noop_accept_callback());
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "failed to install Carbon accept-key handler: status -1".into(),
+        },
+    );
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.handler_install_attempts, 1);
+        assert!(!state.handler_installed);
+        assert!(
+            state.live.is_empty(),
+            "nothing registers without the handler"
+        );
+    }
+
+    // The plain flag (not Once) keeps the failed install retryable.
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("the next attempt retries the handler install");
+    let state = state.lock().unwrap();
+    assert_eq!(state.handler_install_attempts, 2);
+    assert!(state.handler_installed);
+    drop(subscription);
+}
+
+#[test]
+fn g7_shortcut_per_key_failure_skips_and_consumer_teardown_preserves_shortcuts() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let _shortcuts = ShortcutBindingsGuard::set(
+        Some("cmd+90"),
+        Some("cmd+91"),
+        Some("cmd+92"),
+        Some("cmd+93"),
+    );
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    state.lock().unwrap().fail_nth_register = Some((2, -3));
+
+    // Per-key log-and-skip: id 6 fails, ids 5/7/8 stay; the install succeeds.
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("shortcut install survives a failed binding");
+    assert_eq!(state.lock().unwrap().registered_ids(), [5, 7, 8]);
+
+    // Consumer arm/teardown must not touch the shortcut family.
+    state.lock().unwrap().fail_nth_register = None;
+    subscription
+        .set_suggestion_visible(true)
+        .expect("consumer arm");
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        [1, 2, 3, 4, 5, 7, 8]
+    );
+    subscription
+        .set_suggestion_visible(false)
+        .expect("consumer disarm");
+    // FIFO-ordered worker barrier + deterministic replay: the queued consumer
+    // teardown was processed by the worker, and its recorded request is
+    // applied on this simulated-main thread before the assertion.
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        [5, 7, 8],
+        "consumer teardown preserves shortcut registrations"
+    );
+    // Deterministic ending: release everything the test owns, replay every
+    // recorded request, and prove no leaks before the guard resets.
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_worker_adoption_send_failure_rolls_back_the_native_arm() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let executor = recording_teardown_executor(&teardown_log);
+
+    let owner = OwnerId(7);
+    let arm = try_main_carbon_registry(|registry| {
+        registry.install_consumer_arm(owner, consumer_arm_plan(AcceptTapKind::Consumer))
+    })
+    .expect("native apply")
+    .arm;
+    CARBON_HANDLER_SLOT.arm(arm.0, keep_handler(Default::default()));
+
+    // A handle whose receiver is already gone: the adoption send fails.
+    let (tx, rx) = mpsc::channel::<crate::ax_worker::Message>();
+    drop(rx);
+    let handle = AxWorkerHandle::detached_for_test(tx);
+    let mut guard = AdoptionRollbackGuard {
+        request: CarbonTeardown::Arm {
+            owner,
+            arm,
+            family: Family::Consumer,
+        },
+        armed: true,
+    };
+    let token = CarbonArmToken {
+        owner,
+        arm,
+        family: Family::Consumer,
+        teardown: Arc::clone(&executor),
+    };
+    let result = adopt_carbon_arm_token(&handle, token, &mut guard);
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "AX worker is not running".into(),
+        },
+    );
+    drop(guard); // the armed guard retires the arm inline on "main"
+    drop(executor); // the token's own request is captured, never applied
+
+    assert!(
+        state.lock().unwrap().live.is_empty(),
+        "a failed adoption must not leave registrations behind"
+    );
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+}
+
+#[test]
+fn g7_worker_adoption_lost_reply_rolls_back_the_native_arm() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    // Recording executor: the token inside the install closure drops on the
+    // RECEIVER thread, which has no TLS registry (a Rust test thread is never
+    // the OS main thread); its request is replayed on this simulated-main side
+    // after the join.
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let executor = recording_teardown_executor(&teardown_log);
+
+    // Path 1 — the whole InstallResource message is consumed and dropped
+    // without ever replying: the adoption's reply wait fails deterministically
+    // (the call returns exactly when the receiver thread drops the message).
+    let owner = OwnerId(8);
+    let arm = try_main_carbon_registry(|registry| {
+        registry.install_consumer_arm(owner, consumer_arm_plan(AcceptTapKind::Consumer))
+    })
+    .expect("native apply")
+    .arm;
+    CARBON_HANDLER_SLOT.arm(arm.0, keep_handler(Default::default()));
+
+    let (tx, rx) = mpsc::channel::<crate::ax_worker::Message>();
+    let dropped = thread::spawn(move || {
+        let _consumed = rx.recv();
+    });
+    let handle = AxWorkerHandle::detached_for_test(tx);
+    let mut guard = AdoptionRollbackGuard {
+        request: CarbonTeardown::Arm {
+            owner,
+            arm,
+            family: Family::Consumer,
+        },
+        armed: true,
+    };
+    let token = CarbonArmToken {
+        owner,
+        arm,
+        family: Family::Consumer,
+        teardown: Arc::clone(&executor),
+    };
+    let result = adopt_carbon_arm_token(&handle, token, &mut guard);
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "AX worker dropped resource install result".into(),
+        },
+    );
+    drop(guard); // the armed guard retires the arm inline on "main"
+    dropped.join().expect("message-dropping receiver");
+    assert_eq!(
+        teardown_log.lock().unwrap().len(),
+        1,
+        "the dropped closure's token still posted one ID-scoped request"
+    );
+    assert!(state.lock().unwrap().live.is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+
+    // Path 2 — the CONSUMED-CLOSURE lost reply: the receiver EXECUTES the
+    // install closure, retains then drops the returned resource (the token
+    // posts its teardown request to the recording executor), discards the
+    // reply, and is JOINED — every step deterministic, no sleeps.
+    let owner = OwnerId(9);
+    let arm = try_main_carbon_registry(|registry| {
+        registry.install_consumer_arm(owner, consumer_arm_plan(AcceptTapKind::Consumer))
+    })
+    .expect("native apply")
+    .arm;
+    CARBON_HANDLER_SLOT.arm(arm.0, keep_handler(Default::default()));
+
+    let (tx, rx) = mpsc::channel::<crate::ax_worker::Message>();
+    let consumed = thread::spawn(move || match rx.recv().expect("install message") {
+        crate::ax_worker::Message::InstallResource { install, reply, .. } => {
+            let resource = install().expect("install closure runs");
+            drop(resource); // deterministic retain-then-drop: the token posts its request now
+            drop(reply); // reply discarded — the adoption wait must fail
+        }
+        _ => panic!("expected an InstallResource message"),
+    });
+    let handle = AxWorkerHandle::detached_for_test(tx);
+    let mut guard = AdoptionRollbackGuard {
+        request: CarbonTeardown::Arm {
+            owner,
+            arm,
+            family: Family::Consumer,
+        },
+        armed: true,
+    };
+    let token = CarbonArmToken {
+        owner,
+        arm,
+        family: Family::Consumer,
+        teardown: Arc::clone(&executor),
+    };
+    let result = adopt_carbon_arm_token(&handle, token, &mut guard);
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "AX worker dropped resource install result".into(),
+        },
+    );
+    drop(guard); // MAIN ROLLBACK: retires this arm inline on "main"
+    consumed.join().expect("consumed-closure receiver joined");
+    {
+        let state = state.lock().unwrap();
+        assert!(
+            state.live.is_empty(),
+            "the main rollback drained the arm's registrations"
+        );
+        assert_eq!(
+            state.unregister_count(),
+            8,
+            "each rollback unregistered exactly its own four refs"
+        );
+    }
+    assert!(
+        CARBON_HANDLER_SLOT.current().is_none(),
+        "the rollback cleared the actual slot"
+    );
+
+    // The token requests recorded on the receiver threads are STALE
+    // duplicates after the rollbacks: replaying them on "main" must be
+    // harmless no-ops — no second unregister, slot stays clear.
+    let requests = teardown_log.lock().unwrap().drain(..).collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2, "one ID-scoped request per lost reply");
+    for request in requests {
+        apply_carbon_teardown(request);
+    }
+    {
+        let state = state.lock().unwrap();
+        assert!(state.live.is_empty());
+        assert_eq!(
+            state.unregister_count(),
+            8,
+            "stale-duplicate teardowns never unregister again"
+        );
+    }
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+}
+
+#[test]
+fn g7_adapter_shutdown_drains_owned_entries_and_a_later_adapter_initializes() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let mut adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_suggestion_visible(true)
+        .expect("consumer arm");
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+
+    adapter.shutdown();
+    assert!(
+        state.lock().unwrap().registered_ids().is_empty(),
+        "shutdown drains the owner's remaining registry entries inline"
+    );
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+
+    // Deactivation holds: the cancelled subscription cannot re-arm, and no
+    // new registrations appear.
+    subscription
+        .set_suggestion_visible(true)
+        .expect("deactivated subscriptions no-op");
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+
+    // No permanent shutdown state: a later adapter initializes and registers.
+    let later = worker_arm_test_adapter(inline_teardown_executor());
+    let later_subscription = later
+        .subscribe_accept(noop_accept_callback())
+        .expect("a later adapter can initialize");
+    later_subscription
+        .set_suggestion_visible(true)
+        .expect("later adapter arms");
+    assert_eq!(state.lock().unwrap().registered_ids(), [1, 2, 3, 4]);
+}
+
+#[test]
+fn g7_worker_shutdown_with_queued_operations_ends_with_no_owned_registrations() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let executor = recording_teardown_executor(&teardown_log);
+    let mut adapter = worker_arm_test_adapter(Arc::clone(&executor));
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_suggestion_visible(true)
+        .expect("consumer arm");
+
+    // Park the worker inside a gate installer so the teardown queued below
+    // is provably still pending when shutdown starts (deterministic: the
+    // gate signals entry on a channel; no sleeps).
+    let worker = adapter.worker_handle_for_test();
+    let (entered_tx, entered_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let (go_tx, go_rx) = mpsc::channel::<()>();
+    let gate = thread::spawn(move || {
+        worker.install_resource(move || {
+            entered_tx.send(()).expect("gate entry signal");
+            let _ = release_rx.recv();
+            Ok(Box::new(0u32) as WorkerResource)
+        })
+    });
+    entered_rx
+        .recv()
+        .expect("worker is parked inside the gate installer");
+    // Queue a teardown behind the parked worker: dropping the subscription
+    // posts the RemoveResource — the worker cannot process it (and the token
+    // cannot drop, so nothing is recorded yet) until the gate is released.
+    drop(subscription);
+    assert_eq!(teardown_log.lock().unwrap().len(), 0);
+
+    // Release the gate while shutdown blocks on the join, then run the
+    // explicit sequence: worker stop/join FIRST, then the owner-scoped drain.
+    let releaser = thread::spawn(move || {
+        go_rx.recv().expect("go signal");
+        let _ = release_tx.send(());
+    });
+    go_tx.send(()).expect("signal releaser");
+    adapter.shutdown();
+    gate.join()
+        .expect("gate installer thread")
+        .expect("gate adopted after the join drained the queue");
+    releaser.join().expect("releaser thread");
+
+    // The recorded requests are replayed inline (the recording executor
+    // models an off-main drop posting to main): both adopted tokens posted
+    // one Arm request each while queued, and shutdown posted the owner
+    // drain. The duplicate arm requests after the owner drain must be
+    // harmless no-ops.
+    let requests = teardown_log.lock().unwrap().clone();
+    assert_eq!(
+        requests
+            .iter()
+            .filter(|request| matches!(request, CarbonTeardown::Arm { .. }))
+            .count(),
+        2,
+        "each adopted token posts exactly one ID-scoped request"
+    );
+    assert!(
+        requests
+            .iter()
+            .any(|request| matches!(request, CarbonTeardown::OwnerAll { .. })),
+        "shutdown posts the owner-scoped drain through the executor"
+    );
+    for request in &requests {
+        apply_carbon_teardown(*request);
+    }
+    assert!(
+        state.lock().unwrap().registered_ids().is_empty(),
+        "queued operations + shutdown end with no owned registrations"
+    );
+    assert_eq!(
+        state.lock().unwrap().unregister_count(),
+        4,
+        "each ref unregistered exactly once across queued teardown + owner drain"
+    );
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+}
+
+#[test]
+fn g7_delivery_guard_drops_callbacks_enqueued_before_cancellation() {
+    // Blocked-dispatcher -> enqueue -> cancel/drop -> unblock, driven
+    // deterministically on this thread (no dispatcher thread, no sleeps).
+    let run_scenario = |cancel_before_delivery: bool| -> Vec<TapControl> {
+        let delivered = Arc::new(Mutex::new(Vec::new()));
+        let active = Arc::new(AtomicBool::new(true));
+        let (release_tx, release_rx) = mpsc::channel::<()>();
+        let release = Arc::new(Mutex::new(release_rx));
+        let release_for_dispatch = Arc::clone(&release);
+        let dispatch: ObserverDispatch = Arc::new(move |_event: ObserverEvent| {
+            // Blocks the dispatcher until the test unblocks it. The receiver
+            // lives behind a Mutex because `ObserverDispatch` is `Send + Sync`
+            // and a bare `mpsc::Receiver` is not.
+            let _ = release_for_dispatch.lock().unwrap().recv();
+        });
+        let delivered_for_callback = Arc::clone(&delivered);
+        let callback: AcceptCallback = Arc::new(move |control| {
+            delivered_for_callback.lock().unwrap().push(control);
+        });
+        let (tx, rx) = mpsc::channel::<CallbackMessage>();
+        tx.send(CallbackMessage::Dispatch {
+            dispatch,
+            event: ObserverEvent {
+                pid: 1,
+                notification: ObserverNotification::CaretChanged,
+                identity: AxElementIdentity::pointer_only("ax:g7-delivery-guard"),
+                rect: None,
+            },
+        })
+        .expect("queue the blocking dispatch first");
+        tx.send(CallbackMessage::Accept {
+            callback,
+            control: TapControl::Accept(AcceptAction::Full),
+            active: Arc::clone(&active),
+        })
+        .expect("enqueue the accept behind the blocked dispatcher");
+        tx.send(CallbackMessage::Stop).expect("queue stop");
+
+        // Cancel AFTER enqueue, BEFORE delivery.
+        if cancel_before_delivery {
+            active.store(false, Ordering::Release);
+        }
+        drop(release_tx); // unblock the dispatch; the queue drains in order
+        crate::ax_worker::run_callback_dispatcher(rx);
+        Arc::try_unwrap(delivered)
+            .ok()
+            .unwrap()
+            .into_inner()
+            .unwrap()
+    };
+
+    let delivered = run_scenario(true);
+    assert!(
+        delivered.is_empty(),
+        "a callback enqueued before cancellation must be dropped at DELIVERY"
+    );
+
+    let delivered = run_scenario(false);
+    assert_eq!(
+        delivered,
+        [TapControl::Accept(AcceptAction::Full)],
+        "the same message is delivered while the subscription is active"
+    );
+}
+
+#[test]
+fn g7_real_subscription_cancellation_shares_the_delivery_guard_flag() {
+    // The synthetic test above pins the dispatcher guard itself; this one
+    // proves the REAL subscription cancel/drop flips the SAME `active` flag
+    // the production handler stamps into each queued Accept, and that the
+    // delivery site therefore drops it. Deterministic choreography — blocked
+    // dispatcher → enqueue → cancel → unblock → join — no sleeps.
+    let (_guard, _state) = install_test_carbon_registry(true);
+    // The recording executor only captures teardown requests; this test
+    // asserts delivery, not registry state, so nothing is replayed.
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let delivered: Arc<Mutex<Vec<TapControl>>> = Arc::new(Mutex::new(Vec::new()));
+    let (delivered_tx, delivered_rx) = mpsc::channel::<TapControl>();
+    let (release_tx, release_rx) = mpsc::channel::<()>();
+    let first_delivery_park = Arc::new(Mutex::new(Some(release_rx)));
+    let delivered_for_callback = Arc::clone(&delivered);
+    let park_for_callback = Arc::clone(&first_delivery_park);
+    let callback: AcceptCallback = Arc::new(move |control| {
+        delivered_for_callback.lock().unwrap().push(control);
+        let _ = delivered_tx.send(control);
+        // Park the REAL dispatcher thread inside the first delivery so the
+        // next Accept is provably queued, never delivered early.
+        if let Some(release_rx) = park_for_callback.lock().unwrap().take() {
+            let _ = release_rx.recv();
+        }
+    });
+    let subscription = adapter.subscribe_accept(callback).expect("subscribe");
+    // The slot serves the REAL production handler — the one carrying the
+    // subscription's `active` flag and the real dispatcher channel.
+    let handler = SHORTCUT_HANDLER_SLOT
+        .current()
+        .expect("subscribe arms the shortcut delivery slot");
+
+    // POSITIVE CONTROL: the same message shape is delivered while active.
+    let _ = handler(shortcut_tap_event(ShortcutAction::ToggleApp));
+    assert_eq!(
+        delivered_rx
+            .recv()
+            .expect("positive control delivered while active"),
+        TapControl::Shortcut(ShortcutAction::ToggleApp)
+    );
+
+    // Queue a second Accept behind the parked dispatcher — still active.
+    let _ = handler(shortcut_tap_event(ShortcutAction::ToggleApp));
+
+    // Cancel the REAL subscription: its Drop flips the same flag the delivery
+    // guard rechecks.
+    drop(subscription);
+
+    // Unblock the dispatcher; the queued Accept must be dropped at DELIVERY.
+    release_tx
+        .send(())
+        .expect("unblock the parked dispatcher callback");
+
+    // Deterministic end: shutdown + drop stop and JOIN the callback
+    // dispatcher, so every delivery decision is final before the assert.
+    drop(release_tx);
+    adapter.shutdown();
+    drop(adapter);
+
+    assert_eq!(
+        *delivered.lock().unwrap(),
+        [TapControl::Shortcut(ShortcutAction::ToggleApp)],
+        "the accept queued before cancel is dropped at delivery; only the \
+         active control was delivered"
+    );
+    // Fixture hygiene: delivery, not registry state, is this test's subject;
+    // drain any recorded requests and clear the REAL slots before the guard
+    // reset (which would otherwise report the armed slots as leaks).
+    replay_recorded_teardowns(&teardown_log);
+    CARBON_HANDLER_SLOT.reset_for_test();
+    SHORTCUT_HANDLER_SLOT.reset_for_test();
+    CARBON_DEFERRED_HANDLERS.with(|cell| cell.borrow_mut().clear());
+}
+
+#[test]
+fn g7_configured_shortcut_fixture_registers_ids_5_to_8() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let _shortcuts = ShortcutBindingsGuard::set(
+        Some("cmd+90"),
+        Some("cmd+91"),
+        Some("cmd+92"),
+        Some("cmd+93"),
+    );
+    let adapter = worker_arm_test_adapter(inline_teardown_executor());
+    let _subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        [5, 6, 7, 8],
+        "the configured force-activate/toggle-app/toggle-global/grammar-check chords register as ids 5-8"
+    );
+}
+
+#[test]
+fn g7_grammar_accept_fixture_registers_id_9_for_correction_arms() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let _keymap = AcceptKeymapGuard::lock();
+    set_accept_keymap_from_config_with_mods(None, None, Some((96, CARBON_CONTROL_KEY)))
+        .expect("valid grammar-accept binding");
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_accept_action(Some(AcceptAction::Correction))
+        .expect("arm the correction consumer");
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        [9],
+        "the correction arm registers exactly the grammar-accept hotkey id 9"
+    );
+    subscription
+        .set_accept_action(None)
+        .expect("disarm the correction consumer");
+    // FIFO-ordered worker barrier + deterministic replay: the queued
+    // correction-arm teardown is processed by the worker, then its recorded
+    // request is applied on this simulated-main thread before the assertion.
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    // Deterministic ending: release, replay, shutdown, replay — then prove
+    // no leaks (the empty-plan arm still armed REAL slots that must clear).
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_default_fixture_arms_empty_plans_without_registrations() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let _keymap = AcceptKeymapGuard::lock();
+    set_accept_keymap_from_config_with_mods(None, None, None).expect("default keymap");
+    let _shortcuts = ShortcutBindingsGuard::set(None, None, None, None);
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+
+    // Empty shortcut plan: the shared handler still installs and the slot
+    // still arms — distinguish registrations from other operations.
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe arms the empty shortcut plan");
+    {
+        let state = state.lock().unwrap();
+        assert_eq!(state.handler_install_attempts, 1);
+        assert!(state.live.is_empty(), "no registrations for an empty plan");
+    }
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_some());
+
+    // Empty correction plan (no grammar binding): same — handler + slot, zero keys.
+    subscription
+        .set_accept_action(Some(AcceptAction::Correction))
+        .expect("arm the zero-key correction plan");
+    {
+        let state = state.lock().unwrap();
+        assert!(state.live.is_empty());
+    }
+    assert!(CARBON_HANDLER_SLOT.current().is_some());
+    subscription
+        .set_accept_action(None)
+        .expect("disarm the zero-key correction plan");
+    // FIFO-ordered worker barrier + deterministic replay: the queued zero-key
+    // arm teardown is processed by the worker, then its recorded request is
+    // applied on this simulated-main thread before the slot assertion.
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    // Deterministic ending: release, replay, shutdown, replay — then prove
+    // no leaks before the guard resets.
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_consumer_plan_respects_tab_suppression() {
+    let _suppressed = TabHotkeySuppressedGuard::lock();
+    set_tab_hotkey_suppressed(false);
+    let ids = |plan: &ArmPlan| -> Vec<u32> {
+        let mut ids: Vec<u32> = plan.bindings.iter().map(|binding| binding.id).collect();
+        ids.sort_unstable();
+        ids
+    };
+    assert_eq!(
+        ids(&consumer_arm_plan(AcceptTapKind::Consumer)),
+        [1, 2, 3, 4],
+        "unsuppressed plan carries the four accept ids"
+    );
+
+    set_tab_hotkey_suppressed(true);
+    let plan = consumer_arm_plan(AcceptTapKind::Consumer);
+    assert_eq!(
+        ids(&plan),
+        [2, 3, 4],
+        "Tab suppression drops the literal-Tab binding from the hoisted plan"
+    );
+    assert!(
+        plan.bindings
+            .iter()
+            .all(|binding| binding.keycode != KEYCODE_TAB),
+        "no binding carries the bare Tab chord while suppressed"
+    );
+}
+
+// ===========================================================================
+// G7 residual regressions: closed-installer rejection, stale-slot-on-failed
+// replacement, controller-level reentrant destruction, cross-thread deferral
+// isolation, and the platform-error mapping sentinel.
+// ===========================================================================
+
+#[test]
+fn g7_retained_installer_after_shutdown_is_rejected_without_effects() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let _shortcuts = ShortcutBindingsGuard::set(
+        Some("cmd+90"),
+        Some("cmd+91"),
+        Some("cmd+92"),
+        Some("cmd+93"),
+    );
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter_a = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    // Retain the RAW production installer directly: after shutdown the
+    // controller deactivates (set_accept_action returns Ok early), so only
+    // the installer closure itself reaches the closed flag.
+    let retained_installer = adapter_a.accept_tap_installer();
+    adapter_a.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(
+        state.lock().unwrap().registered_ids().is_empty(),
+        "A drained at shutdown"
+    );
+
+    // Adapter B (a fresh owner) arms AFTER A's shutdown.
+    let mut adapter_b = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let subscription_b = adapter_b
+        .subscribe_accept(noop_accept_callback())
+        .expect("B subscribes");
+    subscription_b
+        .set_suggestion_visible(true)
+        .expect("B arms its consumer");
+    let live_before = state.lock().unwrap().registered_ids();
+    let ops_before = state.lock().unwrap().log.len();
+    let b_consumer_slot = CARBON_REGISTRY
+        .with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .expect("test registry")
+                .armed_arm(Family::Consumer)
+        })
+        .expect("B's consumer slot identity");
+    assert!(!live_before.is_empty());
+
+    // A's retained RAW installer reaches the CLOSED flag: typed rejection
+    // BEFORE any native, registry, or slot effect — B stays untouched (the
+    // registry's cross-owner family drain must never run for a rejected
+    // install, or its rollback would destroy B's keys).
+    assert_g7_rejected(
+        retained_installer(
+            AcceptTapKind::Consumer,
+            Arc::new(|_event: AcceptTapEvent| AcceptTapDecision::Keep),
+        ),
+        &PlatformError::CannotComplete {
+            reason: "adapter shut down; Carbon registration rejected".into(),
+        },
+    );
+    assert_eq!(
+        state.lock().unwrap().registered_ids(),
+        live_before,
+        "B is unchanged by A's rejected retained install"
+    );
+    assert_eq!(
+        state.lock().unwrap().log.len(),
+        ops_before,
+        "the rejected install performed zero native operations (no churn)"
+    );
+    let b_consumer_slot_after = CARBON_REGISTRY
+        .with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .expect("test registry")
+                .armed_arm(Family::Consumer)
+        })
+        .expect("B's consumer slot identity after rejection");
+    assert_eq!(
+        b_consumer_slot, b_consumer_slot_after,
+        "B's slot identity (owner, arm) is unchanged — no unregister/re-register churn"
+    );
+
+    // Cleanup B, then the retained handle (its drop posts to A's stopped
+    // worker — the failed send is ignored by design).
+    subscription_b
+        .set_suggestion_visible(false)
+        .expect("B disarms");
+    drop(subscription_b);
+    worker_fifo_barrier(&adapter_b);
+    replay_recorded_teardowns(&teardown_log);
+    adapter_b.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    drop(retained_installer);
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_failed_consumer_replacement_leaves_no_stale_armed_slot() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_suggestion_visible(true)
+        .expect("first consumer arm");
+    assert!(
+        CARBON_HANDLER_SLOT.current().is_some(),
+        "the first arm publishes the delivery slot"
+    );
+
+    // Fail the SECOND register of the replacement: fail_nth_register is an
+    // ABSOLUTE attempt number and the first arm already consumed four calls,
+    // so target register_calls + 2. The core drains the predecessor
+    // (NativeSlotHooks clears the REAL slot BEFORE the first new register),
+    // rolls back the partial new arm, and returns Err — the slot must end
+    // empty, never re-published by the failed arm.
+    let fail_nth = state.lock().unwrap().register_calls + 2;
+    state.lock().unwrap().fail_nth_register = Some((fail_nth, -3));
+    let err = subscription
+        .rearm_accept_tap()
+        .expect_err("replacement fails at the 2nd register");
+    match &err {
+        PlatformError::CannotComplete { reason } => {
+            assert!(reason.contains("status -3"), "{reason}");
+        }
+        other => panic!("expected CannotComplete, got {other:?}"),
+    }
+    assert!(
+        CARBON_HANDLER_SLOT.current().is_none(),
+        "no stale armed handler after a failed replacement"
+    );
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert_eq!(
+        carbon_deferred_len(),
+        0,
+        "the transaction exit flushed the retired handler"
+    );
+
+    // Deterministic ending.
+    state.lock().unwrap().fail_nth_register = None;
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_retired_handler_reenters_the_controller_after_its_lock_is_released() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    // Grammar binding: the reentrant Correction arm must actually register
+    // id 9, so the correction plan must be non-empty.
+    let _keymap = AcceptKeymapGuard::lock();
+    set_accept_keymap_from_config_with_mods(None, None, Some((96, CARBON_CONTROL_KEY)))
+        .expect("valid grammar-accept binding");
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let mut adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let subscription = adapter
+        .subscribe_accept(noop_accept_callback())
+        .expect("subscribe");
+    subscription
+        .set_suggestion_visible(true)
+        .expect("arm the consumer");
+
+    // Capture the live controller and its current consumer arm id.
+    let controller: Arc<AcceptTapController> = {
+        let map = adapter.subscriptions.lock().unwrap();
+        map.values()
+            .find_map(|entry| match entry {
+                SubscriptionEntry::Accept { _controller, .. } => Some(Arc::clone(_controller)),
+                _ => None,
+            })
+            .expect("accept subscription controller")
+    };
+    let (_, arm) = CARBON_REGISTRY
+        .with(|cell| {
+            cell.borrow()
+                .as_ref()
+                .expect("test registry")
+                .armed_arm(Family::Consumer)
+        })
+        .expect("armed consumer arm");
+
+    // LAST-OWNED probe: the slot holds the only strong Arc of this handler,
+    // so when the replacement's drain disarms it, ProbeDropper::drop runs.
+    struct ProbeDropper {
+        controller: Arc<AcceptTapController>,
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+    impl Drop for ProbeDropper {
+        fn drop(&mut self) {
+            self.events.lock().unwrap().push("probe-drop");
+            // Non-blocking probe FIRST: if the controller lock were still
+            // held (regression: flush inside the outer transaction while
+            // consumer_tap is borrowed), record and RETURN — never deadlock
+            // the native test. With the depth-counted guards the flush runs
+            // at the CONTROLLER transaction exit, after the lock released.
+            let lock_free = self.controller.consumer_tap.try_lock().is_ok();
+            if !lock_free {
+                self.events.lock().unwrap().push("lock-busy-skip");
+                return;
+            }
+            self.events.lock().unwrap().push("probe-lock-free");
+            // Force ACTUAL registry reentry through the controller: drop then
+            // re-arm as the Correction consumer (id 9). Both Results are
+            // asserted (the test fails on Err), never ignored.
+            match self.controller.set_accept_action(None) {
+                Ok(()) => self.events.lock().unwrap().push("reenter-none-ok"),
+                Err(_) => self.events.lock().unwrap().push("reenter-none-err"),
+            }
+            match self
+                .controller
+                .set_accept_action(Some(AcceptAction::Correction))
+            {
+                Ok(()) => self.events.lock().unwrap().push("reenter-ok"),
+                Err(_) => self.events.lock().unwrap().push("reenter-err"),
+            }
+        }
+    }
+    let events: Arc<Mutex<Vec<&'static str>>> = Arc::new(Mutex::new(Vec::new()));
+    // The probe closure owns the dropper (last-owned via the slot): when the
+    // replacement's drain disarms the slot, the handler chain drops and
+    // ProbeDropper::drop runs.
+    let probe: Arc<AcceptTapHandler> = {
+        let probe_state = ProbeDropper {
+            controller,
+            events: Arc::clone(&events),
+        };
+        Arc::new(move |_event: AcceptTapEvent| {
+            let _ = &probe_state;
+            AcceptTapDecision::Keep
+        })
+    };
+    CARBON_HANDLER_SLOT.arm(arm.0, probe);
+    events.lock().unwrap().push("outer-start");
+    subscription
+        .rearm_accept_tap()
+        .expect("outer rearm replaces the armed consumer");
+    events.lock().unwrap().push("outer-returned");
+
+    // Ordering: the probe ran at the controller transaction exit — after the
+    // consumer_tap lock released (try_lock probe passed) and after the outer
+    // rearm registered its replacement — and the reentrant controller calls
+    // completed.
+    let ev = events.lock().unwrap().clone();
+    let pos = |name| ev.iter().position(|e| *e == name).expect(name);
+    assert!(pos("outer-start") < pos("outer-returned"));
+    assert!(ev.contains(&"probe-drop"), "the retired probe dropped");
+    assert!(
+        ev.contains(&"probe-lock-free"),
+        "flush runs after the controller lock is released (events: {ev:?})"
+    );
+    assert!(
+        ev.contains(&"reenter-ok"),
+        "reentrant controller use succeeded (events: {ev:?})"
+    );
+    assert!(
+        ev.contains(&"reenter-none-ok"),
+        "reentrant disarm succeeded (events: {ev:?})"
+    );
+    assert!(
+        !ev.contains(&"reenter-err"),
+        "reentrant calls must not fail: {ev:?}"
+    );
+    assert!(
+        pos("probe-lock-free") < pos("outer-returned"),
+        "the flush is part of the outer transaction's exit, not later"
+    );
+    // The reentrant Correction arm (id 9) is live; the rearm's Full arm was
+    // dropped by the reentrant None and retires via the recording executor.
+    let live = state.lock().unwrap().registered_ids();
+    assert!(
+        live.contains(&9),
+        "reentrant correction arm registered: {live:?}"
+    );
+
+    // Deterministic ending (the reentrant None's retire and everything after
+    // is drained by shutdown's OwnerAll + replays).
+    drop(subscription);
+    worker_fifo_barrier(&adapter);
+    replay_recorded_teardowns(&teardown_log);
+    adapter.shutdown();
+    replay_recorded_teardowns(&teardown_log);
+    assert!(state.lock().unwrap().registered_ids().is_empty());
+    assert!(CARBON_HANDLER_SLOT.current().is_none());
+    assert!(SHORTCUT_HANDLER_SLOT.current().is_none());
+    assert_eq!(carbon_deferred_len(), 0);
+}
+
+#[test]
+fn g7_off_main_rejection_never_drains_main_deferred_handlers() {
+    let (_guard, _state) = install_test_carbon_registry(true);
+    // A retired callback pending in an EXPLICIT outer transaction: while the
+    // outer guard holds it, an off-main typed rejection must drain the
+    // OFF-MAIN thread's (empty) TLS — never the main thread's pending
+    // deferred queue (pins the fixed cross-thread deferred-queue bug).
+    struct Sentinel {
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for Sentinel {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    let sentinel_dropped = Arc::new(AtomicBool::new(false));
+    let sentinel_state = Arc::new(Sentinel {
+        dropped: Arc::clone(&sentinel_dropped),
+    });
+    let sentinel: Arc<AcceptTapHandler> = Arc::new(move |_event: AcceptTapEvent| {
+        let _ = &sentinel_state;
+        AcceptTapDecision::Keep
+    });
+
+    // A REAL retained installer from a live worker-arm adapter.
+    let teardown_log = Arc::new(Mutex::new(Vec::new()));
+    let adapter = worker_arm_test_adapter(recording_teardown_executor(&teardown_log));
+    let retained_installer = adapter.accept_tap_installer();
+
+    let outer = CarbonTransactionGuard::enter();
+    defer_retired_handler(sentinel);
+    assert!(
+        !sentinel_dropped.load(Ordering::SeqCst),
+        "the sentinel stays pending while the outer transaction is held"
+    );
+
+    // Off-main invocation of the retained installer: typed rejection, and the
+    // MAIN sentinel must survive until the outer transaction exits.
+    let dropped_for_thread = Arc::clone(&sentinel_dropped);
+    let (err_tx, err_rx) = mpsc::channel::<String>();
+    thread::spawn(move || {
+        let result = retained_installer(
+            AcceptTapKind::Consumer,
+            Arc::new(|_event: AcceptTapEvent| AcceptTapDecision::Keep),
+        );
+        let described = match &result {
+            Ok(_resource) => "unexpectedly ok".to_string(),
+            Err(PlatformError::CannotComplete { reason }) => format!("rejected: {reason}"),
+            Err(other) => format!("other error: {other:?}"),
+        };
+        let _ = err_tx.send(described);
+        let _ = dropped_for_thread; // main TLS is invisible from here
+    })
+    .join()
+    .expect("off-main probe thread");
+    let ev = err_rx.recv().expect("off-main rejection status");
+    assert!(
+        ev.starts_with("rejected:") && ev.contains("main thread"),
+        "off-main install must be typed-rejected: {ev}"
+    );
+    assert!(
+        !sentinel_dropped.load(Ordering::SeqCst),
+        "the off-main rejection must not drain main's deferred handlers"
+    );
+
+    // Only the outer transaction's exit flushes the sentinel.
+    drop(outer);
+    assert!(
+        sentinel_dropped.load(Ordering::SeqCst),
+        "the outer exit flushes the sentinel exactly at exit"
+    );
+    assert_eq!(carbon_deferred_len(), 0);
+    drop(adapter);
+}
+
+#[test]
+fn g7_nested_adoption_rollback_defers_until_the_outer_transaction_exits() {
+    let (_guard, state) = install_test_carbon_registry(true);
+    // Live consumer arm whose REAL slot holds a last-owned probe handler.
+    let probe_dropped = Arc::new(AtomicBool::new(false));
+    struct Probe {
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for Probe {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    let probe_state = Arc::new(Probe {
+        dropped: Arc::clone(&probe_dropped),
+    });
+    let probe: Arc<AcceptTapHandler> = Arc::new(move |_event: AcceptTapEvent| {
+        let _ = &probe_state;
+        AcceptTapDecision::Keep
+    });
+    let owner = allocate_owner_id();
+    let arm = try_main_carbon_registry(|registry| {
+        registry.install_consumer_arm(owner, consumer_arm_plan(AcceptTapKind::Consumer))
+    })
+    .expect("native apply")
+    .arm;
+    CARBON_HANDLER_SLOT.arm(arm.0, probe);
+
+    // Explicit OUTER transaction holding a sentinel deferred handler.
+    struct Sentinel {
+        dropped: Arc<AtomicBool>,
+    }
+    impl Drop for Sentinel {
+        fn drop(&mut self) {
+            self.dropped.store(true, Ordering::SeqCst);
+        }
+    }
+    let sentinel_dropped = Arc::new(AtomicBool::new(false));
+    let sentinel_state = Arc::new(Sentinel {
+        dropped: Arc::clone(&sentinel_dropped),
+    });
+    let sentinel: Arc<AcceptTapHandler> = Arc::new(move |_event: AcceptTapEvent| {
+        let _ = &sentinel_state;
+        AcceptTapDecision::Keep
+    });
+    let outer = CarbonTransactionGuard::enter();
+    defer_retired_handler(sentinel);
+
+    // INNER: adoption send failure drops the rollback guard, whose inline
+    // teardown retires the arm — the hook defers the probe handler. The
+    // inner transaction must NOT flush (the sentinel and the probe both stay
+    // pending until the OUTER exit).
+    let (tx, rx) = mpsc::channel::<crate::ax_worker::Message>();
+    drop(rx); // send failure: no receiver
+    let handle = AxWorkerHandle::detached_for_test(tx);
+    let mut guard = AdoptionRollbackGuard {
+        request: CarbonTeardown::Arm {
+            owner,
+            arm,
+            family: Family::Consumer,
+        },
+        armed: true,
+    };
+    let token = CarbonArmToken {
+        owner,
+        arm,
+        family: Family::Consumer,
+        teardown: inline_teardown_executor(),
+    };
+    let result = adopt_carbon_arm_token(&handle, token, &mut guard);
+    assert_g7_rejected(
+        result,
+        &PlatformError::CannotComplete {
+            reason: "AX worker is not running".into(),
+        },
+    );
+    drop(guard); // inner rollback retires the arm inline; the probe is deferred
+    assert!(
+        !probe_dropped.load(Ordering::SeqCst),
+        "the inner rollback must not flush the outer transaction's deferrals"
+    );
+    assert!(
+        !sentinel_dropped.load(Ordering::SeqCst),
+        "the sentinel stays pending through the inner rollback"
+    );
+
+    // Outer exit: BOTH deferred handlers drop, exactly once each.
+    drop(outer);
+    assert!(
+        probe_dropped.load(Ordering::SeqCst),
+        "probe flushed at outer exit"
+    );
+    assert!(
+        sentinel_dropped.load(Ordering::SeqCst),
+        "sentinel flushed at outer exit"
+    );
+    assert!(
+        state.lock().unwrap().registered_ids().is_empty(),
+        "the rolled-back arm left no registrations"
+    );
+    assert_eq!(state.lock().unwrap().unregister_count(), 4);
+    assert_eq!(carbon_deferred_len(), 0);
+}
+#[test]
+fn g7_error_mapping_distinguishes_invalid_keycode_from_status_sentinel() {
+    // Out-of-range keycode + reserved status -1 -> the legacy invalid-keycode
+    // reason.
+    let invalid = registry_error_to_platform_error(RegistryError::Register {
+        family: Family::Consumer,
+        binding: KeyBinding {
+            id: 1,
+            keycode: i64::from(u32::MAX) + 1,
+            mask: 0,
+        },
+        status: -1,
+    });
+    match &invalid {
+        PlatformError::CannotComplete { reason } => {
+            assert!(
+                reason.contains("invalid Carbon accept-key keycode"),
+                "{reason}"
+            );
+        }
+        other => panic!("expected CannotComplete, got {other:?}"),
+    }
+    // VALID keycode + status -1 -> the generic native-status reason (the
+    // sentinel must not swallow real native failures on valid keys).
+    let valid = registry_error_to_platform_error(RegistryError::Register {
+        family: Family::Consumer,
+        binding: KeyBinding {
+            id: 1,
+            keycode: 48,
+            mask: 0,
+        },
+        status: -1,
+    });
+    match &valid {
+        PlatformError::CannotComplete { reason } => {
+            assert!(!reason.contains("invalid"), "{reason}");
+            assert!(reason.contains("status -1"), "{reason}");
+        }
+        other => panic!("expected CannotComplete, got {other:?}"),
+    }
 }

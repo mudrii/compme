@@ -1,0 +1,14 @@
+Codex isolated transaction-helper probe, 2026-09-29
+Verbatim TLS/RAII helper extracted from lib.rs; AcceptTapHandler type stubbed as Fn() + Send + Sync. Does NOT execute Carbon or native integration.
+Helper SHA256: fd095880210571665a2dca9c5d6d8c6a428610f58c51157fc4000faca128332c
+Command: /home/mudrii/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --edition=2021 --test /tmp/compme-g7-transaction-probe/probe.rs -o /tmp/compme-g7-transaction-probe/probe
+
+running 5 tests
+test destructor_reentry_can_defer_and_flush_another_batch ... ok
+test nested_guards_defer_until_outer_exit ... ok
+test outer_guard_releases_callbacks_after_caller_lock ... ok
+test panic_unwind_flushes_deferred_callbacks ... ok
+test another_thread_cannot_flush_the_owners_deferred_callbacks ... ok
+
+test result: ok. 5 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

@@ -1046,6 +1046,31 @@ when off-main, that register emits `unregister(old) → register(new)` in order,
 that a stale unregister after a newer register is a no-op, and that dropping a
 token emits exactly one unregister for its own id.
 
+### 22.5 2026-09-29 amendment — owner-authorized local implementation (Linux), pending native validation
+
+On 2026-09-29 the owner explicitly authorized implementing G7 locally on
+Linux before the physical-key baseline, superseding the §22.3/§22.4 hold **for
+local implementation only**; the authorization does not supply native
+evidence and does not authorize release. Technical handoff:
+`docs/superpowers/plans/2026-09-29-g7-linux-implementation.md`.
+
+Contract refinement of §22.2 (reviewed): registration is **main-thread-only
+and synchronous** — an off-main attempt returns a typed, side-effect-free
+`PlatformError::CannotComplete` instead of §22.2's queued `exec_async` install
+(a queued request cannot satisfy the synchronous `Result` API). Teardown stays
+async off-main: ID-scoped (owner, arm, family) requests; no worker→main
+synchronous wait. The replace/rollback/unregister algorithm lives in a
+host-neutral production core (`crates/platform_macos/src/carbon_registry.rs`)
+tested on Linux; raw refs stay in main-thread-only storage; only plain-data
+IDs cross threads.
+
+**The §22.4a prerequisite is unchanged and remains unsatisfied**: the
+physical baseline (`always-on-hotkeys-physical-look` plus
+accept/dismiss/cycle/rearm against the current build) and all native gates
+(Full Local Gate, serialized native tests, native CI on the exact candidate,
+physical before/after) are still owed before any native correctness claim or
+release step. The local implementation is unvalidated until then.
+
 ## 23. UIA apartment decision — MTA on a window-less worker (2026-09-17, before coding plan item 8)
 
 The two specs disagreed and both demanded a recorded decision before code:

@@ -57,7 +57,7 @@ This design wires those proven parts into a single `compme` binary and adds a de
   3. call `engine.on_tick(now_ms)`,
   4. push any collected `CompletionRequest` to the inference **request slot** (latest-wins).
 - **Inference thread**: `warm_up()` once → loop `recv → complete → send {request, text}` back.
-- The adapter's own AX work happens on its `AxWorker`; the Engine touching the adapter from main only briefly blocks main.
+- The adapter's own AX work happens on its `AxWorker`; the Engine touching the adapter from main only briefly blocks main. *(2026-09-29 G7 amendment: Carbon hotkey registration runs on the main thread only and synchronously — an off-main registration attempt is rejected with no side effects; unregistration runs inline on main when invoked there and otherwise posts ID-scoped async cleanup. Neither runs on the `AxWorker`. See `Qfd.md` §22.5.)*
 
 ### Decision a: signals via `libc`
 SIGINT/SIGTERM handled with a `libc::signal` handler that only sets an `AtomicBool` (async-signal-safe `Relaxed` store). No `signal-hook` dependency.

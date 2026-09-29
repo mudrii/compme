@@ -613,16 +613,6 @@ fn feature_policy<'a>(
 }
 
 #[cfg(test)]
-fn emoji_offer(left: &str, cfg: &Option<EmojiPrefs>) -> Option<(String, usize)> {
-    feature_policy::emoji_offer(left, cfg.as_ref())
-}
-
-#[cfg(test)]
-fn trailing_word(left: &str) -> Option<&str> {
-    feature_policy::trailing_word(left)
-}
-
-#[cfg(test)]
 fn replacement_offer(
     left: &str,
     config: &Config,
@@ -6997,7 +6987,13 @@ pub fn run() -> Result<(), String> {
     drop(caret_sub);
     drop(focus_sub);
     drop(engine); // drops overlay + accept subscription + the engine's adapter handle
-    drop(adapter); // last Arc ref → AX worker thread stops
+                  // G7: `drop(adapter)` is the main-thread shutdown edge — this is the last
+                  // strong Arc reference (the engine's handle went with `drop(engine)`), so
+                  // `MacosPlatformAdapter::Drop` runs its explicit ordered sequence here on
+                  // main: deactivate subscriptions → stop/join the AX worker → drain this
+                  // adapter's Carbon registry entries INLINE (the main-thread teardown
+                  // executor applies inline; no queue pumping is needed at this point).
+    drop(adapter);
     let inference_shutdown = inference.shutdown();
     if inference_shutdown.timed_out() {
         // Do not log here: stderr locking is itself unbounded. Return through

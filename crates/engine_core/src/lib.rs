@@ -1449,14 +1449,6 @@ mod tests {
     }
 
     #[test]
-    fn no_request_when_context_below_min() {
-        // min_context_chars=3; "hi " trims to "hi" (2 chars) < 3 → never arms.
-        let mut machine = machine().with_trigger_gates(3, false);
-        machine.on_event(text_changed("hi ", 3, 1000));
-        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
-    }
-
-    #[test]
     fn backwards_clock_tick_does_not_fire_or_panic() {
         // The debounce arms at the TextChanged now_ms and Tick compares against
         // it with `now_ms.saturating_sub(since)`. A monotonic clock that goes
@@ -1586,10 +1578,16 @@ mod tests {
 
     #[test]
     fn trailing_whitespace_does_not_count_toward_min_context() {
-        // "ab  " has 4 left-context chars but trims to "ab" (2) < 3 → suppress.
-        let mut machine = machine().with_trigger_gates(3, false);
-        machine.on_event(text_changed("ab  ", 4, 1000));
-        assert_eq!(machine.on_event(Event::Tick { now_ms: 2000 }), vec![]);
+        // Both one and multiple trailing spaces leave only two substantive chars.
+        for text in ["hi ", "ab  "] {
+            let mut machine = machine().with_trigger_gates(3, false);
+            machine.on_event(text_changed(text, text.chars().count(), 1000));
+            assert_eq!(
+                machine.on_event(Event::Tick { now_ms: 2000 }),
+                vec![],
+                "{text:?}"
+            );
+        }
     }
 
     #[test]

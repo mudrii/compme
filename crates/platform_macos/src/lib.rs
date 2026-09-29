@@ -1,6 +1,7 @@
 //! macOS platform adapter scaffolding.
 
 use std::any::Any;
+use std::cell::{Cell, RefCell};
 use std::collections::{HashMap, VecDeque};
 use std::ffi::{c_uchar, c_void};
 use std::ptr;
@@ -53,12 +54,16 @@ use platform::{
 };
 
 use ax_worker::{
-    start_dynamic_observer_binding, CallbackMessage, DynamicObserverBinding,
+    start_dynamic_observer_binding, AxWorkerHandle, CallbackMessage, DynamicObserverBinding,
     DynamicObserverBindingConfig, ObserverBindingConfig, ObserverDispatch, ObserverEvent,
     WorkerResource,
 };
+use carbon_registry::{
+    allocate_owner_id, ArmId, ArmPlan, Family, KeyBinding, NativeOps, OwnerId, RegistryError,
+};
 
 mod ax_worker;
+mod carbon_registry;
 pub mod keychain;
 mod login_item;
 mod settings_window;
@@ -253,16 +258,86 @@ pub struct MacosPlatformAdapter {
     accept_tap_installer: AdapterAcceptTapInstaller,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
     bundle_id_for_pid: Arc<BundleIdForPidProvider>,
+    /// G7: this adapter instance's Carbon ownership id. Every arm it installs
+    /// is registered under (owner, arm, family), so this adapter's shutdown —
+    /// and any stale teardown of its arms — can never clear work owned by a
+    /// newer adapter. Minted from the registry core's process-global
+    /// monotonic allocator.
+    carbon_owner: carbon_registry::OwnerId,
+    /// G7 P1: set at the START of `shutdown()`; a retained installer handle
+    /// from this adapter is rejected before any native/registry/slot work.
+    /// Per-adapter (no global shutdown state) — a later adapter mints a fresh
+    /// owner and initializes cleanly.
+    carbon_closed: Arc<AtomicBool>,
+    /// G7: the teardown executor leaf (production: inline-apply on main,
+    /// post-to-main-queue off main; injected in tests for deterministic
+    /// draining). Shared with every `CarbonArmToken` this adapter adopts.
+    carbon_teardown: MainTeardownExecutor,
 }
 
 impl Drop for MacosPlatformAdapter {
     fn drop(&mut self) {
+        // G7: the shutdown sequence lives in [`Self::shutdown`], NOT in field
+        // drop order. This body runs BEFORE the struct's fields drop, so it
+        // cannot lean on the worker field's own destructor to have stopped
+        // first — it performs the explicit stop/join itself, then drains the
+        // owner-scoped registry inline (on main). Idempotent: an explicit
+        // `shutdown()` call earlier makes this a no-op pass.
+        self.shutdown();
         if self.clipboard_restore.pending_epoch().is_some() {
             let pasteboard = NSPasteboard::generalPasteboard();
             let _ = self
                 .clipboard_restore
                 .restore_pending_if_unchanged(&pasteboard);
         }
+    }
+}
+
+impl MacosPlatformAdapter {
+    /// G7 shutdown: the explicit adapter-owned teardown sequence, in order:
+    ///
+    /// 1. Deactivate every Accept subscription so the dispatcher's delivery
+    ///    guard drops any still-queued accept callback (the guard runs before
+    ///    the callback dispatcher drains at field-drop time).
+    /// 2. Stop and JOIN the AX worker FIRST. Its exit drops the ID-only
+    ///    teardown tokens, each of which only POSTS a teardown request — the
+    ///    worker never waits on main, so this join cannot require the main
+    ///    queue to progress.
+    /// 3. Drain this adapter's remaining Carbon registry entries INLINE on
+    ///    the main thread (via the teardown executor), BEFORE the host loop
+    ///    stops servicing the dispatch queue — a queued request applied after
+    ///    the loop stops would never run and would leak registrations.
+    ///    Drain is scoped by owner id: a dropped old adapter can never clear
+    ///    newer registrations owned elsewhere, and no permanent global
+    ///    shutdown flag is set (a later adapter initializes cleanly).
+    ///
+    /// Must be called from the host loop before that loop stops servicing the
+    /// dispatch queue. Off-main callers: steps 1–2 still run, step 3 posts an
+    /// owner-scoped request to the main queue and returns — the main loop
+    /// must stay alive long enough to apply it (see `production_main_teardown
+    /// _executor`).
+    pub fn shutdown(&mut self) {
+        // P1: reject retained installers FIRST, before any other shutdown
+        // effect, so no late install can race the teardown sequence.
+        self.carbon_closed.store(true, Ordering::Release);
+        for entry in self
+            .subscriptions
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .values()
+        {
+            if let SubscriptionEntry::Accept {
+                _controller: controller,
+                ..
+            } = entry
+            {
+                controller.active.store(false, Ordering::Release);
+            }
+        }
+        self.worker.shutdown();
+        (self.carbon_teardown)(CarbonTeardown::OwnerAll {
+            owner: self.carbon_owner,
+        });
     }
 }
 
@@ -372,7 +447,11 @@ struct AdapterTestHooks {
     synthetic_key_poster: Arc<SyntheticKeyPoster>,
     pasteboard_poster: Arc<PasteboardPoster>,
     observer_installer: Arc<AdapterObserverInstallerFn>,
-    accept_tap_installer: Arc<AcceptTapInstallerFn>,
+    /// `None` selects the production Worker arm (the G7 main-thread registry
+    /// path); `Some` installs a Custom installer with the existing fake
+    /// semantics, exempt from the main-thread guard.
+    accept_tap_installer: Option<Arc<AcceptTapInstallerFn>>,
+    carbon_teardown: MainTeardownExecutor,
     ax_range_target: Arc<dyn AxRangeTarget + Send + Sync>,
     bundle_id_for_pid: Arc<BundleIdForPidProvider>,
 }
@@ -414,6 +493,12 @@ impl AcceptTapController {
     }
 
     fn set_accept_action(&self, action: Option<AcceptAction>) -> Result<(), PlatformError> {
+        // Declared BEFORE any lock so the final deferred-handler flush happens
+        // after this method's mutexes are released: a retired callback
+        // capture's Drop may reenter the controller, and flushing inside the
+        // lock would deadlock (nested installer/teardown guards inside do not
+        // flush early — depth-counted).
+        let _controller_transaction = CarbonTransactionGuard::enter();
         {
             let mut accept_action =
                 self.accept_action
@@ -423,11 +508,14 @@ impl AcceptTapController {
                     })?;
             *accept_action = action;
         }
-        // INVARIANT (audit c121+): this guard is held across the installer
-        // call below, which blocks into the AX worker and performs Carbon
-        // FFI. Safe because nothing on the worker (or in any callback) ever
-        // touches `consumer_tap` — the lock only serializes arm/disarm from
-        // the engine side. Do not add worker-side consumer_tap access.
+        // INVARIANT (audit c121+; threading updated by G7): this guard is held
+        // across the installer call below. Since G7 the installer performs its
+        // Carbon work INLINE ON THE MAIN THREAD (registration is
+        // main-thread-only and synchronous) and only then blocks into the AX
+        // worker to adopt the ID-only ownership token — the worker performs no
+        // Carbon work at all. The lock only serializes arm/disarm from the
+        // engine side; nothing on the worker (or in any callback) ever touches
+        // `consumer_tap`. Do not add worker-side consumer_tap access.
         let mut consumer_tap =
             self.consumer_tap
                 .lock()
@@ -465,24 +553,35 @@ impl AcceptTapController {
     }
 
     /// Recorder 5b: live accept-key re-arm. Drops the armed consumer tap
-    /// (the proven WorkerAcceptTapResource teardown — UnregisterEventHotKey
-    /// per ref + slot disarm, on the AX worker thread) and re-installs it,
+    /// (its caller-side resource drop only POSTS: worker removal is queued
+    /// async, and the worker-side token's later drop posts the ID-scoped
+    /// main teardown — native reference cleanup may LAG the logical disarm
+    /// until the main queue or a replacement/shutdown drain applies it) and
+    /// re-installs it,
     /// so the Carbon registrations re-read the swapped ACCEPT_KEYMAP.
     /// No-op while unarmed: the next arm cycle reads the new map anyway.
     ///
     /// DROP-BEFORE-INSTALL is load-bearing: Esc/Down exist in every keymap,
-    /// so installing first would double-register them. The worker queue is
-    /// FIFO (RemoveResource lands before InstallResource) and the install
-    /// blocks for its reply, so old and new registrations never overlap and
-    /// the new keys are live when this returns. The unarmed window between
-    /// the two is fail-open: an accept key pressed inside it passes through
-    /// to the app as a literal keystroke (single miss, never key-eating).
+    /// so installing first would double-register them. Ordering is enforced
+    /// by the registry's ID GUARD plus this synchronous main-thread retire —
+    /// NOT by worker-queue FIFO (the old reasoning): the registry's
+    /// replace-drain unregisters the old arm's refs before the first new
+    /// registration, and a late teardown of the old arm id is a guaranteed
+    /// no-op. The new keys are live when this returns (registration is
+    /// synchronous on main). The unarmed window between the two is fail-open:
+    /// an accept key pressed inside it passes through to the app as a literal
+    /// keystroke (single miss, never key-eating).
     ///
     /// Engine-side threads ONLY (the same rule as set_accept_action):
-    /// calling from the AX worker would deadlock on its own queue. Does NOT
-    /// touch teardown_generation — rearm is not a visibility transition,
-    /// and a pending delayed-hide failsafe must stay able to fire.
+    /// calling from the AX worker would deadlock on its own queue — and since
+    /// G7 registration is main-thread-only besides. Does NOT touch
+    /// teardown_generation — rearm is not a visibility transition, and a
+    /// pending delayed-hide failsafe must stay able to fire.
     fn rearm_consumer_tap(&self) -> Result<(), PlatformError> {
+        // Declared BEFORE the consumer_tap lock (same reason as
+        // set_accept_action above: the final flush must run after this
+        // method's locks are released).
+        let _controller_transaction = CarbonTransactionGuard::enter();
         // Same guard-across-installer invariant as set_accept_action above:
         // nothing on the worker ever touches consumer_tap.
         let mut consumer_tap =
@@ -494,16 +593,24 @@ impl AcceptTapController {
         if consumer_tap.is_none() {
             return Ok(());
         }
-        *consumer_tap = None; // FIFO #1: old hotkeys unregister on the worker
+        // ID GUARD #1: dropping the old resource only posts (worker removal
+        // queued async; the worker-side token later posts the ID-scoped main
+        // teardown). The SYNCHRONOUS ordering — old refs unregistered before
+        // the install below runs — comes from the registry's replace-drain,
+        // not from this drop. Any late duplicate retire of the old arm id is
+        // a registry no-op.
+        *consumer_tap = None;
         let handler = accept_consumer_tap_handler(
             Arc::clone(&self.active),
             self.callback_tx.clone(),
             Arc::clone(&self.callback),
             Arc::clone(&self.accept_action),
         );
-        // FIFO #2, blocks until live. On Err the tap stays disarmed —
-        // fail-open to the user's typing — and self-heals on the next
-        // visibility transition (set_accept_action sees (Some, None)).
+        // ID GUARD #2, synchronous on main: registers through the main-thread
+        // registry (whose replace-drain is the backstop) and then blocks only
+        // for the worker adoption of the ID-only token. On Err the tap stays
+        // disarmed — fail-open to the user's typing — and self-heals on the
+        // next visibility transition (set_accept_action sees (Some, None)).
         let action = *self
             .accept_action
             .lock()
@@ -1234,6 +1341,9 @@ impl MacosPlatformAdapter {
             accept_tap_installer: AdapterAcceptTapInstaller::Worker,
             ax_range_target: Arc::new(RawAxRangeTarget),
             bundle_id_for_pid: Arc::new(bundle_id_for_pid),
+            carbon_owner: allocate_owner_id(),
+            carbon_closed: Arc::new(AtomicBool::new(false)),
+            carbon_teardown: production_main_teardown_executor(),
         })
     }
 
@@ -1299,6 +1409,7 @@ impl MacosPlatformAdapter {
             pasteboard_poster,
             observer_installer,
             accept_tap_installer,
+            carbon_teardown,
             ax_range_target,
             bundle_id_for_pid,
         } = hooks;
@@ -1317,14 +1428,31 @@ impl MacosPlatformAdapter {
             pasteboard_poster,
             clipboard_restore: Arc::new(ClipboardRestoreCoordinator::default()),
             observer_installer: AdapterObserverInstaller::Custom(observer_installer),
-            accept_tap_installer: AdapterAcceptTapInstaller::Custom(accept_tap_installer),
+            accept_tap_installer: match accept_tap_installer {
+                Some(install) => AdapterAcceptTapInstaller::Custom(install),
+                // G7 native integration path: the REAL production installer
+                // (Worker arm), with only the main-identity, teardown
+                // executor, and native leaves swapped by the test.
+                None => AdapterAcceptTapInstaller::Worker,
+            },
             ax_range_target,
             bundle_id_for_pid,
+            carbon_owner: allocate_owner_id(),
+            carbon_closed: Arc::new(AtomicBool::new(false)),
+            carbon_teardown,
         }
     }
 
     pub fn ax_worker_thread_id(&self) -> ThreadId {
         self.worker.thread_id()
+    }
+
+    /// G7 tests: a handle over this adapter's AX worker, for deterministic
+    /// queue-parking (a gate installer that blocks the worker while the test
+    /// queues further operations) and resource-count assertions.
+    #[cfg(test)]
+    fn worker_handle_for_test(&self) -> AxWorkerHandle {
+        self.worker.handle()
     }
 
     fn next_subscription(&self) -> u64 {
@@ -1517,10 +1645,110 @@ impl MacosPlatformAdapter {
         match &self.accept_tap_installer {
             AdapterAcceptTapInstaller::Worker => {
                 let worker = self.worker.handle();
+                let owner = self.carbon_owner;
+                let teardown = Arc::clone(&self.carbon_teardown);
+                let carbon_closed = Arc::clone(&self.carbon_closed);
                 Arc::new(move |kind, handler| {
-                    worker
-                        .install_resource(move || install_worker_accept_tap_resource(kind, handler))
-                        .map(AcceptTapResource::new)
+                    // P1: a retained installer handle from a shut-down adapter
+                    // must be rejected BEFORE any native, registry, or slot
+                    // work — otherwise a late install could replace a newer
+                    // adapter's arm (the registry's family drain is
+                    // cross-owner) and its rollback would then destroy those
+                    // newer keys. Per-adapter flag, no global shutdown state:
+                    // a later adapter mints a fresh owner and initializes.
+                    if carbon_closed.load(Ordering::Acquire) {
+                        return Err(PlatformError::CannotComplete {
+                            reason: "adapter shut down; Carbon registration rejected".to_string(),
+                        });
+                    }
+                    // Declared FIRST so it drops LAST: the rollback guard's
+                    // inline teardown (on adoption failure) runs before this
+                    // transaction's final flush, and its own deferrals are
+                    // covered by that flush.
+                    let _transaction = CarbonTransactionGuard::enter();
+                    // G7: registration is MAIN-THREAD-ONLY and synchronous.
+                    // `try_main_carbon_registry` checks main-thread identity
+                    // BEFORE any Carbon call, slot mutation, or worker
+                    // adoption; an off-main call returns `CannotComplete`
+                    // with zero side effects (no native ops, no slot write,
+                    // no worker message, nothing queued). Custom installers
+                    // keep their existing semantics, exempt from this guard.
+                    //
+                    // The pure plan is computed HERE, on the caller's thread
+                    // (hoisted out of what used to be the worker closure) so
+                    // keymap/shortcut locks are never held across the
+                    // registry borrow. Plan computation is pure — it does not
+                    // count as a side effect.
+                    let family = carbon_family_for_kind(kind);
+                    let plan = match kind {
+                        AcceptTapKind::Shortcut => shortcut_arm_plan(),
+                        AcceptTapKind::Consumer | AcceptTapKind::CorrectionConsumer => {
+                            consumer_arm_plan(kind)
+                        }
+                    };
+                    let install = try_main_carbon_registry(|registry| match family {
+                        Family::Shortcut => registry.install_shortcut_arm(owner, plan),
+                        Family::Consumer => registry.install_consumer_arm(owner, plan),
+                    });
+                    // The registry's NativeSlotHooks cleared the REAL slot and
+                    // deferred the retired handler at the core's drain point —
+                    // strictly before the first replacement register (native
+                    // ordering matches the portable hook proof). Shortcut
+                    // per-key skip diagnostics (id/keycode/status) are emitted
+                    // at the native error boundary (`RealCarbonOps::register`)
+                    // before the core skips a binding — no duplicate
+                    // abbreviated log here. This call returns the typed error
+                    // already mapped; no error introspection is needed.
+                    match install {
+                        Ok(outcome) => {
+                            let arm = outcome.arm;
+                            // Publish stays wrapper-driven (the hook carries
+                            // no handler Arc): the new handler is armed here,
+                            // after the core returns, while the main thread
+                            // still cannot interleave a Carbon callback. A
+                            // replaced predecessor returned by `arm` is
+                            // deferred like the hook-extracted ones.
+                            if let Some(replaced) =
+                                handler_slot_for_family(family).arm(arm.0, handler)
+                            {
+                                defer_retired_handler(replaced);
+                            }
+                            let mut guard = AdoptionRollbackGuard {
+                                request: CarbonTeardown::Arm { owner, arm, family },
+                                armed: true,
+                            };
+                            // Adopt an ID-only Drop token through the existing
+                            // main→worker wait (kept: adoption performs NO
+                            // Carbon work — the installer only boxes the
+                            // token). The guard stays armed until adoption
+                            // succeeds; a send failure, installer panic, or
+                            // lost reply retires the arm inline on main via
+                            // the guard's drop.
+                            let adopted = adopt_carbon_arm_token(
+                                &worker,
+                                CarbonArmToken {
+                                    owner,
+                                    arm,
+                                    family,
+                                    teardown: Arc::clone(&teardown),
+                                },
+                                &mut guard,
+                            );
+                            // Transaction exit: `CarbonTransactionGuard`'s
+                            // drop (declared first, dropped last, after the
+                            // rollback guard) flushes the deferred handlers
+                            // here.
+                            adopted
+                        }
+                        Err(error) => {
+                            // Failed install (e.g. consumer Nth-register
+                            // failure after the drain): the hook already
+                            // cleared the stale slot; the transaction guard
+                            // flushes the deferred handlers at this scope's
+                            // exit.
+                            Err(error)
+                        }
+                    }
                 })
             }
             AdapterAcceptTapInstaller::Custom(install) => Arc::clone(install),
@@ -2774,7 +3002,6 @@ fn accept_consumer_tap_handler(
         if !active.load(Ordering::Acquire) {
             return AcceptTapDecision::Keep;
         }
-
         // Always-on shortcuts fire even when accept interception is inactive
         // (no suggestion showing), but only while the subscription still owns
         // the installed shortcut resource.
@@ -2791,9 +3018,14 @@ fn accept_consumer_tap_handler(
             _ => None,
         };
         if let Some(control) = control {
+            // Enqueue-side `active` check happened above; the payload carries
+            // the SAME flag so the callback dispatcher can recheck it at
+            // DELIVERY (G7 lifecycle fix): a cancel or adapter shutdown that
+            // lands after this send still drops the late callback.
             let _ = callback_tx.send(CallbackMessage::Accept {
                 callback: Arc::clone(&callback),
                 control,
+                active: Arc::clone(&active),
             });
         }
         decision
@@ -3247,20 +3479,28 @@ impl CarbonHandlerSlot {
     // inside an extern "C" Carbon callback where a panic would unwind across
     // FFI (abort/UB), and the slot state (a plain Option) cannot be left
     // logically inconsistent by whatever panic poisoned it.
-    fn arm(&self, id: u64, handler: Arc<AcceptTapHandler>) {
-        *self
+    fn arm(&self, id: u64, handler: Arc<AcceptTapHandler>) -> Option<Arc<AcceptTapHandler>> {
+        let mut slot = self
             .slot
             .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some((id, handler));
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
+        // The RETIRED handler is returned, not dropped here: the caller defers
+        // its destruction until its whole install/teardown transaction (TLS
+        // borrow released, adoption/rollback settled) has finished, because a
+        // callback-capture `Drop` may reenter install/teardown.
+        slot.replace((id, handler)).map(|(_, retired)| retired)
     }
 
-    fn disarm(&self, id: u64) {
+    fn disarm(&self, id: u64) -> Option<Arc<AcceptTapHandler>> {
         let mut slot = self
             .slot
             .lock()
             .unwrap_or_else(std::sync::PoisonError::into_inner);
         if slot.as_ref().is_some_and(|(owner, _)| *owner == id) {
-            *slot = None;
+            // Returned for deferred destruction (see `arm`).
+            slot.take().map(|(_, retired)| retired)
+        } else {
+            None
         }
     }
 
@@ -3271,100 +3511,603 @@ impl CarbonHandlerSlot {
             .as_ref()
             .map(|(_, handler)| Arc::clone(handler))
     }
+
+    /// Test-only: clear unconditionally (fixture reset between tests so no
+    /// stale armed slot leaks into the next test). Returns nothing and never
+    /// panics; the retired handler (if any) is dropped here by design.
+    #[cfg(test)]
+    fn reset_for_test(&self) {
+        // TAKEN under the lock, dropped only after release: a callback-capture
+        // `Drop` may reenter.
+        let retired = self
+            .slot
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .take()
+            .map(|(_, handler)| handler);
+        drop(retired);
+    }
 }
 
 /// The single process-lifetime slot the Carbon handler reads (R2-5).
+/// G7: arms come from the main-thread registry (`try_main_carbon_registry`);
+/// the slot itself is only the callback-read side and keeps its id guard so a
+/// late teardown can never clear a newer arm.
 static CARBON_HANDLER_SLOT: CarbonHandlerSlot = CarbonHandlerSlot::new();
-/// Unique arm ids for [`CARBON_HANDLER_SLOT`] ownership checks.
-static CARBON_ARM_ID: AtomicU64 = AtomicU64::new(1);
 /// Whether the process-lifetime Carbon handler is installed. A plain flag
 /// (not `Once`) so a failed install can be retried on the next arm.
 static CARBON_HANDLER_INSTALLED: Mutex<bool> = Mutex::new(false);
 
-struct WorkerAcceptTapResource {
-    hotkeys: Vec<EventHotKeyRef>,
-    /// This resource's arm id; `drop` disarms only a slot it still owns.
-    arm_id: u64,
+// ===========================================================================
+// G7 Carbon main-thread marshal (Qfd §22.5; local implementation 2026-09-29 —
+// uncommitted, native validation pending)
+//
+// THREADING STATEMENT (supersedes the MVP §2 worker-thread wording — the MVP
+// spec text must be amended in the same landing):
+//
+// * EVERY Carbon handler installation, hotkey registration, and
+//   unregistration executes on the macOS MAIN thread, synchronously, through
+//   the main-thread-only registry below (`CARBON_REGISTRY`, a TLS `RefCell`
+//   guarded by a real main-thread check at every entry). The raw
+//   `EventHotKeyRef`s live ONLY in that main-thread storage.
+// * The AX worker owns ONLY an ID-based teardown token (`CarbonArmToken`:
+//   owner + arm + family + executor — auto-`Send`, no unsafe impls). It
+//   performs no Carbon work; its `Drop` posts one ID-scoped teardown request
+//   and returns (inline apply when already on main, main-queue post
+//   otherwise — never a reply wait).
+// * Registration is main-thread-only and synchronous: `accept_tap_installer`
+//   checks identity BEFORE any Carbon call, slot mutation, or worker
+//   adoption; off-main callers get `PlatformError::CannotComplete` with zero
+//   side effects. Ordering between a replacement and the replaced arm is
+//   enforced by the registry's ID guard plus the synchronous inline retire —
+//   NOT by worker-queue FIFO.
+// * The only remaining cross-thread wait is the pre-existing main→worker
+//   adoption wait, which performs no Carbon work.
+// ===========================================================================
+
+/// Opaque `Copy` token for one live Carbon hotkey registration: the raw
+/// `EventHotKeyRef` wrapped as a `usize` so the host-neutral registry core
+/// never names a native pointer type. Created only by [`RealCarbonOps`] on
+/// the main thread after a successful `RegisterEventHotKey`, stored ONLY in
+/// the main-thread TLS registry for exactly as long as the registration is
+/// live, and consumed by exactly one `UnregisterEventHotKey`. It never
+/// crosses a thread and is never `Send`-exposed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RawHotKeyToken(usize);
+
+/// Production [`NativeOps`] leaf: the ONLY code that touches the Carbon
+/// hotkey FFI. Every entry is reached through `try_main_carbon_registry`,
+/// whose guard has already established main-thread identity — the thread,
+/// lifetime, and validity conditions of each unsafe call are named there.
+struct RealCarbonOps;
+
+/// The process-lifetime Carbon application event target. Main thread only
+/// (G7 guard upstream).
+///
+/// SAFETY: `GetApplicationEventTarget` takes no arguments and returns the
+/// application's process-lifetime event target, valid for every Carbon call
+/// it is passed to; the ref is never freed for the process lifetime.
+fn target() -> EventTargetRef {
+    unsafe { GetApplicationEventTarget() }
 }
 
-impl Drop for WorkerAcceptTapResource {
-    // R2-5 RESOLVED structurally: the Carbon handler is installed once for the
-    // process lifetime and reads the static CARBON_HANDLER_SLOT, so teardown
-    // only unregisters the hotkey registrations and disarms the slot. A press
-    // racing this drop either sees the slot already empty (no-op) or clones
-    // the Arc out first and completes against a still-alive handler — there
-    // is no freed context to dereference anymore. (Live hotkey re-validation
-    // after this restructure is the remaining human step.)
-    fn drop(&mut self) {
-        for hotkey in self.hotkeys.drain(..) {
-            // SAFETY: every ref in `hotkeys` came from a successful
-            // `RegisterEventHotKey` (`register_hotkey` pushes only on status
-            // 0), and `drain(..)` yields each exactly once, so this is the
-            // one unregister each live registration gets.
-            unsafe {
-                let _ = UnregisterEventHotKey(hotkey);
+impl NativeOps for RealCarbonOps {
+    type Token = RawHotKeyToken;
+
+    fn is_main_thread(&self) -> bool {
+        MainThreadMarker::new().is_some()
+    }
+
+    fn install_handler(&mut self) -> Result<(), RegistryError> {
+        // SAFETY (thread/lifetime/validity): runs on the macOS main thread
+        // (guarded upstream). `GetApplicationEventTarget` takes no arguments
+        // and returns the application's process-lifetime event target, valid
+        // for the install call it feeds.
+        let target_ref = target();
+        ensure_carbon_handler_installed(target_ref)
+            .map_err(|status| RegistryError::HandlerInstall { status })
+    }
+
+    fn register(
+        &mut self,
+        family: Family,
+        binding: &KeyBinding,
+    ) -> Result<RawHotKeyToken, RegistryError> {
+        // Plans are validated upstream (`AcceptKeymap::from_accept_keys*`, the
+        // shortcut config parser), so this conversion is defensive only; a
+        // failure maps to `Register` with the reserved status -1, which the
+        // platform-error mapper renders as the legacy invalid-keycode reason.
+        let Ok(keycode) = u32::try_from(binding.keycode) else {
+            return Err(RegistryError::Register {
+                family,
+                binding: *binding,
+                status: -1,
+            });
+        };
+        // SAFETY (thread/lifetime/validity): runs on the macOS main thread
+        // (guarded upstream — Carbon Events is main-thread-only).
+        // `GetApplicationEventTarget` returns the process-lifetime
+        // application event target; `EventHotKeyID` is plain data; and
+        // `&mut hotkey_ref` is a valid, aligned out-pointer to a live local.
+        // On status 0 the ref is stored as a token in the main-thread
+        // registry — for exactly one later unregister — and never leaves
+        // main-thread storage.
+        let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
+        let status = unsafe {
+            RegisterEventHotKey(
+                keycode,
+                binding.mask,
+                EventHotKeyID {
+                    signature: HOTKEY_SIGNATURE,
+                    id: binding.id,
+                },
+                target(),
+                0,
+                &mut hotkey_ref,
+            )
+        };
+        if status != 0 {
+            // Preserve the shortcut per-key skip diagnostics at the native
+            // boundary (finding F): the core skips this binding and its
+            // `ArmOutcome.skipped` carries no status, so the full
+            // id/keycode/status triple is logged here, before the error is
+            // handed to the core.
+            if family == Family::Shortcut && debug_enabled() {
+                eprintln!(
+                    "compme: skipping shortcut hotkey id={} keycode={}: Carbon register status {status}",
+                    binding.id, binding.keycode
+                );
+            }
+            return Err(RegistryError::Register {
+                family,
+                binding: *binding,
+                status,
+            });
+        }
+        if debug_enabled() {
+            // Live diagnostic: proves which accept keys were actually
+            // registered (and on which arm cycle) when a physical press
+            // appears to do nothing.
+            eprintln!(
+                "compme: carbon hotkey registered id={} keycode={keycode} modifiers={}",
+                binding.id, binding.mask
+            );
+        }
+        Ok(RawHotKeyToken(hotkey_ref as usize))
+    }
+
+    fn unregister(&mut self, _family: Family, token: RawHotKeyToken) {
+        // SAFETY (thread/lifetime/validity): runs on the macOS main thread
+        // (guarded upstream). `token` was returned by a successful
+        // `RegisterEventHotKey` and the registry drains each stored token
+        // exactly once before dropping its entry, so this is the one
+        // unregister each live registration gets; the raw ref was valid for
+        // as long as that registration was live and the main-thread registry
+        // is its only owner.
+        unsafe {
+            let _ = UnregisterEventHotKey(token.0 as EventHotKeyRef);
+        }
+    }
+}
+
+/// Object-safe adapter so the main-thread TLS registry can hold injected ops
+/// (tests swap the native leaf for a recording fake) without the core
+/// depending on any `Box` forwarding impl.
+struct DispatchCarbonOps(Box<dyn NativeOps<Token = RawHotKeyToken>>);
+
+impl NativeOps for DispatchCarbonOps {
+    type Token = RawHotKeyToken;
+
+    fn is_main_thread(&self) -> bool {
+        self.0.is_main_thread()
+    }
+
+    fn install_handler(&mut self) -> Result<(), RegistryError> {
+        self.0.install_handler()
+    }
+
+    fn register(
+        &mut self,
+        family: Family,
+        binding: &KeyBinding,
+    ) -> Result<RawHotKeyToken, RegistryError> {
+        self.0.register(family, binding)
+    }
+
+    fn unregister(&mut self, family: Family, token: RawHotKeyToken) {
+        self.0.unregister(family, token)
+    }
+}
+
+type MainThreadCarbonRegistry = carbon_registry::CarbonRegistry<DispatchCarbonOps>;
+
+thread_local! {
+    /// G7: the ONLY storage for live Carbon hotkey registrations. It lives on
+    /// the main thread — production lazily mints it there (see
+    /// `try_main_carbon_registry`) and every other thread is rejected before
+    /// anything is created. Tests install a fake-ops registry on their own
+    /// serial test thread via the injected main-identity leaf.
+    static CARBON_REGISTRY: RefCell<Option<MainThreadCarbonRegistry>> =
+        const { RefCell::new(None) };
+}
+
+/// Run `f` with the calling thread's main-thread Carbon registry.
+///
+/// The G7 main-thread guard. On a thread with no registry yet, only the OS
+/// main thread may lazily mint the production registry ([`RealCarbonOps`]);
+/// every other thread is rejected with `CannotComplete` and zero side
+/// effects. When a registry already exists, its OWN `is_main_thread` — the
+/// injectable main-identity leaf — decides, so tests run the full production
+/// path on a plain serial test thread (which is never the OS main thread).
+///
+/// The `RefCell` borrow is held only across `f`: native apply, no awaits, no
+/// worker messages, and no reentrant Carbon callbacks (the Carbon handler
+/// runs on this same thread and cannot preempt us mid-call). Never call the
+/// adoption wait while holding this borrow.
+fn try_main_carbon_registry<T>(
+    f: impl FnOnce(&mut MainThreadCarbonRegistry) -> Result<T, RegistryError>,
+) -> Result<T, PlatformError> {
+    CARBON_REGISTRY.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            if MainThreadMarker::new().is_none() {
+                return Err(PlatformError::CannotComplete {
+                    reason: "Carbon hotkey registration requires the macOS main thread; \
+                             no main-thread registry exists on this thread"
+                        .into(),
+                });
+            }
+            *slot = Some(carbon_registry::CarbonRegistry::with_hooks(
+                DispatchCarbonOps(Box::new(RealCarbonOps)),
+                Box::new(NativeSlotHooks),
+            ));
+        }
+        let registry = slot.as_mut().expect("registry just initialized");
+        if !registry.is_main_thread() {
+            return Err(PlatformError::CannotComplete {
+                reason: "Carbon hotkey registration requires the macOS main thread".into(),
+            });
+        }
+        f(registry).map_err(registry_error_to_platform_error)
+    })
+}
+
+/// Map the host-neutral registry error onto the platform error, preserving
+/// the legacy reason strings (they are diagnostic surface gates grep for).
+/// `status == -1` is the reserved defensive sentinel for an out-of-range
+/// keycode that upstream validation should have rejected (see
+/// `RealCarbonOps::register`).
+fn registry_error_to_platform_error(err: RegistryError) -> PlatformError {
+    match err {
+        RegistryError::NotOnMainThread => PlatformError::CannotComplete {
+            reason: "Carbon hotkey registration requires the macOS main thread".into(),
+        },
+        RegistryError::HandlerInstall { status } => PlatformError::CannotComplete {
+            reason: format!("failed to install Carbon accept-key handler: status {status}"),
+        },
+        RegistryError::Register {
+            family,
+            binding,
+            status,
+        } => {
+            // -1 is RealCarbonOps's reserved sentinel for a keycode that
+            // fails `u32::try_from` — distinguish it by the SAME condition,
+            // not by the status alone: a valid key whose native register
+            // returned -1 keeps the generic status reason below.
+            if status == -1 && u32::try_from(binding.keycode).is_err() {
+                return PlatformError::CannotComplete {
+                    reason: match family {
+                        Family::Consumer => {
+                            format!("invalid Carbon accept-key keycode: {}", binding.keycode)
+                        }
+                        Family::Shortcut => {
+                            format!("invalid Carbon shortcut keycode: {}", binding.keycode)
+                        }
+                    },
+                };
+            }
+            match family {
+                Family::Consumer => PlatformError::CannotComplete {
+                    reason: format!(
+                        "failed to register Carbon accept-key {}: status {status}",
+                        binding.keycode
+                    ),
+                },
+                Family::Shortcut => PlatformError::CannotComplete {
+                    reason: format!(
+                        "failed to register Carbon shortcut {}: status {status}",
+                        binding.keycode
+                    ),
+                },
             }
         }
-        CARBON_HANDLER_SLOT.disarm(self.arm_id);
     }
 }
 
-fn install_worker_accept_tap_resource(
-    kind: AcceptTapKind,
-    handler: Arc<AcceptTapHandler>,
-) -> Result<WorkerResource, PlatformError> {
-    match kind {
-        // Always-on shortcuts (ids 5/6/7/8) install ONCE per subscription on their
-        // own process-lifetime resource — independent of the per-suggestion
-        // consumer arm — so a toggle fires before any suggestion appears.
-        AcceptTapKind::Shortcut => install_process_shortcut_hotkeys(handler),
-        AcceptTapKind::Consumer => install_carbon_accept_hotkeys(handler, AcceptAction::Full),
-        AcceptTapKind::CorrectionConsumer => {
-            install_carbon_accept_hotkeys(handler, AcceptAction::Correction)
+/// ID-scoped teardown request. Only Send-safe IDs and family metadata cross
+/// threads — never a raw native ref. `OwnerId`/`ArmId` are plain-data
+/// newtypes (`Copy`), so the request is `Copy + Send`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CarbonTeardown {
+    /// Retire one arm: matches (owner, arm, family) exactly; a stale,
+    /// duplicate, or foreign-family request is a registry no-op.
+    Arm {
+        owner: OwnerId,
+        arm: ArmId,
+        family: Family,
+    },
+    /// Adapter shutdown: retire every remaining entry owned by `owner`
+    /// (owner-scoped so a dropped old adapter can never clear newer
+    /// registrations owned elsewhere).
+    OwnerAll { owner: OwnerId },
+}
+
+/// The teardown executor leaf. Production: inline apply when already on
+/// main, otherwise a fire-and-forget post to the main dispatch queue (no
+/// reply wait — the queued apply runs when the host loop next services the
+/// queue, so the main loop must stay alive to finish queued native cleanup).
+/// Tests inject a recording/inline executor for deterministic draining.
+pub(crate) type MainTeardownExecutor = Arc<dyn Fn(CarbonTeardown) + Send + Sync + 'static>;
+
+fn production_main_teardown_executor() -> MainTeardownExecutor {
+    Arc::new(move |request| {
+        if MainThreadMarker::new().is_some() {
+            apply_carbon_teardown(request);
+            return;
+        }
+        DispatchQueue::main().exec_async(move || apply_carbon_teardown(request));
+    })
+}
+
+/// Apply a teardown request inline on the calling thread. MUST run on the
+/// main thread (production posts via the executor; the executor applies
+/// here). Both the registry retire and the slot disarm are id-guarded, so
+/// stale/duplicate/foreign requests are harmless no-ops.
+fn apply_carbon_teardown(request: CarbonTeardown) {
+    // Nested-aware: an inline teardown from a rollback guard inside an outer
+    // install transaction must NOT flush the outer transaction's deferrals.
+    let _transaction = CarbonTransactionGuard::enter();
+    let result = try_main_carbon_registry(|registry| {
+        match request {
+            CarbonTeardown::Arm { owner, arm, family } => {
+                // Id-guarded retire: a no-op unless the live family entry
+                // matches (owner, arm, family) exactly. The slot clear and
+                // deferred handler extraction happen in NativeSlotHooks at
+                // the drain point.
+                let _ = registry.retire(owner, arm, family);
+            }
+            CarbonTeardown::OwnerAll { owner } => {
+                // Owner-scoped sweep; the hooks clear each drained entry's
+                // slot (a dropped old adapter can never clear newer
+                // registrations owned elsewhere).
+                let _ = registry.shutdown_owner(owner);
+            }
+        }
+        Ok(())
+    });
+    if let Err(error) = result {
+        if debug_enabled() {
+            eprintln!("compme: carbon teardown skipped off-main: {error:?}");
         }
     }
 }
 
-fn install_carbon_accept_hotkeys(
-    handler: Arc<AcceptTapHandler>,
-    action: AcceptAction,
-) -> Result<WorkerResource, PlatformError> {
-    // SAFETY: `GetApplicationEventTarget` takes no arguments and returns
-    // the application's process-lifetime event target, valid for every
-    // Carbon call below.
-    let target = unsafe { GetApplicationEventTarget() };
-    ensure_carbon_handler_installed(target)?;
-
-    let arm_id = CARBON_ARM_ID.fetch_add(1, Ordering::Relaxed);
-    CARBON_HANDLER_SLOT.arm(arm_id, handler);
-
-    let mut resource = WorkerAcceptTapResource {
-        hotkeys: Vec::new(),
-        arm_id,
-    };
-    // Accept keys (ids 1-4) ONLY: they matter solely while a suggestion is
-    // visible, so they stay tied to this per-arm consumer resource. Always-on
-    // shortcuts (ids 5/6/7/8) are registered once per subscription on the
-    // process-lifetime shortcut resource (`install_process_shortcut_hotkeys`),
-    // NOT here — registering them per arm cycle left them unregistered in the
-    // no-suggestion state, their primary moment (review finding C).
-    for (id, keycode, mask) in accept_keymap()
-        .arm_bindings_for_action(action, TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
-    {
-        resource.register_hotkey(target, id, keycode, mask)?;
+fn handler_slot_for_family(family: Family) -> &'static CarbonHandlerSlot {
+    match family {
+        Family::Consumer => &CARBON_HANDLER_SLOT,
+        Family::Shortcut => &SHORTCUT_HANDLER_SLOT,
     }
+}
 
-    Ok(Box::new(resource) as WorkerResource)
+// Retired delivery handlers wait HERE — in main-thread TLS, never a global
+// queue — until their owning transaction exits; only then are they dropped.
+// A callback-capture `Drop` may reenter install/teardown, so destruction
+// must never happen inside a registry borrow or slot lock (P2).
+//
+// Transaction depth makes nested transactions safe: an adoption send failure
+// drops `AdoptionRollbackGuard` INSIDE the outer install transaction, and
+// that inline teardown defers more handlers — only the OUTERMOST guard's
+// exit flushes, after all RefCells/locks are released. An off-main rejected
+// install sees its own thread's (empty) TLS and can never drain the main
+// thread's deferred callbacks.
+thread_local! {
+    static CARBON_DEFERRED_HANDLERS: RefCell<Vec<Arc<AcceptTapHandler>>> =
+        const { RefCell::new(Vec::new()) };
+    static CARBON_TRANSACTION_DEPTH: Cell<u32> = const { Cell::new(0) };
+}
+
+/// RAII transaction guard: increments the depth; the OUTERMOST drop flushes
+/// the deferred handlers after every RefCell/lock in the transaction is
+/// released. Declare it BEFORE any guard whose Drop may defer more handlers
+/// (e.g. `AdoptionRollbackGuard`) so the rollback retires first and its
+/// deferrals are covered by this final flush.
+struct CarbonTransactionGuard;
+
+impl CarbonTransactionGuard {
+    fn enter() -> Self {
+        CARBON_TRANSACTION_DEPTH.with(|depth| depth.set(depth.get() + 1));
+        CarbonTransactionGuard
+    }
+}
+
+impl Drop for CarbonTransactionGuard {
+    fn drop(&mut self) {
+        let retired = CARBON_TRANSACTION_DEPTH.with(|depth| {
+            let remaining = depth.get().saturating_sub(1);
+            depth.set(remaining);
+            if remaining == 0 {
+                // Extract FIRST and drop OUTSIDE the borrow: a retired
+                // callback capture's Drop may reenter and push/drain a new
+                // deferred batch, which must not hit a live mutable borrow
+                // (reentrancy panic). At depth 0 such a fresh batch lingers
+                // until the next outermost transaction flushes it.
+                CARBON_DEFERRED_HANDLERS.with(|cell| std::mem::take(&mut *cell.borrow_mut()))
+            } else {
+                Vec::new()
+            }
+        });
+        drop(retired);
+    }
+}
+
+fn defer_retired_handler(handler: Arc<AcceptTapHandler>) {
+    CARBON_DEFERRED_HANDLERS.with(|cell| cell.borrow_mut().push(handler));
+}
+
+/// Test visibility for the flush bookkeeping (native tests assert the
+/// deferred queue is empty at transaction exits).
+#[cfg(test)]
+#[allow(dead_code)]
+pub(crate) fn carbon_deferred_len() -> usize {
+    CARBON_DEFERRED_HANDLERS.with(|cell| cell.borrow().len())
+}
+
+/// Production slot hooks: on `Cleared`, clear the REAL delivery slot at the
+/// exact point the core drains the predecessor — BEFORE the first
+/// replacement register, matching the portable hook proof — and defer the
+/// retired handler. `Published` is wrapper-driven (the hook carries no
+/// handler Arc): the installer publishes the new handler after the core
+/// returns, while the main thread still cannot interleave a Carbon callback.
+struct NativeSlotHooks;
+
+impl carbon_registry::SlotHooks for NativeSlotHooks {
+    fn slot_event(&mut self, event: carbon_registry::SlotEvent) {
+        match event {
+            carbon_registry::SlotEvent::Published { .. } => {}
+            carbon_registry::SlotEvent::Cleared { family, arm } => {
+                if let Some(retired) = handler_slot_for_family(family).disarm(arm.0) {
+                    defer_retired_handler(retired);
+                }
+            }
+        }
+    }
+}
+
+fn carbon_family_for_kind(kind: AcceptTapKind) -> Family {
+    match kind {
+        AcceptTapKind::Consumer | AcceptTapKind::CorrectionConsumer => Family::Consumer,
+        AcceptTapKind::Shortcut => Family::Shortcut,
+    }
+}
+
+/// Worker-side ownership token for one live Carbon arm (G7). Carries ONLY
+/// Send-safe IDs plus the teardown executor — never a raw Carbon ref — so it
+/// is auto-`Send` (no unsafe impls). It lives in the AX worker's resource
+/// map; its `Drop` posts ONE ID-scoped teardown request to main (inline when
+/// already on main, else queued) and returns without waiting.
+struct CarbonArmToken {
+    owner: OwnerId,
+    arm: ArmId,
+    family: Family,
+    teardown: MainTeardownExecutor,
+}
+
+impl Drop for CarbonArmToken {
+    fn drop(&mut self) {
+        (self.teardown)(CarbonTeardown::Arm {
+            owner: self.owner,
+            arm: self.arm,
+            family: self.family,
+        });
+    }
+}
+
+/// Main-side rollback guard: armed between successful native apply and
+/// successful worker adoption. If adoption fails (send failure, installer
+/// panic, lost reply) the guard retires the arm inline on main; it is
+/// defused only once the ID-only token is adopted. Drop order inside the
+/// installer closure guarantees the retire runs before the error reaches the
+/// controller.
+struct AdoptionRollbackGuard {
+    request: CarbonTeardown,
+    armed: bool,
+}
+
+impl AdoptionRollbackGuard {
+    fn defuse(&mut self) {
+        self.armed = false;
+    }
+}
+
+impl Drop for AdoptionRollbackGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            apply_carbon_teardown(self.request);
+        }
+    }
+}
+
+/// Adopt the ID-only token through the existing main→worker wait (adoption
+/// performs NO Carbon work — the worker-side installer only boxes the
+/// token). On any failure the guard stays armed and retires the arm inline
+/// on main when dropped; the duplicate retire the token would have posted
+/// later is a registry no-op.
+fn adopt_carbon_arm_token(
+    worker: &AxWorkerHandle,
+    token: CarbonArmToken,
+    guard: &mut AdoptionRollbackGuard,
+) -> Result<AcceptTapResource, PlatformError> {
+    let adopted = worker.install_resource(move || Ok(Box::new(token) as WorkerResource));
+    match adopted {
+        Ok(resource) => {
+            guard.defuse();
+            Ok(AcceptTapResource::new(resource))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+/// Hoist the pure consumer plan to the caller (G7): computed from the live
+/// keymap + Tab-suppression flag BEFORE any registry work, so keymap locks
+/// are never held across the registry borrow. Consumer arms (ids 1-4, plus
+/// the grammar-accept id 9 for the correction kind) matter only while a
+/// suggestion is visible.
+fn consumer_arm_plan(kind: AcceptTapKind) -> ArmPlan {
+    let action = match kind {
+        AcceptTapKind::CorrectionConsumer => AcceptAction::Correction,
+        AcceptTapKind::Consumer | AcceptTapKind::Shortcut => AcceptAction::Full,
+    };
+    ArmPlan::from_bindings(
+        accept_keymap()
+            .arm_bindings_for_action(action, TAB_HOTKEY_SUPPRESSED.load(Ordering::Relaxed))
+            .into_iter()
+            .map(|(id, keycode, mask)| KeyBinding { id, keycode, mask }),
+    )
+}
+
+/// Hoist the pure shortcut plan to the caller (G7): the always-on ids 5-8,
+/// filtered down by the finding-F collision rule (a shortcut chord shared
+/// with an accept key is dropped rather than aborting the install).
+fn shortcut_arm_plan() -> ArmPlan {
+    let shortcuts = shortcut_bindings();
+    let bindings = if shortcuts.has_internal_collision() {
+        if debug_enabled() {
+            eprintln!("compme: shortcut bindings collide ({shortcuts:?}); skipping registration");
+        }
+        Vec::new()
+    } else {
+        let accept_chords: Vec<(i64, u32)> = accept_keymap()
+            .carbon_bindings()
+            .into_iter()
+            .map(|(_, keycode, mask)| (keycode, mask))
+            .collect();
+        shortcut_plan_minus_accept_collisions(shortcut_registration_plan(shortcuts), &accept_chords)
+    };
+    ArmPlan::from_bindings(bindings.into_iter().map(|(id, keycode, mask)| KeyBinding {
+        id,
+        keycode,
+        mask,
+    }))
 }
 
 /// The swappable delivery handler for the process-lifetime SHORTCUT hotkeys
-/// (ids 5/6/7/8), kept in its OWN slot so always-on shortcuts dispatch even when
+/// (ids 5-8), kept in its OWN slot so always-on shortcuts dispatch even when
 /// the accept consumer slot ([`CARBON_HANDLER_SLOT`]) is empty (no suggestion
 /// visible). Mirrors [`CarbonHandlerSlot`]'s id-ownership + poison-recovery
 /// discipline so an out-of-order teardown can never disarm a newer arm.
+/// G7: the raw shortcut registrations themselves live in the main-thread
+/// registry; this slot is only the callback-read side.
 static SHORTCUT_HANDLER_SLOT: CarbonHandlerSlot = CarbonHandlerSlot::new();
-/// Unique arm ids for [`SHORTCUT_HANDLER_SLOT`] ownership checks.
-static SHORTCUT_ARM_ID: AtomicU64 = AtomicU64::new(1);
 
 /// Drop the shortcut chords that collide with a currently-registered accept-key
 /// chord (review finding F). Accept keys (ids 1-4) and shortcuts now register on
@@ -3381,133 +4124,15 @@ fn shortcut_plan_minus_accept_collisions(
         .collect()
 }
 
-/// A process-lifetime resource owning the always-on SHORTCUT hotkey
-/// registrations (ids 5/6/7/8) and the [`SHORTCUT_HANDLER_SLOT`] arm. Mirrors
-/// [`WorkerAcceptTapResource`]: it owns its [`EventHotKeyRef`]s and, on drop,
-/// unregisters each one and disarms only the slot it still owns — so there is
-/// no leak and no double-register across subscriptions.
-struct WorkerShortcutResource {
-    hotkeys: Vec<EventHotKeyRef>,
-    arm_id: u64,
-}
-
-impl Drop for WorkerShortcutResource {
-    fn drop(&mut self) {
-        for hotkey in self.hotkeys.drain(..) {
-            // SAFETY: each ref came from a successful `RegisterEventHotKey` in
-            // `install_process_shortcut_hotkeys` and is unregistered exactly
-            // once (drained), mirroring `WorkerAcceptTapResource::drop`.
-            unsafe {
-                let _ = UnregisterEventHotKey(hotkey);
-            }
-        }
-        SHORTCUT_HANDLER_SLOT.disarm(self.arm_id);
-    }
-}
-
-impl WorkerShortcutResource {
-    fn register_hotkey(
-        &mut self,
-        target: EventTargetRef,
-        id: u32,
-        keycode: i64,
-        modifiers: u32,
-    ) -> Result<(), PlatformError> {
-        let keycode = u32::try_from(keycode).map_err(|_| PlatformError::CannotComplete {
-            reason: format!("invalid Carbon shortcut keycode: {keycode}"),
-        })?;
-        let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
-        // SAFETY: Carbon FFI; `hotkey_ref` is written by RegisterEventHotKey on
-        // success (status 0) and pushed for the matching UnregisterEventHotKey
-        // in `drop`. Same call shape as `WorkerAcceptTapResource::register_hotkey`.
-        let status = unsafe {
-            RegisterEventHotKey(
-                keycode,
-                modifiers,
-                EventHotKeyID {
-                    signature: HOTKEY_SIGNATURE,
-                    id,
-                },
-                target,
-                0,
-                &mut hotkey_ref,
-            )
-        };
-        if status != 0 {
-            return Err(PlatformError::CannotComplete {
-                reason: format!("failed to register Carbon shortcut {keycode}: status {status}"),
-            });
-        }
-        if debug_enabled() {
-            eprintln!(
-                "compme: carbon shortcut registered id={id} keycode={keycode} modifiers={modifiers}"
-            );
-        }
-        self.hotkeys.push(hotkey_ref);
-        Ok(())
-    }
-}
-
-/// Install the always-on shortcut hotkeys (ids 5/6/7/8) ONCE for the
-/// subscription's lifetime (review finding C). Reuses the shared Carbon handler
-/// (`ensure_carbon_handler_installed`) — which routes shortcut ids to
-/// [`SHORTCUT_HANDLER_SLOT`] — and arms that slot with the supplied delivery
-/// handler. Robust against a shortcut chord colliding with an accept-key chord:
-/// such a shortcut is dropped up front (finding F) and any residual register
-/// error is logged-and-skipped, never `?`-aborting (a bad shortcut binding must
-/// not break accept-key interception, which lives on a different resource now).
-fn install_process_shortcut_hotkeys(
-    handler: Arc<AcceptTapHandler>,
-) -> Result<WorkerResource, PlatformError> {
-    // SAFETY: `GetApplicationEventTarget` takes no arguments and returns
-    // the application's process-lifetime event target, valid for every
-    // Carbon call below.
-    let target = unsafe { GetApplicationEventTarget() };
-    ensure_carbon_handler_installed(target)?;
-
-    let arm_id = SHORTCUT_ARM_ID.fetch_add(1, Ordering::Relaxed);
-    SHORTCUT_HANDLER_SLOT.arm(arm_id, handler);
-
-    let mut resource = WorkerShortcutResource {
-        hotkeys: Vec::new(),
-        arm_id,
-    };
-
-    let shortcuts = shortcut_bindings();
-    let plan = if shortcuts.has_internal_collision() {
-        if debug_enabled() {
-            eprintln!("compme: shortcut bindings collide ({shortcuts:?}); skipping registration");
-        }
-        Vec::new()
-    } else {
-        let accept_chords: Vec<(i64, u32)> = accept_keymap()
-            .carbon_bindings()
-            .into_iter()
-            .map(|(_, keycode, mask)| (keycode, mask))
-            .collect();
-        shortcut_plan_minus_accept_collisions(shortcut_registration_plan(shortcuts), &accept_chords)
-    };
-
-    for (id, keycode, mask) in plan {
-        // Log-and-skip on error: a single colliding/invalid shortcut binding
-        // must never abort the install (finding F). The cross-check above drops
-        // the known accept-key collisions; this guards the residual cases.
-        if let Err(err) = resource.register_hotkey(target, id, keycode, mask) {
-            if debug_enabled() {
-                eprintln!("compme: skipping shortcut hotkey id={id}: {err}");
-            }
-        }
-    }
-
-    Ok(Box::new(resource) as WorkerResource)
-}
-
 /// Install the Carbon hotkey handler ONCE for the process lifetime (R2-5).
 /// The handler reads [`CARBON_HANDLER_SLOT`] — no per-arm context pointer —
 /// and the `EventHandlerRef` is intentionally never removed (it must outlive
 /// every possible late keypress). A failed install leaves the flag false so
-/// the next arm retries.
-fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), PlatformError> {
+/// the next arm retries (retryable `RegistryError::HandlerInstall`).
+/// G7: main thread only — every caller is behind the
+/// `try_main_carbon_registry` guard. Returns the raw Carbon status on
+/// failure for the typed registry error.
+fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), i32> {
     // Held across the InstallEventHandler FFI call below — safe because the
     // Carbon callback never touches THIS lock (it reads CARBON_HANDLER_SLOT).
     // Do not add CARBON_HANDLER_SLOT operations inside this critical section.
@@ -3522,14 +4147,17 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
         event_kind: K_EVENT_HOTKEY_PRESSED,
     };
     let mut handler_ref: EventHandlerRef = ptr::null_mut();
-    // SAFETY: `target` is the application event target from
-    // `GetApplicationEventTarget`; `carbon_accept_hotkey_handler` is an
-    // `extern "C"` fn with the `EventHandlerUPP` signature Carbon expects;
-    // `spec` points to a live plain-data `EventTypeSpec`; and
-    // `&mut handler_ref` is a valid, aligned out-pointer to a live local.
-    // The handler never touches the lock held across this call (it reads
-    // `CARBON_HANDLER_SLOT`), so the critical section creates no lock-order
-    // cycle.
+    // SAFETY (thread/lifetime/validity): runs on the macOS main thread (G7
+    // guard upstream — Carbon Events is main-thread-only). `target` is the
+    // application event target from `GetApplicationEventTarget`, valid for
+    // the process lifetime; `carbon_accept_hotkey_handler` is an `extern
+    // "C"` fn with the `EventHandlerUPP` signature Carbon expects and is
+    // panic-shielded internally; `spec` points to a live plain-data
+    // `EventTypeSpec` alive across the call; and `&mut handler_ref` is a
+    // valid, aligned out-pointer to a live local (the ref is intentionally
+    // never uninstalled). The handler never touches the lock held across
+    // this call (it reads `CARBON_HANDLER_SLOT`), so the critical section
+    // creates no lock-order cycle.
     let handler_status = unsafe {
         InstallEventHandler(
             target,
@@ -3541,9 +4169,7 @@ fn ensure_carbon_handler_installed(target: EventTargetRef) -> Result<(), Platfor
         )
     };
     if handler_status != 0 {
-        return Err(PlatformError::CannotComplete {
-            reason: format!("failed to install Carbon accept-key handler: status {handler_status}"),
-        });
+        return Err(handler_status);
     }
     *installed = true;
     Ok(())
@@ -3729,54 +4355,6 @@ pub fn effective_accept_keys_with_mods_and_grammar() -> EffectiveAcceptKeys {
         map.grammar_accept
             .map(|keycode| (keycode, map.grammar_accept_mods)),
     )
-}
-
-impl WorkerAcceptTapResource {
-    fn register_hotkey(
-        &mut self,
-        target: EventTargetRef,
-        id: u32,
-        keycode: i64,
-        modifiers: u32,
-    ) -> Result<(), PlatformError> {
-        let keycode = u32::try_from(keycode).map_err(|_| PlatformError::CannotComplete {
-            reason: format!("invalid Carbon accept-key keycode: {keycode}"),
-        })?;
-        let mut hotkey_ref: EventHotKeyRef = ptr::null_mut();
-        // SAFETY: `keycode` was range-checked to `u32` above, `target` is the
-        // application event target, `EventHotKeyID` is plain data, and
-        // `&mut hotkey_ref` is a valid, aligned out-pointer to a live local
-        // that enters `self.hotkeys` — for exactly one later unregister —
-        // only when the status is 0.
-        let status = unsafe {
-            RegisterEventHotKey(
-                keycode,
-                modifiers,
-                EventHotKeyID {
-                    signature: HOTKEY_SIGNATURE,
-                    id,
-                },
-                target,
-                0,
-                &mut hotkey_ref,
-            )
-        };
-        if status != 0 {
-            return Err(PlatformError::CannotComplete {
-                reason: format!("failed to register Carbon accept-key {keycode}: status {status}"),
-            });
-        }
-        if debug_enabled() {
-            // Live diagnostic: proves which accept keys were actually
-            // registered (and on which arm cycle) when a physical press
-            // appears to do nothing.
-            eprintln!(
-                "compme: carbon hotkey registered id={id} keycode={keycode} modifiers={modifiers}"
-            );
-        }
-        self.hotkeys.push(hotkey_ref);
-        Ok(())
-    }
 }
 
 extern "C" fn carbon_accept_hotkey_handler(

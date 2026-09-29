@@ -1,0 +1,19 @@
+G7 final local validation snapshot
+2026-09-29T06:00:20.222358+00:00
+HEAD 12d581555dcbcaa811654f9e4a98e998bf7383b9
+Real index staged paths: []
+git diff --check: passed
+cargo fmt --all -- --check: passed after exporting toolchain bin in PATH
+Linux Host Gate: 44 run, 0 skipped; 1900 tests passed
+Darwin check/clippy/rustdoc: passed; no native tests executed
+Protected starting patch SHA256 69cf86493210ddfbaaa7fa9c587198f2c23455b2bf07ed1933edc0c229138b7e
+Final source/document SHA256:
+0fb1248b1ad3da3aaec55f1e2acc80da5535b48eae4b68b753654e90542add06  crates/platform_macos/src/carbon_registry.rs
+d49a73bbf8ccb3793b4c612c1b3e8b4d2d8b103684af193f9940cea89df8c131  crates/platform_macos/src/lib.rs
+588f0f9d84cae75df2a89556083aa3765af77de07fa695649a91ee1fa512f0ff  crates/platform_macos/src/ax_worker.rs
+33eaf4918d738498942efecc907e781c326dcbb3031ea7257b0b8e5d63af43fd  crates/platform_macos/src/lib_tests.rs
+833ea7e5203c9bc6f91fa81ab3e61a6036977bf9ad3995e131fb73fad11edd6f  crates/platform/tests/carbon_registry_tests.rs
+798821e0f2db355f2378304592566ee8e70152a2d421229d43b9d6cb535b42f0  crates/app/src/run_loop.rs
+8fb2b65d04b72b45677bedca6e57f7a4035949123f2500ddafa17da7fb157511  docs/ROADMAP.md
+b8777d8a37a846a8517b62e9248ec75c6c5eed1028fd7f9bcf95b7c771b32c4b  docs/superpowers/plans/2026-09-29-g7-codex-validation.md
+1b44a3612bed73f3c09d5fbc021bf8ea6e006d1c3d5796bb095fbdd3c07fc113  docs/superpowers/plans/2026-09-29-g7-linux-implementation.md

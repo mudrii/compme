@@ -12,7 +12,7 @@ use std::any::Any;
 use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread::{self, JoinHandle, ThreadId};
 use std::time::{Duration, Instant};
@@ -64,6 +64,14 @@ pub(crate) enum CallbackMessage {
     Accept {
         callback: AcceptCallback,
         control: TapControl,
+        /// G7 lifecycle fix: the producer checks `active` before enqueueing,
+        /// but the callback dispatcher may drain its queue long after the
+        /// subscription was cancelled or the adapter shut down. The delivery
+        /// site rechecks the SAME flag right before invoking the host
+        /// callback, so a late queued accept can never reach a consumer that
+        /// already unsubscribed (shutdown deactivates subscriptions before
+        /// the dispatcher drains). IDs only — no native state crosses here.
+        active: Arc<AtomicBool>,
     },
     Stop,
 }
@@ -321,6 +329,22 @@ impl AxWorker {
         self.thread_id
     }
 
+    /// G7 shutdown: explicit stop + join, callable while the adapter is still
+    /// alive. Ordering contract (`MacosPlatformAdapter::shutdown`): the worker
+    /// must be stopped and joined BEFORE the caller drains its remaining
+    /// main-thread registry entries, and a struct's `Drop` body cannot rely on
+    /// this happening via the field's own later destructor — so the sequence
+    /// is a named method. Sending `Stop` only asks the loop to exit; the join
+    /// below is what guarantees every queued message (including resource
+    /// removals) was processed and the resources map has been dropped before
+    /// the caller proceeds. Idempotent: a second call finds no handle to join.
+    pub fn shutdown(&mut self) {
+        let _ = self.tx.send(Message::Stop);
+        if let Some(handle) = self.handle.take() {
+            let _ = handle.join();
+        }
+    }
+
     pub(crate) fn handle(&self) -> AxWorkerHandle {
         AxWorkerHandle {
             tx: self.tx.clone(),
@@ -405,7 +429,7 @@ impl AxWorkerHandle {
     }
 
     #[cfg(test)]
-    fn resource_count(&self) -> Result<usize, PlatformError> {
+    pub(crate) fn resource_count(&self) -> Result<usize, PlatformError> {
         let (reply_tx, reply_rx) = mpsc::channel();
         self.tx
             .send(Message::ResourceCount { reply: reply_tx })
@@ -416,6 +440,18 @@ impl AxWorkerHandle {
         reply_rx.recv().map_err(|_| PlatformError::CannotComplete {
             reason: "AX worker dropped resource count result".into(),
         })
+    }
+
+    /// Test-only handle over a caller-supplied channel: lets the G7 adoption
+    /// tests build the exact send-failure and lost-reply scenarios (a dead
+    /// receiver; a consumer that takes the `InstallResource` message and
+    /// drops the reply sender without answering) deterministically.
+    #[cfg(test)]
+    pub(crate) fn detached_for_test(tx: mpsc::Sender<Message>) -> Self {
+        Self {
+            tx,
+            next_resource_id: Arc::new(AtomicU64::new(1)),
+        }
     }
 
     pub(crate) fn install_app_observer(
@@ -1108,10 +1144,10 @@ fn run_ax_worker_loop<L, F>(
 
 impl Drop for AxWorker {
     fn drop(&mut self) {
-        let _ = self.tx.send(Message::Stop);
-        if let Some(handle) = self.handle.take() {
-            let _ = handle.join();
-        }
+        // Delegates to the explicit ordered shutdown; by the time a field
+        // destructor runs, `MacosPlatformAdapter::shutdown` has normally
+        // already stopped and joined this worker (idempotent second call).
+        self.shutdown();
     }
 }
 
@@ -1145,13 +1181,26 @@ impl Drop for CallbackDispatcher {
     }
 }
 
-fn run_callback_dispatcher(rx: mpsc::Receiver<CallbackMessage>) {
+pub(crate) fn run_callback_dispatcher(rx: mpsc::Receiver<CallbackMessage>) {
     while let Ok(message) = rx.recv() {
         match message {
             CallbackMessage::Dispatch { dispatch, event } => {
                 dispatch_observer_event(dispatch, event);
             }
-            CallbackMessage::Accept { callback, control } => {
+            CallbackMessage::Accept {
+                callback,
+                control,
+                active,
+            } => {
+                // G7 lifecycle fix: `active` was already checked before this
+                // message was enqueued, but the queue can outlive the
+                // subscription (cancel, adapter shutdown). Recheck at DELIVERY
+                // so a late accept is dropped instead of reaching a consumer
+                // that unsubscribed while the message was in flight. Scoped
+                // wrapper only — the observer Dispatch path is untouched.
+                if !active.load(Ordering::Acquire) {
+                    continue;
+                }
                 let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                     callback(control);
                 }));

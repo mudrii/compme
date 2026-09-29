@@ -97,7 +97,6 @@ mod tests {
     fn empty_input_is_none() {
         assert_eq!(correct(""), None);
         assert_eq!(correct("   "), None);
-        assert!(correct("").is_none());
     }
 
     #[test]
@@ -134,7 +133,6 @@ mod tests {
             "cant", "wont", "weve", "its", "were", "the", "calender", "address",
         ] {
             assert_eq!(correct(word), None, "{word}");
-            assert!(correct(word).is_none(), "{word}");
         }
     }
 
@@ -195,7 +193,6 @@ mod tests {
         // (whose uppercase expands to two chars), and CJK.
         for word in ["café", "naïve", "Straße", "résumé", "日本語", "Élan"] {
             assert_eq!(correct(word), None, "{word}");
-            assert!(correct(word).is_none(), "{word}");
         }
         // A multibyte prefix glued onto an ASCII typo also can't match the bare
         // key, and the surrounding case logic must not panic.

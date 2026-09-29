@@ -1,0 +1,147 @@
+==> [1/57] cargo fmt --all -- --check
+==> [2/57] cargo clippy --locked --workspace --all-targets -- -D warnings
+    Checking objc2 v0.6.4
+    Checking core-foundation v0.10.1
+   Compiling foreign-types-macros v0.2.3
+warning: missing documentation for the crate
+ --> vendor/llama-cpp-2/build.rs:1:1
+  |
+1 | / fn main() {
+2 | |     if let Ok(dir) = std::env::var("DEP_LLAMA_BACKENDS_DIR") {
+3 | |         println!("cargo:rustc-env=GGML_BACKENDS_DIR={}", dir);
+4 | |     }
+5 | | }
+  | |_^
+  |
+  = note: requested on the command line with `-W missing-docs`
+
+warning: `llama-cpp-2` (build script) generated 1 warning
+    Checking foreign-types-shared v0.3.1
+    Checking security-framework-sys v2.17.0
+warning: use of deprecated enum `model::Special`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:265:18
+    |
+265 |         special: Special,
+    |                  ^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:272:40
+    |
+272 |             matches!(special, Special::Tokenize),
+    |                                        ^^^^^^^^
+
+warning: use of deprecated enum `model::Special`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:290:18
+    |
+290 |         special: Special,
+    |                  ^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:293:78
+    |
+293 |         match self.token_to_piece_bytes(token, 8, matches!(special, Special::Tokenize), None) {
+    |                                                                              ^^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:297:44
+    |
+297 |                 matches!(special, Special::Tokenize),
+    |                                            ^^^^^^^^
+
+warning: use of deprecated enum `model::Special`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:316:18
+    |
+316 |         special: Special,
+    |                  ^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:322:81
+    |
+322 |             .map(|t| self.token_to_piece_bytes(t, 8, matches!(special, Special::Tokenize), None))
+    |                                                                                 ^^^^^^^^
+
+warning: use of deprecated enum `model::Special`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:532:18
+    |
+532 |         special: Special,
+    |                  ^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:537:40
+    |
+537 |             matches!(special, Special::Tokenize),
+    |                                        ^^^^^^^^
+
+warning: use of deprecated enum `model::Special`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:562:18
+    |
+562 |         special: Special,
+    |                  ^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Tokenize`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:581:22
+    |
+581 |             Special::Tokenize => true,
+    |                      ^^^^^^^^
+
+warning: use of deprecated unit variant `model::Special::Plaintext`: This enum is a mixture of options for llama cpp providing less flexibility it only used with deprecated methods and will be removed in the future.
+   --> vendor/llama-cpp-2/src/model.rs:582:22
+    |
+582 |             Special::Plaintext => false,
+    |                      ^^^^^^^^^
+
+warning: missing documentation for a variant
+   --> vendor/llama-cpp-2/src/model.rs:149:5
+    |
+149 |     Norm,
+    |     ^^^^
+    |
+    = note: requested on the command line with `-W missing-docs`
+
+warning: missing documentation for a variant
+   --> vendor/llama-cpp-2/src/model.rs:150:5
+    |
+150 |     NeoX,
+    |     ^^^^
+
+warning: missing documentation for a variant
+   --> vendor/llama-cpp-2/src/model.rs:151:5
+    |
+151 |     MRope,
+    |     ^^^^^
+
+warning: missing documentation for a variant
+   --> vendor/llama-cpp-2/src/model.rs:152:5
+    |
+152 |     Vision,
+    |     ^^^^^^
+
+warning: `llama-cpp-2` (lib) generated 16 warnings
+    Checking accessibility-sys v0.2.0
+    Checking dispatch2 v0.3.1
+error[E0455]: link kind `framework` is only supported on Apple targets
+  --> /home/mudrii/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/accessibility-sys-0.2.0/src/ui_element.rs:30:45
+   |
+30 | #[link(name = "ApplicationServices", kind = "framework")]
+   |                                             ^^^^^^^^^^^
+
+error[E0455]: link kind `framework` is only supported on Apple targets
+  --> /home/mudrii/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/accessibility-sys-0.2.0/src/value.rs:17:45
+   |
+17 | #[link(name = "ApplicationServices", kind = "framework")]
+   |                                             ^^^^^^^^^^^
+
+For more information about this error, try `rustc --explain E0455`.
+error: could not compile `accessibility-sys` (lib) due to 2 previous errors
+warning: build failed, waiting for other jobs to finish...
+error: `objc2` only works on Apple platforms. Pass `--target aarch64-apple-darwin` or similar to compile for macOS.
+       (If you're absolutely certain that you're using GNUStep, you can specify that with the `gnustep-x-y` Cargo feature instead).
+   --> /home/mudrii/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/objc2-0.6.4/src/lib.rs:219:1
+    |
+219 | compile_error!("`objc2` only works on Apple platforms. Pass `--target aarch64-apple-darwin` or similar to compile for macOS.\n(If you're absolutely certain that you're using GNUStep, you can specify that with the `gnustep-x-y` Cargo feature instead).");
+    | ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+
+error: could not compile `objc2` (lib) due to 1 previous error
+check.sh: FAILED [2/57]: cargo clippy --locked --workspace --all-targets -- -D warnings

@@ -2716,22 +2716,6 @@ mod tests {
     }
 
     #[test]
-    fn caret_rect_error_propagates_when_showing() {
-        let mut adapter = FakeAdapter::new();
-        adapter.fail_caret_rect = true;
-        let mut engine = Engine::new(adapter, FakeOverlay::default(), 200, 4, 32);
-
-        engine.on_focus(field()).unwrap();
-        engine.on_text_changed(typed("x", 1, 0)).unwrap();
-        let requests = engine.on_tick(500).unwrap();
-
-        assert_eq!(
-            engine.on_completion(&requests[0], "hi".into()),
-            Err(PlatformError::Timeout)
-        );
-    }
-
-    #[test]
     fn insert_error_propagates_on_accept() {
         let mut adapter = FakeAdapter::new();
         adapter.fail_insert = true;

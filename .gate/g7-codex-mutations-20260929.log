@@ -1,0 +1,148 @@
+Codex independent portable-core mutation validation, 2026-09-29
+Compiler: /home/mudrii/.rustup/toolchains/1.97.0-x86_64-unknown-linux-gnu/bin/rustc --edition=2021 --test <isolated-copy>
+Workspace files were not mutated.
+core 4a429d14128125fd067532a097c169de01614155b3f93e2990dfe2bd2688120d
+tests 2366942aae217539a54869456f4d2cbbfda26e869e1544e075eb44680d22fae2
+
+CASE control
+
+running 17 tests
+test consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable ... ok
+test handler_install_failure_propagates_without_effects_and_a_later_retry_installs_and_replaces ... ok
+test consumer_replacement_leaves_the_shortcut_family_untouched ... ok
+test consumer_teardown_unregisters_each_owned_ref_exactly_once_and_preserves_shortcuts ... ok
+test explicit_fixture_registers_consumer_ids_one_to_four_shortcut_ids_five_to_eight_and_grammar_id_nine ... ok
+test consumer_replacement_unregisters_every_old_ref_before_the_first_new_register ... ok
+test default_empty_plans_install_the_handler_arm_empty_slots_and_register_nothing ... ok
+test consumer_arm_registers_inline_on_main_with_the_full_plan_in_order ... ok
+test off_main_teardown_requests_are_rejected_without_native_effects ... ok
+test owner_and_arm_ids_are_globally_monotonic_across_adapter_lifetimes ... ok
+test off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects ... ok
+test retire_matches_owner_arm_and_family_and_ignores_stale_duplicate_and_foreign_requests ... ok
+test retire_of_a_replaced_arm_is_a_stale_no_op_that_cannot_clear_the_newer_arm ... ok
+test shortcut_arm_keeps_successful_keys_and_skips_only_the_failed_binding ... ok
+test shutdown_owner_drains_only_that_owners_entries_across_both_families ... ok
+test slot_hooks_observe_cleared_before_the_replacement_publish ... ok
+test zero_key_plans_still_arm_their_slot_with_zero_registrations ... ok
+
+test result: ok. 17 passed; 0 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+CASE affinity
+--- original
++++ affinity
+@@ -469,7 +469,7 @@
+     }
+ 
+     fn check_main_thread(&self) -> Result<(), RegistryError> {
+-        if self.ops.is_main_thread() {
++        if true {
+             Ok(())
+         } else {
+             Err(RegistryError::NotOnMainThread)
+
+running 17 tests
+test consumer_arm_registers_inline_on_main_with_the_full_plan_in_order ... ok
+test consumer_teardown_unregisters_each_owned_ref_exactly_once_and_preserves_shortcuts ... ok
+test consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable ... ok
+test consumer_replacement_leaves_the_shortcut_family_untouched ... ok
+test consumer_replacement_unregisters_every_old_ref_before_the_first_new_register ... ok
+test default_empty_plans_install_the_handler_arm_empty_slots_and_register_nothing ... ok
+test explicit_fixture_registers_consumer_ids_one_to_four_shortcut_ids_five_to_eight_and_grammar_id_nine ... ok
+test handler_install_failure_propagates_without_effects_and_a_later_retry_installs_and_replaces ... ok
+test shortcut_arm_keeps_successful_keys_and_skips_only_the_failed_binding ... ok
+test shutdown_owner_drains_only_that_owners_entries_across_both_families ... ok
+test off_main_teardown_requests_are_rejected_without_native_effects ... FAILED
+test retire_matches_owner_arm_and_family_and_ignores_stale_duplicate_and_foreign_requests ... ok
+test retire_of_a_replaced_arm_is_a_stale_no_op_that_cannot_clear_the_newer_arm ... ok
+test owner_and_arm_ids_are_globally_monotonic_across_adapter_lifetimes ... ok
+test off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects ... FAILED
+test slot_hooks_observe_cleared_before_the_replacement_publish ... ok
+test zero_key_plans_still_arm_their_slot_with_zero_registrations ... ok
+
+failures:
+
+---- off_main_teardown_requests_are_rejected_without_native_effects stdout ----
+
+thread 'off_main_teardown_requests_are_rejected_without_native_effects' (505619) panicked at /tmp/compme-g7-codex-mutations/affinity/crates/platform/tests/carbon_registry_tests.rs:986:5:
+assertion `left == right` failed
+  left: Ok(true)
+ right: Err(NotOnMainThread)
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects stdout ----
+
+thread 'off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects' (505618) panicked at /tmp/compme-g7-codex-mutations/affinity/crates/platform/tests/carbon_registry_tests.rs:377:5:
+assertion `left == right` failed
+  left: Ok(ArmOutcome { arm: ArmId(22), registered: 4, skipped: [] })
+ right: Err(NotOnMainThread)
+
+
+failures:
+    off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects
+    off_main_teardown_requests_are_rejected_without_native_effects
+
+test result: FAILED. 15 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+
+
+CASE late_clear
+--- original
++++ late_clear
+@@ -327,10 +327,14 @@
+         self.ops.install_handler()?;
+         // Replacement ordering guarantee: ALL old refs of this family are
+         // unregistered before the FIRST new register below.
+-        self.drain_family(Family::Consumer);
++        let predecessor = self.take_family(Family::Consumer);
++        if let Some(entry) = &predecessor {
++            for token in &entry.tokens { self.ops.unregister(Family::Consumer, *token); }
++        }
+         let arm = allocate_arm_id();
+         match self.register_all(Family::Consumer, &plan.bindings) {
+             Ok(tokens) => {
++                if let Some(entry) = predecessor { self.emit(SlotEvent::Cleared { family: Family::Consumer, arm: entry.arm }); }
+                 let registered = tokens.len();
+                 self.consumer = Some(FamilyEntry { owner, arm, tokens });
+                 self.emit(SlotEvent::Published {
+
+running 17 tests
+test consumer_arm_registers_inline_on_main_with_the_full_plan_in_order ... ok
+test default_empty_plans_install_the_handler_arm_empty_slots_and_register_nothing ... ok
+test handler_install_failure_propagates_without_effects_and_a_later_retry_installs_and_replaces ... ok
+test explicit_fixture_registers_consumer_ids_one_to_four_shortcut_ids_five_to_eight_and_grammar_id_nine ... ok
+test consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable ... FAILED
+test consumer_teardown_unregisters_each_owned_ref_exactly_once_and_preserves_shortcuts ... ok
+test consumer_replacement_unregisters_every_old_ref_before_the_first_new_register ... ok
+test retire_matches_owner_arm_and_family_and_ignores_stale_duplicate_and_foreign_requests ... ok
+test off_main_consumer_install_is_rejected_with_zero_native_or_slot_effects ... ok
+test consumer_replacement_leaves_the_shortcut_family_untouched ... ok
+test off_main_teardown_requests_are_rejected_without_native_effects ... ok
+test retire_of_a_replaced_arm_is_a_stale_no_op_that_cannot_clear_the_newer_arm ... ok
+test owner_and_arm_ids_are_globally_monotonic_across_adapter_lifetimes ... ok
+test shortcut_arm_keeps_successful_keys_and_skips_only_the_failed_binding ... ok
+test shutdown_owner_drains_only_that_owners_entries_across_both_families ... ok
+test slot_hooks_observe_cleared_before_the_replacement_publish ... FAILED
+test zero_key_plans_still_arm_their_slot_with_zero_registrations ... ok
+
+failures:
+
+---- consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable stdout ----
+
+thread 'consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable' (505669) panicked at /tmp/compme-g7-codex-mutations/late_clear/crates/platform/tests/carbon_registry_tests.rs:564:5:
+assertion `left == right` failed
+  left: [Published { family: Shortcut, arm: ArmId(9) }, Published { family: Consumer, arm: ArmId(10) }]
+ right: [Published { family: Shortcut, arm: ArmId(9) }, Published { family: Consumer, arm: ArmId(10) }, Cleared { family: Consumer, arm: ArmId(10) }]
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
+
+---- slot_hooks_observe_cleared_before_the_replacement_publish stdout ----
+
+thread 'slot_hooks_observe_cleared_before_the_replacement_publish' (505684) panicked at /tmp/compme-g7-codex-mutations/late_clear/crates/platform/tests/carbon_registry_tests.rs:1203:5:
+Cleared(old) must precede the first replacement register
+
+
+failures:
+    consumer_nth_register_failure_rolls_back_exactly_the_owned_successes_and_stays_retryable
+    slot_hooks_observe_cleared_before_the_replacement_publish
+
+test result: FAILED. 15 passed; 2 failed; 0 ignored; 0 measured; 0 filtered out; finished in 0.00s
+

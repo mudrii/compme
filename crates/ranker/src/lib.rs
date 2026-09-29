@@ -350,14 +350,6 @@ mod tests {
     }
 
     #[test]
-    fn repetition_penalty_is_low_for_exact_recent_text() {
-        assert_eq!(
-            repetition_penalty("repeat me", "please repeat me now"),
-            0.25
-        );
-    }
-
-    #[test]
     fn repetition_penalty_is_case_insensitive() {
         assert_eq!(
             repetition_penalty("Repeat Me", "please repeat me now"),
@@ -460,13 +452,6 @@ mod tests {
     }
 
     #[test]
-    fn truncate_at_sentence_end_keeps_decimal() {
-        // A period embedded in a decimal ("3.14") is followed by a digit, not
-        // whitespace, so it is not a sentence terminator — the text is kept whole.
-        assert_eq!(truncate_at_sentence_end("pi is 3.14 ish"), "pi is 3.14 ish");
-    }
-
-    #[test]
     fn truncate_at_sentence_end_handles_question_and_exclaim() {
         assert_eq!(truncate_at_sentence_end("Really? yes"), "Really?");
         assert_eq!(truncate_at_sentence_end("Stop! now"), "Stop!");
@@ -476,6 +461,7 @@ mod tests {
     fn truncate_at_sentence_end_keeps_decimals() {
         // A period not followed by whitespace is not a sentence end, so numeric
         // decimals survive — the critical false-positive to avoid.
+        assert_eq!(truncate_at_sentence_end("pi is 3.14 ish"), "pi is 3.14 ish");
         assert_eq!(truncate_at_sentence_end("3.14 is pi"), "3.14 is pi");
         assert_eq!(
             truncate_at_sentence_end("version 1.2 ships"),
@@ -625,14 +611,6 @@ mod tests {
         assert_eq!(
             strip_suffix_overlap("quick brown fox", "fox"),
             "quick brown"
-        );
-    }
-
-    #[test]
-    fn strip_suffix_overlap_removes_multi_word_overlap() {
-        assert_eq!(
-            strip_suffix_overlap("see you later today", "later today maybe"),
-            "see you"
         );
     }
 

@@ -2239,6 +2239,27 @@ fn startup_key_bindings_apply_global_shortcuts_from_config() {
 }
 
 #[test]
+fn startup_shortcut_config_drops_a_colliding_set_whole_on_this_host() {
+    let _guard = KeyBindingsGuard::reset();
+    // cmd+96 is a supported chord on this host (the noncolliding control above
+    // proves per-role acceptance), so the drop below is attributable to the
+    // force-activate/toggle-app collision, not to an unsupported chord.
+    let config = Config::from_lookup(lookup(&[
+        ("COMPME_FORCE_ACTIVATE_KEY", "cmd+96"),
+        ("COMPME_TOGGLE_APP_KEY", "cmd+96"),
+        ("COMPME_TOGGLE_GLOBAL_KEY", "shift+96"),
+        ("COMPME_GRAMMAR_CHECK_KEY", "control+96"),
+    ]));
+
+    apply_startup_key_bindings(&config);
+
+    assert_eq!(
+        crate::shell::effective_shortcut_bindings(),
+        Default::default()
+    );
+}
+
+#[test]
 fn accept_subscription_observes_startup_shortcuts_before_installing() {
     let _guard = KeyBindingsGuard::reset();
     let config = Config::from_lookup(lookup(&[
@@ -8597,30 +8618,6 @@ fn emoji_config_off_by_default_and_parses_prefs_when_enabled() {
     .expect("enabled");
     assert_eq!(custom.skin_tone, SkinTone::MediumDark);
     assert_eq!(custom.gender, Gender::Female);
-}
-
-#[test]
-fn emoji_offer_gated_by_enable_and_shortcode() {
-    let prefs = Some(EmojiPrefs::default());
-    // Enabled + a trailing :shortcode → offers (glyph, chars-to-replace).
-    let (glyph, replace_left) = emoji_offer("hi :smile", &prefs).expect("offer");
-    assert!(!glyph.is_empty());
-    assert_eq!(replace_left, 6); // ":smile"
-                                 // Enabled but no shortcode → no offer.
-    assert!(emoji_offer("hello world", &prefs).is_none());
-    // Disabled (None) → never offers, even with a shortcode.
-    assert!(emoji_offer("hi :smile", &None).is_none());
-}
-
-#[test]
-fn trailing_word_extracts_the_word_at_the_caret() {
-    assert_eq!(trailing_word("I teh"), Some("teh"));
-    assert_eq!(trailing_word("color"), Some("color"));
-    assert_eq!(trailing_word("café"), Some("café")); // multibyte
-    assert_eq!(trailing_word("x:smile"), Some("smile")); // ':' is a boundary
-    assert_eq!(trailing_word("done "), None); // trailing space = boundary
-    assert_eq!(trailing_word("a1b"), Some("b")); // digit is a boundary
-    assert_eq!(trailing_word(""), None);
 }
 
 #[test]

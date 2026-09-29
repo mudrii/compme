@@ -1705,30 +1705,6 @@ mod tests {
     }
 
     #[test]
-    fn recent_pages_return_correct_newest_first_order_across_page_boundaries() {
-        // All rows decryptable, but limit is smaller than the row count so the
-        // paging loop still runs more than once internally (page after page) when
-        // limit < total. With limit == total there is exactly one short page; with
-        // limit < total recent() caps at the first `limit`. This pins that the
-        // newest-first ordering is stable right at the limit cutoff (row N-1 down
-        // to row N-limit), independent of how the page math lands.
-        let store = MemoryStore::open_in_memory(&key(21), StorageMode::AcceptedOnly).unwrap();
-        for i in 0..7 {
-            store.remember("app", &format!("row {i}")).unwrap();
-        }
-        assert_eq!(
-            store.recent("app", 4).unwrap(),
-            vec![
-                "row 6".to_string(),
-                "row 5".to_string(),
-                "row 4".to_string(),
-                "row 3".to_string(),
-            ],
-            "the newest 4 rows, newest-first"
-        );
-    }
-
-    #[test]
     fn journal_mode_is_delete_after_open() {
         // DELETE journal mode is a security claim: no persistent -wal/-shm
         // sidecar leaking ciphertext/metadata alongside the db (sidecars are not

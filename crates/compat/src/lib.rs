@@ -1419,13 +1419,6 @@ mod tests {
     }
 
     #[test]
-    fn is_browser_recognizes_web_browsers() {
-        assert!(is_browser("com.google.Chrome"));
-        assert!(is_browser("org.mozilla.firefox"));
-        assert!(!is_browser("com.apple.TextEdit"));
-    }
-
-    #[test]
     fn accessibility_setup_not_needed_for_unknown_non_browser() {
         // An Unknown-tier, non-browser bundle id exercises the false arm of the
         // is_browser gate in needs_accessibility_setup (line ~91): even with

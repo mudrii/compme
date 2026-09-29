@@ -378,6 +378,9 @@ mod tests {
         assert_eq!(trailing_word("hello wrld"), Some("wrld"));
         assert_eq!(trailing_word("wrld"), Some("wrld"));
         assert_eq!(trailing_word("un café"), Some("café"));
+        assert_eq!(trailing_word("café"), Some("café"));
+        assert_eq!(trailing_word("x:smile"), Some("smile"));
+        assert_eq!(trailing_word("a1b"), Some("b"));
         assert_eq!(trailing_word("hello "), None);
         assert_eq!(trailing_word("x1"), None);
         assert_eq!(trailing_word(""), None);
