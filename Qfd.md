@@ -1,5 +1,9 @@
 # compme — Full Architecture, Source, Test, Documentation, and CI Audit
 
+**Current release-readiness update:** see §27 (2026-10-04). Earlier dated
+sections retain their original audit checkpoints; G7's implementation/native-CI
+status is reconciled below, while physical acceptance remains open.
+
 **Audit date:** 2026-07-20 · **Re-audited:** 2026-07-21 (five-agent full re-audit; deltas and current finding statuses in §12) · **Re-audited:** 2026-07-25 (post-implementation audit of the committed tree `67a74b2`; verification of every §13 flip, five new findings F14–F18, and corrections in §14) · **Remediated:** 2026-07-26 (F14–F18 closed in four commits; §15) · **Deep dive:** 2026-07-26/27 (§16 — refactor proven token-exact, coverage figures corrected, one live gate defect F20 fixed; read §14 → §15 → §16) · **CI/CD + doc-gating audit:** 2026-07-29 (§17) · **Release-readiness pass:** 2026-07-29 (§18) · **Dependency catch-up:** 2026-08-11 (§19) · **Full-codebase audit:** 2026-09-08 (§20, tree `2d18c34`) · **Independent audit:** 2026-09-15 (§21, `8613a92`, AUD-1..14) · **Design of record:** 2026-09-16 (§22, G7 Carbon main-thread marshal) · **Decision of record:** 2026-09-17 (§23, UIA apartment) · **Audit repairs:** 2026-09-20 (§24) · **Review + six-dimension audit fixes:** 2026-09-22/23 (§25)
 
 **Repository:** `compme`
@@ -839,7 +843,7 @@ Local gate evidence for this audit is recorded in §20.5.
 | G4 | Med | platform_macos | `insert_range_for_field` reads once, converts, sets — it lacks the pre-write re-read that `insert_for_field` has, so a keystroke between read and set is clobbered by the full-value write. | `crates/platform_macos/src/lib.rs:4603-4624` vs `:4447-4454` | PLAUSIBLE, **FIXED** `b4ae361` (2026-09-10, plan item 2c): the range path re-reads value + selected range immediately before the set and refuses through `ensure_ax_insert_snapshot_unchanged` exactly like `insert_for_field`; the recording fake serves scripted second reads, and the refusal (zero sets) plus the applied read-order are unit-pinned. mac CI lane green (run 34432782232, 2026-09-10; plus `7462f33`, the mac-lane clippy fixup for the builder's unneeded `mut`) |
 | G5 | Med | platform_macos | `Message::InstallResource` and the `RemoveResource` drop on the AX worker are not `catch_unwind`-wrapped (only `Run` is); a panic there kills the worker and every later adapter call fails with "AX worker dropped job result" until relaunch. | `crates/platform_macos/src/ax_worker.rs:783-807` | CONFIRMED, **FIXED** `b8d3626` |
 | G6 | Med | platform_macos | No worker-side coalescing of queued `ObserverEvent`s (each costs up to 7 AX round trips before the 25 ms callback-side coalescer runs), and the 4 Hz safety poll dispatches unchanged `(identity, rect)` pairs, so a slow AX server plus fast typing queues seconds of geometry work ahead of `insert`/`read_context`. This is the concrete cost of the accepted A66 posture. | `crates/platform_macos/src/ax_worker.rs:726-736,1229-1233`, `crates/platform_macos/src/lib.rs:5455-5459,5594-5613` | PLAUSIBLE, **FIX SHIPPED, UNVERIFIED** `9b91b35` (2026-09-11, plan item 6): contiguous same-`(pid, notification)` bursts coalesce to the newest retained element (explicit CFRetain balance for superseded elements; first non-observer message deferred, never dropped/reordered) and unchanged `(identity, rect)` safety polls skip the callback dispatch; the A66/250 ms posture is unchanged. Three new tests over the fake loop + the pure poll predicate. **The macOS lane is RED** (run 34578291953: `Test (serial, macOS state)` failed; format/clippy/parallel steps green) and the dev host's `gh` token expired before the logs could be fetched, so the failing test is unidentified — static review of every fake-loop queue simulates clean. **G6 is NOT fixed until the lane is green**: re-auth gh, pull the failing step's log, fix or revert `9b91b35`. **2026-09-16, diagnosed:** the logs were pulled on both run 34578291953 and run 35054763339 (the same code on `5ab5c65`). Both failures are **test-side**, and the coalescing half of the production code is sound (drain exits all fall through to exactly one dispatch; superseded elements carry exactly one release; the deferred slot preserves order). The tests lacked any barrier against the async `compme-callbacks` dispatcher, and asserted the input seed against the output identity, which `field_element_id()` formats as `ax:ptr=<id>`. Run 35054763339 is the proof: `defers_a_queued_job` won the race that once and printed `["ax:ptr=ax:first", "ax:ptr=ax:second"]` — correct order, nothing lost. Fixed in `cb013ad` (test-only); mac lane green on run 35055438862. **CLOSED 2026-09-16** once the poll-skip half — a separate confirmed defect found while auditing this commit, filed and fixed as G21 (`35b6ab8`, run 35068705271) — was repaired too |
-| G7 | Med | platform_macos | Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX worker thread; Apple documents Carbon Events as main-thread-only. Works in live gates, unsupported. | `crates/platform_macos/src/lib.rs:1486,3265,3279,3358,3430,3674` (re-located 2026-09-16) | CONFIRMED, **OPEN — design ready, deliberately NOT landed**. The deadlock is worse than this row implied: registration runs main → worker *synchronously* as the normal case (`set_tap_visible` → `set_accept_action` → `install_resource` blocks on `reply_rx.recv()`), so `DispatchQueue::main().exec_sync()` from the worker self-deadlocks on **every** arm, and a bounded wait would time out on every arm instead. Full design and the reasons it is held in §22 |
+| G7 | Med | platform_macos | Before `7894243`, Carbon `RegisterEventHotKey`/`InstallEventHandler` ran on the AX worker thread despite the main-thread-only contract. A naive worker → main synchronous dispatch would deadlock with the synchronous main → worker install edge. | `crates/platform_macos/src/carbon_registry.rs`, `lib.rs`, `ax_worker.rs` | CONFIRMED, **IMPLEMENTED — physical acceptance OPEN**. Main-only registration and ID-scoped teardown landed in `7894243`; shutdown-test cleanup corrected in `261a1e6`. All five native CI lanes passed on `261a1e6` (run 36532353871), including all 391 macOS adapter tests. Mac Full Local Gate and physical before/after hotkey evidence remain required; §22.5 |
 | G8 | Med | platform_linux | D-Bus round trips (`element_owner`, up to four calls) run **under the field-registry mutex** that every run-loop AT-SPI method also takes; `front_app` walks the desktop tree to depth 16 although the contract says "must not block"; no `platform_linux` call carries a per-call timeout (zbus default 25 s) and every X11 void request is `.check()`ed (about 8 round trips per `show_ghost`). | `crates/platform_linux/src/atspi_events.rs:91-94`, `src/lib.rs:236-241,359-361`, `src/atspi_live.rs:235-284,587-613`, `src/x11_overlay.rs:93-100,441-620`, `crates/platform/src/lib.rs:524` | CONFIRMED, **FIXED** in three slices 2026-09-08/11: owner lookup moved outside the registry lock and `front_app` answers from the registry (walk only before the first focus event), 36/36 live; per-call D-Bus timeouts **FIXED** `bf5893b` (2026-09-11, plan item 5): every public `AtspiSession` method runs under `bounded_bus_call` (helper thread + 10 s deadline over a cloned connection, mapping to `PlatformError::Timeout` — the first production site of that variant), and the raw-call session connections (a11y open/GetAddress, keyring, reveal) carry `Builder::method_timeout`; the overlay `.check()` collapse **FIXED** `02eaaaf` (2026-09-11) — verified 2026-09-16: no `.check()` call remains in `x11_overlay.rs`; requests go out unchecked and one `poll_for_event` drain (`:636`) surfaces any X error before `Ok`, which is the fail-closed shape the plan asked for. **G8 fully closed** |
 | G9 | Med | app (non-Linux stub) | The `cfg(not(target_os = "linux"))` shell stub returns `Ok(())` from `set_accept_keymap_from_config_with_mods`, hard-coded keys from `effective_accept_keys_with_mods_and_grammar`, and `Ok(())` from `SettingsWindow::show`, so the run loop logs "accept keys rebound" for a no-op. Contradicts the fail-closed Windows posture; `make_tray` in the same file already returns `Err(UnsupportedField)`. | `crates/app/src/shell/stub.rs:133-152,194-196`, `crates/app/src/run_loop.rs:3462-3475` | CONFIRMED, **FIXED** `b8d3626` |
 | G10 | Med | app / platform_macos | `TrayFlags.enabled` is toggled by non-atomic load-then-store from three threads (tray menu, ToggleGlobal shortcut, SIGUSR1); two near-simultaneous toggles collapse into one. `fetch_xor(true)` at all three sites fixes it. | `crates/app/src/run_loop.rs:5215-5216,5386-5387`, `crates/platform_macos/src/tray.rs:70` | CONFIRMED, **FIXED** `b8d3626` |
@@ -962,7 +966,7 @@ makes the un-annotated remainder a real inventory of what nobody has proven.
 
 ---
 
-## 22. G7 Carbon main-thread marshal — design of record (2026-09-16, not landed)
+## 22. G7 Carbon main-thread marshal — design of record (2026-09-16 checkpoint; implementation status in §22.5)
 
 G7 is real: Carbon `RegisterEventHotKey`/`InstallEventHandler` run on the AX
 worker, and Apple documents Carbon Events as main-thread-only. A full design
@@ -1046,7 +1050,7 @@ when off-main, that register emits `unregister(old) → register(new)` in order,
 that a stale unregister after a newer register is a no-op, and that dropping a
 token emits exactly one unregister for its own id.
 
-### 22.5 2026-09-29 amendment — owner-authorized local implementation (Linux), pending native validation
+### 22.5 2026-09-29 amendment — implementation landed; native CI verified; physical acceptance pending
 
 On 2026-09-29 the owner explicitly authorized implementing G7 locally on
 Linux before the physical-key baseline, superseding the §22.3/§22.4 hold **for
@@ -1064,12 +1068,19 @@ host-neutral production core (`crates/platform_macos/src/carbon_registry.rs`)
 tested on Linux; raw refs stay in main-thread-only storage; only plain-data
 IDs cross threads.
 
-**The §22.4a prerequisite is unchanged and remains unsatisfied**: the
-physical baseline (`always-on-hotkeys-physical-look` plus
-accept/dismiss/cycle/rearm against the current build) and all native gates
-(Full Local Gate, serialized native tests, native CI on the exact candidate,
-physical before/after) are still owed before any native correctness claim or
-release step. The local implementation is unvalidated until then.
+**Native CI update (verified 2026-10-03):** implementation `7894243` initially
+failed one teardown test because it requested a worker barrier after shutdown
+had joined the worker. Test-only correction `261a1e6` passed all five lanes in
+[run 36532353871](https://github.com/mudrii/compme/actions/runs/36532353871),
+including all 391 macOS adapter tests and the 2284-test workspace inventory.
+This verifies native execution for that exact commit; later changes require
+their own native CI evidence.
+
+**The §22.4a physical prerequisite remains unsatisfied:**
+`always-on-hotkeys-physical-look` plus accept/dismiss/cycle/rearm and physical
+before/after evidence at a Mac. Mac Full Local Gate is also pending. Neither
+CI success nor the owner's earlier implementation authorization closes those
+requirements or authorizes release.
 
 ## 23. UIA apartment decision — MTA on a window-less worker (2026-09-17, before coding plan item 8)
 
@@ -1212,3 +1223,154 @@ holds the per-area commit table and the items still open.
 | C-3 | A failed re-show retracted an earlier real Shown stat | Fixed `4271c0c` (red before the fix) |
 | G-1 | Live pin checker flaked on `awk \| grep -q` SIGPIPE under `pipefail` | Fixed `70319e0` |
 | G-2 | Script syntax gate parsed only the first file per `xargs` batch; `pre-push` never linted | Fixed `2fab366` |
+
+## 26. Release audit fixes — 2026-10-03 (local candidate)
+
+The release audit examined `261a1e6`, its exact native CI run, the published
+v0.1.6 artifact, the release policies and all executable Linux gates. The
+following repairs are implemented locally; this candidate still needs native
+CI and the outstanding Mac release prerequisites before it can ship.
+
+| Finding | Repair and regression coverage |
+|---|---|
+| Unicode PANs leaked through card redaction and encrypted memory | Normalize every Unicode 16.0 Nd digit before Luhn validation. Independent regex-inventory coverage checks all 760 digit values; script/mixed-script cases retain non-Luhn and short-number controls. Accepted and monitored domain records are checked after a file-backed encrypted store closes and reopens. |
+| Missing-model smoke lost the dynamic loader paths needed by Nix-built binaries | Keep only `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH` and `DYLD_FALLBACK_LIBRARY_PATH` alongside the existing explicit environment allowlist. The self-test checks loader-path preservation with spaces and that an unrelated completion setting is cleared. |
+| Release status still described committed G7 work as uncommitted / native-pending | Reconcile ROADMAP, this ledger and the G7 validation record with `261a1e6` and native run 36532353871. Preserve dated inventory deltas; update the live test-count anchors for the two new tests (expected macOS inventory 2286). Secure-field request suppression is distinguished from the still-unproven AllMonitored storage-suppression leg. |
+
+The digit-value table comes from the Nd decimal-value column of the official
+[Unicode 16.0 UnicodeData](https://www.unicode.org/Public/16.0.0/ucd/UnicodeData.txt).
+It adds no runtime dependency or network request.
+
+Before the fixes, the three new/expanded Rust regressions failed with the
+original Arabic-Indic PAN preserved and the digit mapper returning `None` for
+U+0660; the startup self-test failed because the loader path was lost. Logs:
+`.gate/release-fixes-20261003-{regression,redaction}-before.log`.
+
+**Validation:** Linux Host Gate passed **44/44 commands, zero skipped**,
+including fmt, clippy, **1902 passing tests/doctests**, rustdoc, the Darwin
+all-targets compile check, workflow lint, policy/version checks and script
+self-tests (`.gate/release-fixes-20261003-linux-gate.log`). The default test
+lanes left 53 opt-in live/model/subprocess tests ignored. Redaction/memory
+passed all **121 unit tests**; the startup harness passed all **14 self-tests**.
+The real NixOS binary also passed the repaired startup smoke without a loader
+wrapper (`.gate/release-fixes-20261003-missing-model-product.log`), with no
+requests submitted and `Blocked(AccessibilityUnavailable)` in this no-GUI
+session. Independent Standards and Spec reviews each found **zero issues**;
+the Unicode table was independently checked against all 760 official values.
+
+The first Linux gate attempt rejected the source-comment citation URL as an
+unreviewed network host; moving that citation to this document fixed the gate
+without changing the network policy. Failed output is preserved in
+`.gate/release-fixes-20261003-linux-gate-attempt1.log`.
+
+Full Local Gate was attempted on the repaired candidate: fmt passed, then
+command **2/57** failed with `error[E0455]: link kind framework is only
+supported on Apple targets` in `accessibility-sys`. Commands **3–57 did not
+run** in that invocation; they and their host limits are listed individually
+in `.gate/release-fixes-20261003-full-gate-status.tsv`. Full output:
+`.gate/release-fixes-20261003-full-gate.log`. The separate Linux gate does not
+make that Mac gate green. Exact-candidate native CI and live inventory
+enumeration (expected 2286) remain pending.
+
+The 22 live/manual macOS rows remain open or partial in ACCEPTANCE, alongside
+G7 physical acceptance, Mac Full Local Gate and strict Mac performance proof.
+The audit's three-sample CPU benchmark measured a 1718 ms median against the
+exclusive 500 ms budget; it is a failed Linux CPU measurement, not Mac
+performance evidence. No tag or new release was created.
+
+## 27. Release reevaluation — 2026-10-04 (not ready to tag)
+
+At the start of this audit, fresh GitHub reads showed `261a1e6` at local/remote
+main, all five lanes green in CI run 36532353871 and successful CodeQL run
+37106675524. The starting local patch matched the previous snapshot exactly (SHA-256
+`6b4981baefccbf9c103ea24e1a54dacfc003bd9deebb24135d241262b73d27a5`).
+The first recheck repeated the Linux 44-command gate successfully, then deeper
+review found and repaired these additional issues:
+
+| Finding | Repair and evidence |
+|---|---|
+| Medium: crossing PAN windows skipped the second card's start | Actual production redaction of `4242424242424242 6011111111111117` returned `[redacted-card]011111111111117`; fullwidth and Arabic-Indic equivalents also leaked 15 digits. Scan every start and merge overlapping spans; retain separate matches when they do not overlap. Probe and failing regression: `.gate/release-recheck-20261004-redaction-probe.log`, `overlap-before.log`. |
+| Medium: old encrypted records bypassed current redaction during history hydration | `recent` returned decrypted strings verbatim and `seed_if_empty` trusted them. Authenticated reads now re-redact through a zeroizing temporary buffer. A file-backed legacy ciphertext regression verifies original/domain AAD, exact redacted return values, unchanged blob bytes and unchanged row count. Failing regression: `.gate/release-recheck-20261004-legacy-before.log`. No erase or database migration was performed. |
+| Low: absent loader variables became present but empty | Forward only present variables, using Bash 3.2-compatible positional arguments. Self-tests cover unset/empty values as well as spaces and unrelated application configuration. This preserves dyld fallback defaults; no current Mac product load failure is claimed. |
+
+The adjacent-card test's former two-placeholder requirement for a whitespace
+pair conflicted with covering all overlapping valid windows. It now requires
+complete digit removal; semicolon-separated PANs retain exact two-placeholder
+coverage. Likewise, a formerly visible short tail belonging to overlapping
+windows is scrubbed, while a short number outside that run remains unchanged.
+These are explicit privacy-policy corrections, not duplicate-test cleanup.
+
+Apple's [dyld fallback implementation](https://github.com/apple-oss-distributions/dyld/blob/main/dyld/DyldProcessConfig.cpp)
+distinguishes a null override from a present override before selecting defaults.
+The loader change preserves that distinction without widening the allowlist.
+
+**Validation of the repaired candidate:** the Linux Host Gate passed all
+**44/44 commands with zero skips**, including fmt/clippy, **1903 passing
+tests/doctests**, rustdoc, the Darwin all-targets compile check, workflow lint,
+policy/version checks and script self-tests
+(`.gate/release-recheck-20261004-linux-final.log`). Its 53 ignored opt-in tests
+were followed up separately: all **42 live AT-SPI/X11 tests** passed, the
+real-model corpus gate passed its **80% threshold**, and the eight-test strict
+CPU model suite passed six tests but failed both latency assertions:
+**1885 ms completion / 1867 ms complete_n**, against the exclusive 500 ms
+budget. The remaining two ignored app entries are hard-exit subprocess helpers
+exercised by their passing parent tests. This CPU failure is not Mac performance
+evidence or a release pass. Logs:
+`.gate/release-recheck-20261004-{linux-live,model-quality,model-strict-cpu}.log`.
+
+Redaction/memory passed **122 unit tests** in the final Linux gate. Independent
+review identified that read-time redaction could mask a future write regression;
+existing accepted/monitored tests now directly authenticate and decrypt stored
+blobs, asserting exact pre-encryption scrubbing for both NULL/domain AAD and
+file reopen. The separate legacy-read test verifies unchanged ciphertext.
+Standards and Spec reviews each have **zero remaining findings** after this
+coverage correction. The rebuilt production probe now returns only
+`[redacted-card]` for all three formerly leaking adjacent-card inputs
+(`.gate/release-recheck-20261004-redaction-probe-after.log`). Startup self-tests
+passed **16/16**, and the real NixOS missing-model product smoke exited zero
+with no requests in the no-GUI session. The added legacy-record test raises the
+expected native inventory to **2287**; actual native enumeration and execution
+remain pending.
+
+Full Local Gate was attempted again: fmt passed, then **command 2/57** failed
+with `error[E0455]: link kind framework is only supported on Apple targets`
+and the Apple-only `objc2` guard. Commands **3–57 did not execute in that
+invocation**; each is named with separate evidence or its host limit in
+`.gate/release-recheck-20261004-full-gate-status.tsv`. Bundle/A1b runner
+self-tests and spike fmt passed separately. The icon self-test passed its
+hermetic cases but failed at `swift not found on PATH`; its real Swift helper,
+Mac bundle smoke, native inventory and spike clippy/test/build remain owed to
+macOS. Full output: `.gate/release-recheck-20261004-full-gate.log`.
+
+Fresh audits of both lockfiles passed with zero denied findings; the root audit
+reports the allowed informational `ttf-parser` unmaintained advisory
+[RUSTSEC-2026-0192](https://rustsec.org/advisories/RUSTSEC-2026-0192).
+Live GitHub governance still passes its documented baseline with the existing
+accepted caveats, and all six required release-secret names are present; secret
+validity is not proved by enumeration. Fresh downloads confirm the published
+v0.1.6 archive, checksum, update manifest and cask agree, and GitHub attestation
+verification binds that archive to tag commit `6c0bea5` and the release workflow.
+Apple signature/staple/Gatekeeper checks require macOS. The two open dependency
+PRs are maintenance work: #9 has green native lanes, while #10 fails three
+native lanes; neither was merged into the audited lockfiles. No issue is open.
+The complete evidence index and remaining release steps are in
+`.gate/release-recheck-20261004-report.txt`.
+
+The owner authorized commit/push of these repairs on 2026-10-04 and will
+complete the remaining validation on a Mac. The Linux gate is rerun before
+commit; the host-blocked Full Local Gate remains a Mac obligation. Pre-commit
+logs: `.gate/release-commit-20261004-{full,linux}-gate.log`. Native CI results
+must be checked against the exact pushed commit.
+
+**Release decision:** not ready to tag. ROADMAP requires closure of all 22
+manual/live rows, a green Mac Full Local Gate and the RELEASING pre-tag steps.
+The ledger still has 19 never-recorded and three partial/conditional rows;
+declared additional Tier-4 observations and G7 physical before/after evidence
+remain pending. Strict real-Mac model/quality/performance checks require CPU
+budget and Metal cancellation/spike evidence; hosted latency opt-out is not that
+proof. The current patch also needs its own native CI. A new stable version,
+reconciled lockfiles/version docs and exact-tip protected tag are release
+preparation work; signing/notarization, publication, cask finalization and
+`post_verify` execute after tagging. Windows/Linux feature milestones and the
+optional updater do not block this macOS release; A2 remains local/manual,
+outside automated tag gates, with roadmap acceptance work still applicable.

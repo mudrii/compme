@@ -1,12 +1,31 @@
 # macOS release validation handoff — runbook and blocked-state (2026-09-29)
 
-> **Later 2026-09-29 update:** the owner authorized local G7 implementation
-> before the physical baseline. Implementation and Linux validation are now
-> complete; native validation remains pending. See the
+> **Release-fix handoff, 2026-10-04:** the owner authorized committing and
+> pushing the audited privacy/startup repairs and will finish validation on
+> a Mac. Pull the latest `main`; the expected native inventory is now 2287.
+> Run `tools/dev/check.sh`, the strict model/quality commands in
+> [RELEASING.md](../../RELEASING.md), and the 22 live/manual gates plus the
+> additional Tier-4/G7 physical observations in
+> [ROADMAP.md](../../ROADMAP.md) and [ACCEPTANCE.md](../../ACCEPTANCE.md).
+> Record real commit/binary evidence. Version metadata remains 0.1.6; follow
+> the new-version/pre-tag runbook before creating another release.
+> [Qfd §27](../../../Qfd.md#27-release-reevaluation--2026-10-04-not-ready-to-tag)
+> records the repaired candidate and Linux validation limits. Older status
+> and blocked-state statements below are dated checkpoints.
+
+> **Current status, verified 2026-10-03:** the owner authorized local G7
+> implementation before the physical baseline on 2026-09-29. Implementation
+> landed in `7894243`, with test cleanup corrected in `261a1e6`; all five native
+> CI lanes passed on `261a1e6`
+> ([run 36532353871](https://github.com/mudrii/compme/actions/runs/36532353871)).
+> Mac Full Local Gate and physical before/after acceptance remain pending;
+> later candidates require their own native CI. See the
 > [current plan](2026-09-29-g7-linux-implementation.md) and
 > [independent audit](2026-09-29-g7-codex-validation.md).
 > The blocked-state report below preserves the earlier snapshot; its statements
 > that production G7 routing is unchanged are historical, not current status.
+> The baseline/current-build wording refers to that original pre-G7 checkpoint;
+> record the exact commit and binary for each before/after evidence leg.
 
 **Author:** Worker C (acceptance and release preparation), dispatched by the glm
 coordinator session. **Host:** NixOS, no Mac access. **Method:** read-only — no

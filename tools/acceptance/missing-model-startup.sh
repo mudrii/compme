@@ -48,6 +48,21 @@ if [ -z "${COMPME_CONFIG:-}" ]; then
   echo 'fake compme: missing isolated COMPME_CONFIG' >&2
   exit 9
 fi
+if [ "$mode" = loader-env ]; then
+  expected="$(cat "$(dirname "$0")/expected-loader-path")"
+  if [ "${LD_LIBRARY_PATH:-}" != "$expected" ] || [ "${COMPME_STUB_COMPLETION+set}" = set ]; then
+    echo 'fake compme: loader path lost or unrelated configuration inherited' >&2
+    exit 9
+  fi
+fi
+if [ "$mode" = loader-unset ] && [ "${LD_LIBRARY_PATH+set}" = set ]; then
+  echo 'fake compme: absent loader path became set' >&2
+  exit 9
+fi
+if [ "$mode" = loader-empty ] && { [ "${LD_LIBRARY_PATH+set}" != set ] || [ -n "${LD_LIBRARY_PATH:-}" ]; }; then
+  echo 'fake compme: empty loader path was not preserved' >&2
+  exit 9
+fi
 if [ "$mode" = duplicate ]; then
   printf '%s\n' 'compme: another instance is already running — exiting'
   exit 0
@@ -67,6 +82,31 @@ case "$mode" in
 esac
 SH
   chmod +x "$fake_bin"
+
+  loader_path="${LD_LIBRARY_PATH:-}:/compme self-test loader"
+  printf '%s' "$loader_path" >"$tmp_dir/expected-loader-path"
+  if LD_LIBRARY_PATH="$loader_path" COMPME_STUB_COMPLETION=poison COMPME_FAKE_MODE=loader-env COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/loader-env.log" "$0" >"$tmp_dir/loader-env.out" 2>&1; then
+    echo "PASS self-test-missing-model-startup-loader-env"
+  else
+    echo "FAIL self-test-missing-model-startup-loader-env" >&2
+    cat "$tmp_dir/loader-env.out" "$tmp_dir/loader-env.log" >&2
+    exit 1
+  fi
+
+  for mode in loader-unset loader-empty; do
+    if [ "$mode" = loader-unset ]; then
+      set -- -u LD_LIBRARY_PATH
+    else
+      set -- LD_LIBRARY_PATH=
+    fi
+    if env "$@" COMPME_FAKE_MODE="$mode" COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/$mode.log" "$0" >"$tmp_dir/$mode.out" 2>&1; then
+      echo "PASS self-test-missing-model-startup-$mode"
+    else
+      echo "FAIL self-test-missing-model-startup-$mode" >&2
+      cat "$tmp_dir/$mode.out" "$tmp_dir/$mode.log" >&2
+      exit 1
+    fi
+  done
 
   if COMPME_BIN="$fake_bin" COMPME_MISSING_MODEL_LOG="$tmp_dir/ok.log" "$0" >/dev/null; then
     echo "PASS self-test-missing-model-startup-success"
@@ -190,6 +230,16 @@ mkdir -p "$(dirname "$LOG")"
 missing_model="$tmp_dir/missing.gguf"
 
 status=0
+# Match the loader allowlist in app's config_startup subprocess tests. Nix-built
+# binaries need these paths before main; application settings stay isolated.
+# Preserve absent versus empty variables, including dyld's fallback defaults.
+# Positional arguments avoid empty-array expansion under bash 3.2 + set -u.
+set -- "$BIN"
+for loader_var in LD_LIBRARY_PATH DYLD_LIBRARY_PATH DYLD_FALLBACK_LIBRARY_PATH; do
+  if printenv "$loader_var" >/dev/null 2>&1; then
+    set -- "$loader_var=${!loader_var}" "$@"
+  fi
+done
 env -i \
   PATH="$PATH" \
   HOME="$HOME" \
@@ -200,7 +250,7 @@ env -i \
   COMPME_MODEL_PATH="$missing_model" \
   COMPME_RUN_MS="$RUN_MS" \
   COMPME_ENABLED=false \
-  "$BIN" >"$LOG" 2>&1 || status=$?
+  "$@" >"$LOG" 2>&1 || status=$?
 
 validate_log "$status" "$LOG"
 

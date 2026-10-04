@@ -490,6 +490,8 @@ impl MemoryStore {
 
     /// The most recent `limit` decryptable records for `app`, newest first.
     /// Records that fail to decrypt (e.g. a different key) are skipped.
+    /// Apply current redaction on reads too, so records written by an older
+    /// scrubber cannot bypass new privacy fixes. Stored ciphertext is unchanged.
     pub fn recent(&self, app: &str, limit: usize) -> Result<Vec<String>> {
         Self::validate_app_aad(app)?;
         if limit == 0 {
@@ -525,7 +527,8 @@ impl MemoryStore {
                 // app/domain column tampered so the AAD no longer matches) is absent.
                 let aad = Self::record_aad(app, stored_domain.as_deref());
                 if let Some(text) = self.decrypt(&blob, &aad) {
-                    out.push(text);
+                    let plaintext = zeroize::Zeroizing::new(text);
+                    out.push(redaction::redact(plaintext.as_str()));
                     if out.len() == limit {
                         return Ok(out);
                     }
@@ -1094,8 +1097,118 @@ mod tests {
     fn redacts_before_storing() {
         let store = MemoryStore::open_in_memory(&key(3), StorageMode::AcceptedOnly).unwrap();
         store.remember("app", "mail ada@example.com now").unwrap();
+        let blob: Vec<u8> = store
+            .conn
+            .query_row("SELECT blob FROM memories WHERE app = 'app'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            store.decrypt(&blob, &MemoryStore::record_aad("app", None)),
+            Some("mail [redacted-email] now".into())
+        );
         let recent = store.recent("app", 1).unwrap();
         assert_eq!(recent, vec!["mail [redacted-email] now"]);
+    }
+
+    #[test]
+    fn unicode_cards_are_redacted_after_file_store_reopen() {
+        let path = temp_db_path();
+        let accepted = "pan ٤١١١١١١١١١١١١١١١ end";
+        let monitored = "pan ४१११११११११११११११ end";
+        {
+            let store = MemoryStore::open(&path, &key(3), StorageMode::AllMonitored).unwrap();
+            store
+                .remember_for_domain("accepted", Some("audit.test"), accepted)
+                .unwrap();
+            store
+                .monitor_for_domain("monitored", Some("audit.test"), monitored)
+                .unwrap();
+        }
+        let raw = std::fs::read(&path).unwrap();
+        let records = {
+            let store = MemoryStore::open_existing(&path, &key(3), StorageMode::Off).unwrap();
+            // Check the stored plaintext directly: recent() also redacts, so its
+            // output alone cannot prove that writes scrubbed before encryption.
+            for app in ["accepted", "monitored"] {
+                let blob: Vec<u8> = store
+                    .conn
+                    .query_row("SELECT blob FROM memories WHERE app = ?1", [app], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(
+                    store.decrypt(&blob, &MemoryStore::record_aad(app, Some("audit.test"))),
+                    Some("pan [redacted-card] end".into()),
+                    "{app} must redact before encryption"
+                );
+            }
+            (
+                store.recent("accepted", 1).unwrap(),
+                store.recent("monitored", 1).unwrap(),
+            )
+        };
+        let _ = std::fs::remove_file(&path);
+        for input in [accepted, monitored] {
+            assert!(!raw
+                .windows(input.len())
+                .any(|bytes| bytes == input.as_bytes()));
+        }
+        assert_eq!(records.0, vec!["pan [redacted-card] end"]);
+        assert_eq!(records.1, vec!["pan [redacted-card] end"]);
+    }
+
+    #[test]
+    fn recent_redacts_legacy_ciphertexts_without_rewriting_them() {
+        let path = temp_db_path();
+        let legacy = [
+            ("app", None, "pan ٤١١١١١١١١١١١١١١١ end"),
+            (
+                "domain-app",
+                Some("audit.test"),
+                "pan ٤٢٤٢٤٢٤٢٤٢٤٢٤٢٤٢ ٦٠١١١١١١١١١١١١١٧ end",
+            ),
+        ];
+        let mut blobs = Vec::new();
+        {
+            let store = MemoryStore::open(&path, &key(3), StorageMode::AcceptedOnly).unwrap();
+            for (app, domain, text) in legacy {
+                // Simulate authenticated records made by the older redactor:
+                // the current write API would scrub these before encryption.
+                let blob = store
+                    .encrypt(text, &MemoryStore::record_aad(app, domain))
+                    .unwrap();
+                store
+                    .conn
+                    .execute(
+                        "INSERT INTO memories (app, domain, blob) VALUES (?1, ?2, ?3)",
+                        params![app, domain, blob],
+                    )
+                    .unwrap();
+                blobs.push(blob);
+            }
+        }
+        {
+            let store = MemoryStore::open_existing(&path, &key(3), StorageMode::Off).unwrap();
+            for ((app, _, _), original_blob) in legacy.into_iter().zip(blobs) {
+                assert_eq!(
+                    store.recent(app, 1).unwrap(),
+                    vec!["pan [redacted-card] end"]
+                );
+                let stored_blob: Vec<u8> = store
+                    .conn
+                    .query_row("SELECT blob FROM memories WHERE app = ?1", [app], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(
+                    stored_blob, original_blob,
+                    "reading must not rewrite user data"
+                );
+            }
+            assert_eq!(store.count().unwrap(), 2);
+        }
+        let _ = std::fs::remove_file(path);
     }
 
     #[test]
@@ -1300,6 +1413,16 @@ mod tests {
         store
             .monitor("app", "type sk-abcdEFGH0123456789abcdEFGH0123")
             .unwrap();
+        let blob: Vec<u8> = store
+            .conn
+            .query_row("SELECT blob FROM memories WHERE app = 'app'", [], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(
+            store.decrypt(&blob, &MemoryStore::record_aad("app", None)),
+            Some("type [redacted-secret]".into())
+        );
         let recent = store.recent("app", 1).unwrap();
         assert_eq!(recent.len(), 1, "the monitored row is stored");
         assert!(

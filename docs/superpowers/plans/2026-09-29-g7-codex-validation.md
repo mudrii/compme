@@ -1,7 +1,12 @@
 # G7 independent validation — 2026-09-29
 
-Status: **local implementation and Linux validation complete; native macOS
-validation pending; commit/push authorized, not release-ready**.
+Current status (verified 2026-10-03): **implementation committed in `7894243`,
+test cleanup corrected in `261a1e6`; all five native CI lanes passed on
+`261a1e6` ([run 36532353871](https://github.com/mudrii/compme/actions/runs/36532353871)),
+including all 391 macOS adapter tests and the 2284-test inventory. Mac Full
+Local Gate and physical before/after hotkey acceptance remain pending; not
+release-ready.** The remainder records the original Linux checkpoint and
+subsequent commit authorization; its pending-native statements are historical.
 
 ## Subsequent commit/push authorization
 

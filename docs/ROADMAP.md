@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-09-29 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2284 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-10-04 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -96,10 +96,11 @@
 > refresh in `35b6ab8`; all five lanes green (run 35068705271). G20's
 > annotation half is complete (2026-09-16: every remaining production
 > `unsafe` block annotated per the §21.3 rule; see the Qfd G20 row). The
-> next actionable step is G7 — main-thread Carbon marshal, design of
-> record in Qfd §22: owner-authorized for local Linux implementation on
-> 2026-09-29 (§22.5); local implementation and Linux validation complete in
-> the working tree; native macOS validation remains pending.
+> G7 main-thread Carbon marshal (Qfd §22.5) landed in `7894243`, with
+> test cleanup corrected in `261a1e6`. All five native CI lanes passed on
+> `261a1e6` (run 36532353871, including all 391 macOS adapter tests).
+> The physical before/after hotkey acceptance and Mac Full Local Gate
+> remain pending.
 > Items 4a + 4b
 > (the `run()` seams, `bbf3724`/`4584b35`) and item 5 (Linux hardening:
 > `3e061ba`/`6ed8289` Wayland capability, `bf5893b` D-Bus timeouts,
@@ -177,6 +178,57 @@ tested**. Everything below is what the plan still calls for.
 
 ## Current release — v0.1.6 audit remediation
 
+### Release recheck — 2026-10-04 (release candidate; not ready to tag)
+
+Fresh independent review and production probes found two additional privacy
+defects: checksum-valid windows crossing adjacent PANs skipped the next card's
+start and exposed a 15-digit suffix; older encrypted records were returned
+without current redaction and could repopulate prompt history. The card stage
+now checks every digit offset and merges overlapping windows; authenticated
+memory reads reapply current redaction in a zeroizing temporary buffer without
+rewriting stored ciphertext. A new file-backed legacy-record regression covers
+both original and domain-bound AAD. Existing adjacent-card and short-tail
+coverage retains separate-placeholder/short-number controls where a non-card
+separator rules out overlapping windows. Accepted/monitored persistence tests
+also authenticate and decrypt stored blobs directly, proving write-time
+scrubbing independently of read-time redaction. No tests were deleted.
+
+The startup harness now forwards only present loader variables, preserving
+absent versus empty values and macOS fallback behavior; the self-test checks
+both states alongside path spaces and configuration isolation.
+
+The legacy-record test raises the expected macOS inventory 2286 → 2287.
+Validation and release requirements are recorded in Qfd §27. The owner
+authorized commit/push on 2026-10-04 and will complete validation on a Mac.
+Native CI must verify each exact pushed candidate and its inventory. The Mac
+Full Local Gate, strict real-Mac model/quality/performance checks and the 22
+manual/live rows plus declared Tier-4 observations remain pending.
+Version metadata is still 0.1.6: a new stable version and reconciled
+version surfaces are required before a new protected tag. Signing, publication,
+cask finalization and `post_verify` follow tagging and define release completion.
+
+### Release audit fixes — 2026-10-03 (local candidate)
+
+- Unicode card redaction now converts all 760 decimal digits in Unicode 16.0,
+  matching the pinned regex inventory. Arabic-Indic, Devanagari, mixed-script
+  and supplementary-plane PANs are scrubbed while non-Luhn order IDs survive.
+  Regression coverage checks the complete matcher inventory and accepted /
+  monitored encrypted records after closing and reopening a file-backed store.
+- The missing-model startup smoke retains only the Linux/macOS loader-path
+  variables alongside its existing launch allowlist; unrelated application
+  settings remain cleared. Its self-test checks path preservation, including
+  spaces, and rejection of inherited completion configuration.
+- Current G7 status is reconciled with the actual pushed native CI result;
+  historical inventory deltas remain dated records. The AllMonitored memory
+  residual still includes secure-input storage suppression: earlier lock-screen
+  request suppression did not prove absence of stored rows.
+
+The two additional Rust tests raise the expected macOS inventory 2284 → 2286;
+native CI must enumerate and execute this new candidate. Local validation is
+recorded in Qfd §26. The 22 macOS live/manual rows, G7 physical acceptance,
+Mac Full Local Gate and strict performance proof remain release prerequisites.
+The latest published artifact remains v0.1.6; no tag or release was created.
+
 ### Test consolidation — 2026-09-26
 
 Removed 11 overlapping tests, three repeated autocorrect assertions, and two
@@ -188,12 +240,12 @@ the actual corrupt-page traversal test remains. Distinct production-wrapper,
 no-hash download, source-alone context, empty-window stats, literal emoji,
 platform-parity, and acceptance coverage remains intact.
 
-The documented macOS inventory changes from 2252 to 2241 by this 11-test delta;
-native CI must verify the inventory and execute the consolidated macOS test.
-Full Local Gate is blocked on Linux by the Apple-only `objc2` dependency.
-Linux Host Gate passed all 44 commands (1881 tests plus one doctest; macOS
-all-targets cross-check passed). Changes remain uncommitted pending the full
-native gate. Validation results are recorded in
+At this checkpoint the documented macOS inventory changed from 2252 to 2241
+by this 11-test delta. Full Local Gate was blocked on Linux by the Apple-only
+`objc2` dependency. Linux Host Gate passed all 44 commands (1881 tests plus
+one doctest; macOS all-targets cross-check passed). These changes subsequently
+landed in `7894243`; native CI on `261a1e6` verified the consolidated tests
+and the later 2284 inventory. The checkpoint validation results are recorded in
 `docs/TEST-CONSOLIDATION-2026-09-26.md`.
 
 ### GLM multi-agent groundwork — 2026-09-29
@@ -227,14 +279,14 @@ all-targets cross-check, and the host-agnostic script checks passed. Log:
 `.gate/glm-batch0-20260929-linux.log` (untracked evidence, sha256
 `a1549fb8544482d941165bb6fd3afb9bc3655615205fbafe166aa79f9eabe448`).
 
-**Still gated:** production G7 routing is unchanged — the physical-key
+**At this checkpoint:** production G7 routing was unchanged — the physical-key
 baseline (`always-on-hotkeys-physical-look` plus accept/dismiss/cycle/rearm
 against the current build, Qfd §22.4a) remains unrecorded, and no Mac GUI
-session is available from this host. All of this batch's changes remain
-uncommitted with the protected consolidation diff, pending the Full Local Gate
-and native macOS CI. No release-ready claim is made.
+session was available from this host. This batch subsequently landed with the
+consolidation and G7 implementation in `7894243`, and native CI passed on
+`261a1e6`. Full Local Gate at a Mac and physical acceptance remain pending.
 
-### G7 local implementation — 2026-09-29 (awaiting native validation)
+### G7 implementation — 2026-09-29 (native CI verified; physical acceptance pending)
 
 Owner-authorized local Linux implementation of the Qfd §22.5 contract:
 registration is main-thread-only and synchronous (off-main attempts are typed
@@ -260,7 +312,8 @@ registration is main-thread-only and synchronous (off-main attempts are typed
 - `run_loop.rs` behavior unchanged (comment-only edit): `drop(adapter)` remains the main-thread shutdown
   edge (lifecycle-audited: the engine held the only other Arc clone).
 - Native wrapper tests in `lib_tests.rs` (g7_* suite): compile-only on this
-  host via the darwin cross-check; execution awaits the macOS lane.
+  host via the darwin cross-check; executed successfully by native CI on
+  `261a1e6` (run 36532353871).
 
 **Tests:** 2242 → 2284 (+42: 17 portable `platform` tests + 25 new
 `platform_macos` `g7_*` tests). Linux Host Gate on 2026-09-29 passed 44
@@ -272,15 +325,15 @@ left 51 portable acceptance/model tests and two app subprocess helpers ignored
 as designed. Independent Darwin all-targets check, clippy `-D warnings`, and
 rustdoc `-D warnings` passed; logs are
 `.gate/g7-codex-darwin-{check,clippy,doc}-20260929.log`. These compile/document
-the native code but do not execute it. Inventory 2284 is source-derived pending
-confirmation by native enumeration. Independent Standards and Spec reviews
+the native code but do not execute it. Native enumeration subsequently confirmed
+the 2284 inventory on `261a1e6`. Independent Standards and Spec reviews
 identified no remaining blocker by inspection after the returned fixes.
 
-**Still pending (unchanged):** native macOS execution of the g7_* wrapper
-suite, Full Local Gate, native CI on the exact candidate, and the Qfd §22.4a
-physical before/after hotkey baseline at a Mac. The owner subsequently
-authorized commit and push on 2026-09-29 with these limitations disclosed;
-native CI must validate the exact pushed candidate. The Full Local Gate was
+**Still pending:** Full Local Gate at a Mac and the Qfd §22.4a physical
+before/after hotkey baseline. Native execution and CI are verified for the
+pushed G7 candidate `261a1e6`; subsequent changes need their own native run.
+The owner authorized commit and push on 2026-09-29 with the Linux limitations
+disclosed. The Full Local Gate was
 attempted here and stopped at command 2/57 (Apple framework/objc2 dependencies
 cannot compile for this Linux host); evidence:
 `.gate/g7-commit-full-local-20260929.log`. No release claim is made.
@@ -292,8 +345,10 @@ passing and one new test failing because its cleanup requested a worker FIFO
 barrier after shutdown had already joined the worker. The follow-up removes
 that invalid request, relies on the completed join, and preserves all teardown
 replay/leak assertions. Production behavior and the 2284 inventory are unchanged.
-The follow-up candidate must pass native CI before the native-test boundary is
-closed; physical acceptance and release readiness remain separate.
+Follow-up `261a1e6` passed all five lanes in
+[CI run 36532353871](https://github.com/mudrii/compme/actions/runs/36532353871),
+including all 391 macOS adapter tests and the 2284-test inventory check.
+Physical acceptance and release readiness remain pending.
 
 ### Full-codebase review fixes — 2026-09-22/23
 
@@ -390,7 +445,7 @@ existing evidence requirements.
 | 1 | Linux mutation timeout safety | Implemented; serialized dispatch, uncertain-outcome quarantine and regression tests; Astra-reviewed |
 | 2–5 | Windows UIA offsets, pattern detection, COM cleanup, identity parsing | Implemented; 39 portable tests and MSVC cross-check pass; Astra-reviewed; native Windows provider proof pending |
 | 6 | Reconcile implementation instructions | Updated; superseded STA and synchronous Carbon dispatch recipes removed; current evidence separated from historical snapshots |
-| 19 | G7 Carbon main-thread registration | Implemented and independently reviewed 2026-09-29 (owner-authorized, Qfd §22.5); Linux gate and Darwin cross-checks pass; commit/push authorized; native execution/CI and physical acceptance pending |
+| 19 | G7 Carbon main-thread registration | Implemented `7894243`, test cleanup corrected `261a1e6`; independently reviewed; all five native CI lanes pass on `261a1e6` (run 36532353871). Mac Full Local Gate and physical before/after acceptance remain pending (Qfd §22.5) |
 | 20 | Erase existing memory while collection is Off | Implemented and reviewed: existing-store/key-only cleanup, no creation or prompt hydration |
 | 21 | Per-domain memory deletion | Implemented and reviewed: transactional schema v2, authenticated app/domain metadata, navigation-safe buffers, confirmed global domain erase |
 | 22 | Memory-mode controls | Implemented and reviewed: live/persisted Off / AcceptedOnly / AllMonitored with rollback and context clearing; native Apps-pane LOOK pending |
@@ -481,9 +536,9 @@ The `platform` crate was deliberately shaped as a trait/contract to accept them.
   and fails closed for mutation/events/overlay; Linux selects the wired adapter
   described below.
 - **CI matrix** (`a7427c6`, widened by `2c80e74`) — `windows-latest` +
-  `ubuntu-latest` jobs run fmt/clippy/test over the workspace excluding only
+  `ubuntu-latest` jobs run clippy/test over the workspace excluding only
   Apple-only `platform_macos`, then build the `app` binary through its non-mac
-  facade.
+  facade. Platform-independent workspace fmt runs on the macOS lane.
 
 **Pending implementation:** hosted Windows/Linux runners already compile and test
 the portable workspace plus each app facade. Building the real adapters remains
@@ -1398,7 +1453,7 @@ ledger, and folded settings LOOK gates (`personalization-pane-look`,
 | Browser mirror-window | `set_mirror_mode` ✅; `mirror-window-firefox-zen-look` manual gate pins Firefox/Zen ghost-in-mirror confirmation | run the manual gate in a granted desktop session |
 | Terminal/iTerm AI-prompt | `terminal_prompt_activates` ✅; live gating proven 2026-07-07 (Batch 6: command-line blocked, natural-language allowed) | tuning vs real agent prompts |
 | Screen-context OCR | `screen_context_text` ✅; screen context can be enabled live after launch; live submit-path pass 2026-07-07 after CGImageRef encoding panic fix (`e5c055b`) | OCR quality/perf on a granted desktop + multi-display caret confirm |
-| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: snoozed transition, volatile `pid:N` (secure-field fail-closed live-proven 2026-07-07, `f6fa98b`) |
+| Encrypted memory — AllMonitored | core ✅; TextEdit product-loop privacy + runtime-disable proofs + Chrome domain-exclude proof ✅; records only established inserted-text deltas after a baseline, never pre-existing field text; redaction is best-effort and deliberately preserves all-one-case all-letter prose unless a credential key/prefix or entropy signal is present | remaining live residual: secure-input storage suppression, snoozed transition, volatile `pid:N`. Lock-screen secure-field request suppression was live-proven 2026-07-07 (`f6fa98b`); it did not prove that AllMonitored stored no rows, so the ACCEPTANCE memory gate remains partial |
 | Per-app memory inspect/delete UI | app/global erase plus domain erase and memory-mode controls implemented on `main` on 2026-09-19; Off opens an existing store/key for cleanup without hydration; schema-v2 domain records are authenticated and deleted across apps; erase clears previous-input context | portable tests and native CI pass; Astra reviewed the implementation. Buffered monitored-text erasure was fixed on 2026-09-20; native Apps-pane mode/erase LOOK remains open under the Apps memory-control acceptance procedure. Legacy NULL-domain rows require app/global erase. |
 | Trailing-space toggle | accept-path ✅; `e2e-compme-trailing-space` gate | TextEdit product gate now asserts exact single-word trailing-space readback in deterministic `word-only` mode; real-model E2E must use `full`/`word` because real-model `word-only` fails closed; optional manual UX confirmation remains part of the broad settings walkthrough |
 | Strength slider (6 stops) | pure ✅ | live before/after steering at multiple stops |

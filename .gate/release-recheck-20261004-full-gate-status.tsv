@@ -1,0 +1,58 @@
+step	command	full_local_invocation	separate_current_evidence	reason_or_limit
+1	cargo fmt --all -- --check	passed	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+2	cargo clippy --locked --workspace --all-targets -- -D warnings	failed	failed_on_Linux_Apple_dependencies	macOS workspace clippy requires Apple frameworks
+3	cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+4	cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1	not_run_after_step_2_failure	app_serial_tests_passed_separately	platform_macos execution still requires macOS
+5	cargo build --locked --workspace --all-targets	not_run_after_step_2_failure	not_run	Mac workspace all-targets build requires Apple frameworks and native linking
+6	cargo build --locked -p platform_macos --examples	not_run_after_step_2_failure	Darwin_examples_type_checked_only	native macOS example linking/execution not run
+7	"RUSTDOCFLAGS=""-D warnings"" cargo doc --no-deps --workspace"	not_run_after_step_2_failure	portable_rustdoc_passed_separately	platform_macos rustdoc requires macOS
+8	cargo audit --deny unsound --deny yanked	not_run_after_step_2_failure	current_root_cargo_audit_pass	zero denied findings; allowed informational ttf-parser warning
+9	find tools/acceptance tools/bundle tools/dev tools/release -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 -n1 bash -n	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+10	find tools -type f \( -name '*.sh' -o -path tools/dev/pre-push \) -print0 | xargs -0 shellcheck --severity=error	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+11	tools/release/validate-version.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+12	tools/release/check-version-docs.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+13	tools/bundle/check-bundle-metadata.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+14	tools/release/check-version-docs.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+15	tools/bundle/check-bundle-metadata.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+16	ruby -c Casks/compme.rb	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+17	tools/bundle/make-app.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+18	tools/bundle/make-appimage.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+19	tools/bundle/make-icon.sh --self-test	not_run_after_step_2_failure	partial_then_failed_Swift_unavailable	hermetic self-tests passed; real Swift/AppKit helper requires macOS
+20	tools/bundle/bundle-smoke.sh	not_run_after_step_2_failure	not_run	real macOS application bundle build/startup requires macOS
+21	tools/bundle/bundle-smoke.sh --self-test	not_run_after_step_2_failure	current_bundle_self_test_pass	hermetic script test only; native bundle smoke pending
+22	tools/acceptance/e2e-complete-me.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+23	tools/acceptance/missing-model-startup.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+24	tools/acceptance/missing-model-startup.sh	not_run_after_step_2_failure	current_NixOS_product_smoke_pass	no-GUI Blocked(AccessibilityUnavailable); native macOS run pending
+25	tools/acceptance/run-ui-assisted-session.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+26	tools/acceptance/run-a1b-live-gates.sh --self-test	not_run_after_step_2_failure	current_A1b_self_test_pass	runner self-test only; actual GUI gates pending
+27	tools/acceptance/run-linux-atspi-session.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+28	tools/release/check-linux-live-test-count.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+29	tools/release/check-model-client-features.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+30	tools/release/check-model-client-features.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+31	tools/release/check-vendor-drift.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+32	tools/release/check-vendor-drift.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+33	tools/release/check-agent-briefs.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+34	tools/release/check-agent-briefs.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+35	tools/release/check-privacy-policy.sh	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+36	tools/release/check-privacy-policy.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+37	tools/release/check-github-governance.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+38	bash tools/release/check-model-gates.sh	not_run_after_step_2_failure	not_run	enumerates/executes macOS-cfg native tests; cannot execute Darwin binaries on Linux
+39	bash tools/release/check-model-gates.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+40	tools/dev/check.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+41	tools/dev/benchmark-model.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+42	go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -color	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+43	tools/release/run-model-gates.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+44	tools/release/check-quality.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+45	tools/release/update-cask.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+46	tools/release/prepare-draft-release.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+47	tools/release/scrub-git-credentials.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+48	tools/release/finalize-cask.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+49	tools/release/notarize-app.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+50	tools/release/write-update-manifest.sh --self-test	not_run_after_step_2_failure	current_Linux_Host_Gate_pass	Full invocation stopped at command 2; separate host-neutral command passed
+51	bash tools/release/run-model-gates.sh	not_run_after_step_2_failure	strict_root_CPU_6_pass_2_latency_fail	Mac Metal cancellation and separate spike integration require macOS; wrapper incomplete
+52	bash tools/release/check-quality.sh	not_run_after_step_2_failure	current_root_CPU_quality_threshold_pass	pinned model/corpus tested on Linux; target-Mac run still required
+53	cd tools/spike	not_run_after_step_2_failure	spike_workspace_checked_separately	directory transition was not executed by Full Local Gate
+54	cargo fmt -- --check	not_run_after_step_2_failure	current_spike_fmt_pass	separate invocation with spike manifest
+55	cargo clippy --locked --all-targets -- -D warnings	not_run_after_step_2_failure	not_run	spike uses Apple-only dependencies and Metal feature
+56	cargo test --locked	not_run_after_step_2_failure	not_run	spike native tests require macOS
+57	cargo build --locked --bins	not_run_after_step_2_failure	not_run	spike native binaries require macOS

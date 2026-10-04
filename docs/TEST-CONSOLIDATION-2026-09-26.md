@@ -1,5 +1,12 @@
 # Test consolidation — 2026-09-26
 
+Current status (verified 2026-10-03): the consolidation landed with G7 in
+`7894243`. Native CI on test-corrected `261a1e6` passed all five lanes,
+including the consolidated macOS tests and the later 2284-test inventory
+([run 36532353871](https://github.com/mudrii/compme/actions/runs/36532353871)).
+The counts and uncommitted/native-pending statements below record the original
+checkpoint. Mac Full Local Gate and physical release acceptance remain pending.
+
 Base commit: `12d581555dcbcaa811654f9e4a98e998bf7383b9`.
 Owner-authorized cleanup after source and provenance review. Production behavior
 is unchanged; the only removed helpers were `#[cfg(test)]` forwarders.

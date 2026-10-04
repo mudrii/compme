@@ -82,26 +82,42 @@ fn card_run_re() -> &'static Regex {
     RE.get_or_init(|| Regex::new(r"\d(?:[\s\u{00a0}.,-]*\d)*").expect("card run regex"))
 }
 
-/// Decimal value of an ASCII or fullwidth (U+FF10..U+FF19) digit; `None` for any
-/// other char. `char::to_digit(10)` is ASCII-only, so the fullwidth block — which
-/// [`card_run_re`]'s `\d` does match — has to be mapped explicitly, or a
-/// fullwidth PAN reaches the card stage and is returned untouched.
+/// Decimal value of every Unicode Nd digit matched by [`card_run_re`].
+/// `char::to_digit(10)` is ASCII-only. Unicode 16.0's decimal blocks each have
+/// ten consecutive values, starting at these sorted zero code points:
+/// UnicodeData.txt (Nd, decimal-value column; source recorded in Qfd §26).
+/// The matcher-inventory test guards this table when regex's Unicode data changes.
 fn digit_value(c: char) -> Option<u8> {
     if c.is_ascii_digit() {
         return Some(c as u8 - b'0');
     }
-    let fullwidth = (c as u32).wrapping_sub('\u{ff10}' as u32);
-    (fullwidth < 10).then_some(fullwidth as u8)
+    const ZEROES: &[u32] = &[
+        0x0030, 0x0660, 0x06f0, 0x07c0, 0x0966, 0x09e6, 0x0a66, 0x0ae6, 0x0b66, 0x0be6, 0x0c66,
+        0x0ce6, 0x0d66, 0x0de6, 0x0e50, 0x0ed0, 0x0f20, 0x1040, 0x1090, 0x17e0, 0x1810, 0x1946,
+        0x19d0, 0x1a80, 0x1a90, 0x1b50, 0x1bb0, 0x1c40, 0x1c50, 0xa620, 0xa8d0, 0xa900, 0xa9d0,
+        0xa9f0, 0xaa50, 0xabf0, 0xff10, 0x104a0, 0x10d30, 0x10d40, 0x11066, 0x110f0, 0x11136,
+        0x111d0, 0x112f0, 0x11450, 0x114d0, 0x11650, 0x116c0, 0x116d0, 0x116da, 0x11730, 0x118e0,
+        0x11950, 0x11bf0, 0x11c50, 0x11d50, 0x11da0, 0x11f50, 0x16130, 0x16a60, 0x16ac0, 0x16b50,
+        0x16d70, 0x1ccf0, 0x1d7ce, 0x1d7d8, 0x1d7e2, 0x1d7ec, 0x1d7f6, 0x1e140, 0x1e2f0, 0x1e4f0,
+        0x1e5f1, 0x1e950, 0x1fbf0,
+    ];
+    let codepoint = c as u32;
+    let index = ZEROES
+        .partition_point(|&zero| zero <= codepoint)
+        .checked_sub(1)?;
+    let value = codepoint - ZEROES[index];
+    (value < 10).then_some(value as u8)
 }
 
 /// Redact every Luhn-valid 13–19-digit window inside one digit/separator run by
-/// sliding a longest-first window across the run's digits. This catches both
+/// sliding a longest-first window across every digit offset. This catches both
 /// cards separated only by a separator (the greedy span used to straddle the
 /// boundary and fail Luhn over the merged digits) AND a PAN abutted by extra
 /// digits with no separator (e.g. PAN+CVV or PAN glued to an order id), where a
 /// single boundary-aligned span would exceed 19 digits and miss the embedded
-/// card. Longest window first, then skip past it, keeps the over-redaction bias
-/// (privacy > fidelity) without shredding a number into overlapping fragments.
+/// card. Merge overlapping windows so an incidental checksum across two cards
+/// cannot hide the second card's start and expose its suffix. One connected
+/// span becomes one placeholder (privacy > fidelity).
 /// A run with no embedded Luhn window (e.g. a non-card 16-digit order id)
 /// survives untouched.
 fn redact_card_run(run: &str) -> String {
@@ -123,8 +139,7 @@ fn redact_card_run(run: &str) -> String {
     let values: Vec<u8> = digits.iter().map(|&(_, _, value)| b'0' + value).collect();
 
     let mut spans: Vec<(usize, usize)> = Vec::new();
-    let mut i = 0;
-    while i < values.len() {
+    for i in 0..values.len() {
         let max_k = (values.len() - i).min(19);
         let mut hit = None;
         for k in (13..=max_k).rev() {
@@ -137,10 +152,13 @@ fn redact_card_run(run: &str) -> String {
         }
         if let Some(k) = hit {
             let (last_offset, last_len, _) = digits[i + k - 1];
-            spans.push((digits[i].0, last_offset + last_len));
-            i += k;
-        } else {
-            i += 1;
+            let start = digits[i].0;
+            let end = last_offset + last_len;
+            if let Some(previous) = spans.last_mut().filter(|span| start < span.1) {
+                previous.1 = previous.1.max(end);
+            } else {
+                spans.push((start, end));
+            }
         }
     }
     if spans.is_empty() {
@@ -955,25 +973,28 @@ mod tests {
         // straddle the boundary between two back-to-back PANs, fail Luhn over the
         // merged digits, and leak BOTH. Each card (4242… and 4000…0002 are both
         // Luhn-valid) must now be redacted independently.
-        // Whitespace/NBSP separators don't merge into one token, so they reach
-        // the card stage and yield one [redacted-card] per PAN.
+        // Whitespace/NBSP separators don't merge into a secret token. Some
+        // checksum-valid windows cross the card boundary, so the card stage
+        // must cover their union rather than skip a later card's start.
         for sep in [" ", "\u{00a0}", "\t"] {
-            let input = format!("pay 4242424242424242{sep}4000000000000002 now");
-            let out = redact(&input);
-            assert!(
-                !out.contains("4242"),
-                "first card leaked ({sep:?}): {out:?}"
-            );
-            assert!(
-                !out.contains("4000"),
-                "second card leaked ({sep:?}): {out:?}"
-            );
-            assert_eq!(
-                out.matches("[redacted-card]").count(),
-                2,
-                "both cards redacted ({sep:?}): {out:?}"
-            );
+            for second in ["6011111111111117", "4000000000000002"] {
+                let input = format!("pay 4242424242424242{sep}{second} now");
+                let out = redact(&input);
+                assert!(!out.contains("4242"), "first card leaked: {out:?}");
+                assert!(!out.contains(&second[..4]), "second card leaked: {out:?}");
+                assert_eq!(
+                    out, "pay [redacted-card] now",
+                    "card suffix leaked ({sep:?})"
+                );
+            }
         }
+        // The old count==2 assertion for whitespace-separated cards missed the
+        // leaked suffix above. Retain distinct-placeholder coverage where the
+        // separator actually prevents overlapping card matches.
+        assert_eq!(
+            redact("pay 4242424242424242;4000000000000002 now"),
+            "pay [redacted-card];[redacted-card] now"
+        );
         // A dash joins the two PANs into one 33-char run that the *secret* pass
         // catches first — different placeholder, same privacy outcome: no leak.
         let dashed = redact("pay 4242424242424242-4000000000000002 now");
@@ -1013,11 +1034,18 @@ mod tests {
     fn redacts_card_followed_immediately_by_trailing_digits() {
         // A PAN trailed by a CVV-like run (separated by a separator) used to make
         // the greedy span grab 19 digits, fail Luhn, and leak the card. The card
-        // is now scrubbed; the short (<13-digit) tail is harmless and survives.
+        // is now scrubbed. The short tail overlaps other valid windows in this
+        // run, so retaining it would contradict the complete-window contract.
         let out = redact("card 4242 4242 4242 4242 123 ok");
         assert!(out.contains("[redacted-card]"), "got {out:?}");
         assert!(!out.contains("4242"), "card leaked: {out:?}");
-        assert!(out.contains("123"), "short tail survives: {out:?}");
+        assert_eq!(out, "card [redacted-card] ok");
+        // Preserve the original short-number negative control outside a card
+        // run, where no overlapping checksum can classify those digits as PII.
+        assert_eq!(
+            redact("card 4242424242424242;123 ok"),
+            "card [redacted-card];123 ok"
+        );
     }
 
     #[test]
@@ -1038,7 +1066,7 @@ mod tests {
     }
 
     #[test]
-    fn fullwidth_digit_card_numbers_are_redacted() {
+    fn unicode_digit_card_numbers_are_redacted() {
         // `card_run_re`'s `\d` is Unicode `\p{Nd}`, so a fullwidth-digit run
         // (U+FF10..U+FF19) reaches `redact_card_run` — which counted only
         // `is_ascii_digit()` and so saw zero digits and returned the run
@@ -1077,6 +1105,62 @@ mod tests {
             .collect();
         assert_eq!(redact(ascii_order_id), ascii_order_id);
         assert_eq!(redact(&fullwidth_order_id), fullwidth_order_id);
+
+        // Arabic-Indic, Devanagari and supplementary-plane mathematical digits
+        // reach the same Unicode matcher. Preserve the Luhn and byte-span rules
+        // for each script, including mixed scripts and multi-byte separators.
+        for zero in ['\u{0660}', '\u{0966}', '\u{1d7ce}'] {
+            let encode = |digits: &str| -> String {
+                digits
+                    .bytes()
+                    .map(|b| char::from_u32(zero as u32 + u32::from(b - b'0')).unwrap())
+                    .collect()
+            };
+            let card = encode("4111111111111111");
+            assert_eq!(
+                redact(&format!("pan {card} end")),
+                "pan [redacted-card] end"
+            );
+            let order_id = encode(ascii_order_id);
+            assert_eq!(redact(&order_id), order_id);
+            assert_eq!(redact(&encode("4111")), encode("4111"));
+            assert_eq!(
+                redact(&format!(
+                    "{} {}",
+                    encode("4242424242424242"),
+                    encode("6011111111111117")
+                )),
+                "[redacted-card]"
+            );
+        }
+        assert_eq!(redact("４١१1\u{00a0}１١१1-１١१1.１١१1"), "[redacted-card]");
+    }
+
+    #[test]
+    fn digit_values_cover_the_matchers_unicode_decimal_inventory() {
+        // Use the regex dependency's Unicode inventory, independently of our
+        // mapping table. An upgrade adding decimal blocks must fail here until
+        // those digits can also participate in card validation.
+        let scalars: String = (0..=0x10ffff).filter_map(char::from_u32).collect();
+        let decimal = Regex::new(r"\d").unwrap();
+        let mut count = 0;
+        for (index, digit) in decimal.find_iter(&scalars).enumerate() {
+            let c = digit.as_str().chars().next().unwrap();
+            // Unicode Nd blocks contain consecutive 0..9 groups, including
+            // adjacent mathematical styles and Myanmar Pao/Eastern Pwo Karen.
+            assert_eq!(
+                digit_value(c),
+                Some((index % 10) as u8),
+                "U+{:04X}",
+                c as u32
+            );
+            count += 1;
+        }
+        assert!(count >= 10);
+        assert_eq!(count % 10, 0);
+        for c in ['a', '²', 'Ⅳ', '\u{066a}', '\u{1d800}'] {
+            assert_eq!(digit_value(c), None, "U+{:04X}", c as u32);
+        }
     }
 
     #[test]
