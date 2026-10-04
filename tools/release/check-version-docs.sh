@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
-# Fail when a documented version surface lags the workspace version (AGENTS.md
-# release lesson). The version is single-sourced in the root Cargo.toml
-# [workspace.package] table; the README status line and release boundary, the
+# Published claims follow Casks/compme.rb, which keeps serving the previous
+# artifact until verified cask finalization. The workspace candidate is
+# single-sourced in Cargo.toml and checked separately in DEVELOPMENT.md.
+# The README status line and release boundary, the
 # SECURITY supported release, the ROADMAP header and release boundary, and the
 # release-boundary notes in RELEASING,
 # DEVELOPMENT, ACCEPTANCE, ARCHITECTURE, and MANUAL-VALIDATION must each name
-# it. Casks/compme.rb and tools/bundle/Info.plist are covered by
-# tools/bundle/check-bundle-metadata.sh and are deliberately not checked here.
+# the published version. Bundle/cask release-window validity is also covered by
+# tools/bundle/check-bundle-metadata.sh. --sync-published is used only after
+# publication by the cask finalizer to reconcile these claims atomically.
 # Anchors are line-based: each surface must keep its anchor phrase and the
 # version on the SAME line; a re-wrap or reword false-fails loudly by design,
 # and the fix is to update the anchor here in the same commit.
@@ -15,7 +17,7 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "$0")/../.." && pwd)"
 
 usage() {
-  echo "usage: check-version-docs.sh [--self-test]" >&2
+  echo "usage: check-version-docs.sh [--self-test | --sync-published TAG_SHA]" >&2
 }
 
 require_doc_version() {
@@ -24,8 +26,12 @@ require_doc_version() {
   anchor="$3"
   needle="$4"
   anchored="$(grep -F "$anchor" "$docs_root/$file" || true)"
-  if ! grep -Fq "$needle" <<<"$anchored"; then
-    echo "version-docs check failed: $file: $label does not name $needle (workspace version is $version)" >&2
+  # The first version belongs to the claim; a historical version later on the
+  # same line must not conceal a stale or premature publication claim.
+  claimed="$(grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' <<<"$anchored" | head -n 1 || true)"
+  expected="$(grep -Eo 'v[0-9]+\.[0-9]+\.[0-9]+' <<<"$needle" | head -n 1 || true)"
+  if [ "$claimed" != "$expected" ] || ! grep -Fq "$needle" <<<"$anchored"; then
+    echo "version-docs check failed: $file: $label does not name $needle (workspace $version, published $published_version)" >&2
     return 1
   fi
 }
@@ -52,7 +58,8 @@ run_self_test() {
 
   write_fixtures() {
     root="$1"
-    mkdir -p "$root/docs"
+    mkdir -p "$root/docs" "$root/Casks"
+    printf 'cask "compme" do\n  version "1.2.3"\nend\n' >"$root/Casks/compme.rb"
     cat >"$root/Cargo.toml" <<'TOML'
 [workspace]
 members = []
@@ -87,6 +94,7 @@ MD
     cat >"$root/docs/DEVELOPMENT.md" <<'MD'
 ## Repository State
 
+**Workspace version:** `v1.2.3`.
 The current checkout develops on `main`; the latest published release is `v1.2.3`.
 Specifically, `v1.2.3` points to `deadbeef`.
 MD
@@ -122,6 +130,59 @@ MD
     *"Version docs OK: v1.2.3"*) ;;
     *) echo "version-docs self-test failed: expected OK message, got: $out" >&2; return 1 ;;
   esac
+
+  # Preparing a candidate must retain accurate published claims. Finalization
+  # updates only the named boundaries; dated history must survive untouched.
+  sed 's/1\.2\.3/1.2.4/' "$root/Cargo.toml" >"$tmp/candidate.toml"
+  mv "$tmp/candidate.toml" "$root/Cargo.toml"
+  sed '/Workspace version/s/1\.2\.3/1.2.4/' "$root/docs/DEVELOPMENT.md" >"$tmp/candidate.md"
+  mv "$tmp/candidate.md" "$root/docs/DEVELOPMENT.md"
+  COMPME_VERSION_DOCS_ROOT="$root" "$0" >/dev/null
+  sed '/Latest published artifact/s/$/; historical v1.2.3 kept./' "$root/README.md" >"$tmp/history.md"
+  mv "$tmp/history.md" "$root/README.md"
+  printf '\nHistorical v1.2.3 release.\n' >>"$root/README.md"
+  sed 's/1\.2\.3/1.2.4/' "$root/Casks/compme.rb" >"$tmp/finalized.rb"
+  mv "$tmp/finalized.rb" "$root/Casks/compme.rb"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" >/dev/null 2>&1; then
+    echo "version-docs self-test failed: finalized cask with stale docs passed" >&2
+    return 1
+  fi
+  release_sha=0123456789abcdef0123456789abcdef01234567
+  COMPME_VERSION_DOCS_ROOT="$root" "$0" --sync-published "$release_sha" >/dev/null
+  grep -Fq "points to \`$release_sha\`" "$root/README.md"
+  grep -Fxq 'Historical v1.2.3 release.' "$root/README.md"
+  grep -Fq 'historical v1.2.3 kept.' "$root/README.md"
+  cp "$root/README.md" "$tmp/readme-before"
+  printf '# Missing boundary\n' >"$root/docs/MANUAL-VALIDATION.md"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" --sync-published "$release_sha" >/dev/null 2>&1; then
+    echo "version-docs self-test failed: missing finalization anchor passed" >&2
+    return 1
+  fi
+  cmp "$root/README.md" "$tmp/readme-before"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" --sync-published invalid >/dev/null 2>&1; then
+    echo "version-docs self-test failed: invalid release SHA was accepted" >&2
+    return 1
+  fi
+  write_fixtures "$root"
+  sed '/Latest published artifact/s/v1\.2\.3/v1.2.4/; /Latest published artifact/s/$/; historical v1.2.3/' "$root/README.md" >"$tmp/premature.md"
+  mv "$tmp/premature.md" "$root/README.md"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" >/dev/null 2>&1; then
+    echo "version-docs self-test failed: historical version concealed premature publication"
+    return 1
+  fi
+  write_fixtures "$root"
+  printf '  version "1.2.3"\n  version "1.2.4"\n' >"$root/Casks/compme.rb"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" >/dev/null 2>&1; then
+    echo "version-docs self-test failed: ambiguous published version passed" >&2
+    return 1
+  fi
+  write_fixtures "$root"
+  sed '/Workspace version/s/1\.2\.3/1.2.2/' "$root/docs/DEVELOPMENT.md" >"$tmp/stale.md"
+  mv "$tmp/stale.md" "$root/docs/DEVELOPMENT.md"
+  if COMPME_VERSION_DOCS_ROOT="$root" "$0" >/dev/null 2>&1; then
+    echo "version-docs self-test failed: stale workspace candidate passed" >&2
+    return 1
+  fi
 
   for stale_file in README.md SECURITY.md docs/ROADMAP.md docs/RELEASING.md docs/DEVELOPMENT.md docs/ACCEPTANCE.md docs/ARCHITECTURE.md docs/MANUAL-VALIDATION.md; do
     write_fixtures "$root"
@@ -199,12 +260,12 @@ MD
     echo "version-docs self-test failed: extra --self-test argument was accepted" >&2
     return 1
   fi
-  grep -q '^usage: check-version-docs\.sh \[--self-test\]$' "$tmp/self-test-argc.err"
+  grep -Fq 'usage: check-version-docs.sh [' "$tmp/self-test-argc.err"
   if "$0" unexpected-extra >/dev/null 2>"$tmp/normal-argc.err"; then
     echo "version-docs self-test failed: extra normal argument was accepted" >&2
     return 1
   fi
-  grep -q '^usage: check-version-docs\.sh \[--self-test\]$' "$tmp/normal-argc.err"
+  grep -Fq 'usage: check-version-docs.sh [' "$tmp/normal-argc.err"
 
   echo "Self-test passed"
 }
@@ -222,7 +283,7 @@ if [ "${1:-}" = "--self-test" ]; then
   run_self_test
   exit 0
 fi
-if [ "$#" -ne 0 ]; then
+if [ "$#" -ne 0 ] && { [ "$#" -ne 2 ] || [ "$1" != "--sync-published" ]; }; then
   usage
   exit 2
 fi
@@ -244,12 +305,54 @@ if [ -z "$version" ]; then
   exit 1
 fi
 
-backticked='`v'"$version"'`'
+published_version="$(sed -n 's/^  version "\([^"]*\)"$/\1/p' "$docs_root/Casks/compme.rb")"
+"$repo_root/tools/release/validate-version.sh" "$published_version" >/dev/null
+
+if [ "${1:-}" = "--sync-published" ]; then
+  # Validate every anchor before writing any file, and leave historical prose
+  # alone. The caller already verified publication, checksum, and tag ancestry.
+  ruby -e '
+    root, version, sha = ARGV
+    abort("invalid release SHA") unless /\A[0-9a-f]{40}\z/.match?(sha)
+    surfaces = {
+      "README.md" => ["Latest published artifact", "**Release boundary:**"],
+      "SECURITY.md" => ["supported release is"],
+      "docs/ROADMAP.md" => ["remains the latest published artifact", "**Release boundary:** the published"],
+      "docs/RELEASING.md" => ["latest published artifact is"],
+      "docs/DEVELOPMENT.md" => ["latest published release is", "points to"],
+      "docs/ACCEPTANCE.md" => ["latest published artifact"],
+      "docs/ARCHITECTURE.md" => ["Release boundary"],
+      "docs/MANUAL-VALIDATION.md" => ["Validate the latest published"]
+    }
+    updates = surfaces.map do |file, anchors|
+      path = File.join(root, file)
+      lines = File.readlines(path)
+      anchors.each do |anchor|
+        matches = lines.each_index.select { |i| lines[i].include?(anchor) }
+        abort("#{file}: expected exactly one #{anchor} anchor") unless matches.length == 1
+        i = matches.first
+        abort("#{file}: missing published version at #{anchor}") unless /v\d+\.\d+\.\d+/.match?(lines[i])
+        # README status rows also contain dated release history on this line.
+        lines[i] = if file == "README.md"
+          lines[i].sub(/v\d+\.\d+\.\d+/, "v#{version}")
+        else
+          lines[i].gsub(/v\d+\.\d+\.\d+/, "v#{version}")
+        end
+        lines[i] = lines[i].gsub(/`[0-9a-f]{7,40}`/, "`#{sha}`")
+      end
+      [path, lines.join]
+    end
+    updates.each { |path, content| File.write(path, content) }
+  ' "$docs_root" "$published_version" "$2"
+fi
+
+backticked='`v'"$published_version"'`'
 stale=0
+require_doc_version "workspace candidate" "docs/DEVELOPMENT.md" "**Workspace version:**" "**Workspace version:** \`v$version\`" || stale=1
 require_doc_version "status line" "README.md" "Latest published artifact" "$backticked" || stale=1
 require_doc_version "release-boundary note" "README.md" "**Release boundary:**" "$backticked" || stale=1
 require_doc_version "supported-release table" "SECURITY.md" "supported release is" "$backticked" || stale=1
-require_doc_version "header" "docs/ROADMAP.md" "remains the latest published artifact" "v$version" || stale=1
+require_doc_version "header" "docs/ROADMAP.md" "remains the latest published artifact" "v$published_version" || stale=1
 require_doc_version "release-boundary note" "docs/ROADMAP.md" "**Release boundary:** the published" "$backticked" || stale=1
 require_doc_version "release-boundary note" "docs/RELEASING.md" "latest published artifact is" "$backticked" || stale=1
 require_doc_version "repository-state note" "docs/DEVELOPMENT.md" "points to" "$backticked" || stale=1
@@ -262,4 +365,4 @@ if [ "$stale" -ne 0 ]; then
   exit 1
 fi
 
-echo "Version docs OK: v$version in README.md, SECURITY.md, docs/ROADMAP.md, docs/RELEASING.md, docs/DEVELOPMENT.md, docs/ACCEPTANCE.md, docs/ARCHITECTURE.md, docs/MANUAL-VALIDATION.md"
+echo "Version docs OK: v$published_version published, v$version workspace in README.md, SECURITY.md, docs/ROADMAP.md, docs/RELEASING.md, docs/DEVELOPMENT.md, docs/ACCEPTANCE.md, docs/ARCHITECTURE.md, docs/MANUAL-VALIDATION.md"

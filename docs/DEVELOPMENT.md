@@ -23,6 +23,8 @@ Smoke test: `COMPME_RUN_MS=1500 target/bundle/Compme.app/Contents/MacOS/compme`.
 
 ## Repository State
 
+**Workspace version:** `v0.1.7`; the published release is tracked below and in the Homebrew cask.
+
 The current checkout develops on `main`; the latest published release is `v0.1.6`,
 signed, notarized, and stapled. Earlier release notes preserve each artifact's
 original signing status. Workspace behavior may be newer than the latest tag,

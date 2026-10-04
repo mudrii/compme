@@ -75,6 +75,37 @@ configure_e2e_mode() {
   fi
 }
 
+build_product_env() {
+  product_env=(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}")
+  if [ -n "${COMPME_CONFIG:-}" ]; then
+    product_env+=(COMPME_CONFIG="$COMPME_CONFIG")
+  fi
+  if [ -n "${RUST_BACKTRACE:-}" ]; then
+    product_env+=(RUST_BACKTRACE="$RUST_BACKTRACE")
+  fi
+  if [ -n "${COMPME_MODEL_PATH:-}" ]; then
+    product_env+=(COMPME_MODEL_PATH="$COMPME_MODEL_PATH")
+  fi
+  if [ -n "${COMPME_MODEL_GPU_LAYERS:-}" ]; then
+    product_env+=(COMPME_MODEL_GPU_LAYERS="$COMPME_MODEL_GPU_LAYERS")
+  fi
+  if [ -n "${COMPME_MODEL_CONTEXT_TOKENS:-}" ]; then
+    product_env+=(COMPME_MODEL_CONTEXT_TOKENS="$COMPME_MODEL_CONTEXT_TOKENS")
+  fi
+  if [ -n "${COMPME_SCREEN_CONTEXT:-}" ]; then
+    product_env+=(COMPME_SCREEN_CONTEXT="$COMPME_SCREEN_CONTEXT")
+  fi
+  if [ -n "${COMPME_TRAILING_SPACE:-}" ]; then
+    product_env+=(COMPME_TRAILING_SPACE="$COMPME_TRAILING_SPACE")
+  fi
+  if [ -n "${COMPME_ACCEPT_WORD_KEY:-}" ]; then
+    product_env+=(COMPME_ACCEPT_WORD_KEY="$COMPME_ACCEPT_WORD_KEY")
+  fi
+  if [ -n "${COMPME_ACCEPT_FULL_KEY:-}" ]; then
+    product_env+=(COMPME_ACCEPT_FULL_KEY="$COMPME_ACCEPT_FULL_KEY")
+  fi
+}
+
 sleep_ms() {
   ms="$1"
   case "$ms" in
@@ -264,6 +295,24 @@ run_self_tests() {
     echo "PASS self-test-e2e-product-env-isolated"
   else
     echo "FAIL self-test-e2e-product-env-isolated: product launch does not use env -i" >&2
+    failures=$((failures + 1))
+  fi
+  if (
+    export COMPME_TRAILING_SPACE=1 COMPME_SCREEN_CONTEXT=0
+    export COMPME_ACCEPT_WORD_KEY=98 COMPME_ACCEPT_FULL_KEY=99
+    export COMPME_STUB_COMPLETION=unrelated-inherited-value
+    build_product_env
+    "${product_env[@]}" bash -c '
+      test "${COMPME_TRAILING_SPACE:-}" = 1 &&
+      test "${COMPME_SCREEN_CONTEXT:-}" = 0 &&
+      test "${COMPME_ACCEPT_WORD_KEY:-}" = 98 &&
+      test "${COMPME_ACCEPT_FULL_KEY:-}" = 99 &&
+      test "${COMPME_STUB_COMPLETION+x}" != x
+    '
+  ); then
+    echo "PASS self-test-e2e-product-settings-forwarded"
+  else
+    echo "FAIL self-test-e2e-product-settings-forwarded: explicit gate settings were lost or unrelated settings leaked"
     failures=$((failures + 1))
   fi
   if grep -Eq '^[[:space:]]*echo .*prefix=.*\$PREFIX|^[[:space:]]*echo .*stub=.*\$STUB' "$0"; then
@@ -660,22 +709,7 @@ PREFIX="${PREFIX}${PROMPT_MARKER} "
 prefix_chars="$(printf '%s' "$PREFIX" | wc -m | tr -d '[:space:]')"
 stub_chars="$(printf '%s' "$STUB" | wc -m | tr -d '[:space:]')"
 echo "E2E compme: prefix_chars=$prefix_chars stub_chars=$stub_chars pid=$PID run_ms=$RUN_MS accept=$ACCEPT_MODE real_model=$REAL_MODEL"
-product_env=(env -i PATH="$PATH" HOME="$HOME" TMPDIR="${TMPDIR:-/tmp}")
-if [ -n "${COMPME_CONFIG:-}" ]; then
-  product_env+=(COMPME_CONFIG="$COMPME_CONFIG")
-fi
-if [ -n "${RUST_BACKTRACE:-}" ]; then
-  product_env+=(RUST_BACKTRACE="$RUST_BACKTRACE")
-fi
-if [ -n "${COMPME_MODEL_PATH:-}" ]; then
-  product_env+=(COMPME_MODEL_PATH="$COMPME_MODEL_PATH")
-fi
-if [ -n "${COMPME_MODEL_GPU_LAYERS:-}" ]; then
-  product_env+=(COMPME_MODEL_GPU_LAYERS="$COMPME_MODEL_GPU_LAYERS")
-fi
-if [ -n "${COMPME_MODEL_CONTEXT_TOKENS:-}" ]; then
-  product_env+=(COMPME_MODEL_CONTEXT_TOKENS="$COMPME_MODEL_CONTEXT_TOKENS")
-fi
+build_product_env
 
 # 1. Seed TextEdit with a known prefix and bring it to the front.
 osascript - "$PREFIX" <<'OSA' || fail "could not seed TextEdit"

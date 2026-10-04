@@ -1,0 +1,10 @@
+E2E compme: prefix_chars=44 stub_chars=6 pid=3570 run_ms=5000 accept=word-only real_model=0
+E2E evidence: log=/tmp/compme-trailing-space-product-after.log log_lines=16 log_bytes=1007 document_chars=50
+E2E: compme exited successfully [PASS]
+E2E: stub text inserted into document [PASS]
+E2E: stage present: 'focus' [PASS]
+E2E: stage present: 'request gen=' [PASS]
+E2E: stage present: 'completion gen=2' [PASS]
+E2E: stage present: 'accept Word' [PASS]
+E2E: expected readback suffix matched [PASS]
+E2E PASS: word-only focus->read->infer->ghost->accept->insert pipeline

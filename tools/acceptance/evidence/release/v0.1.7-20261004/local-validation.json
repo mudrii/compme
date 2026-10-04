@@ -1,0 +1,57 @@
+{
+  "date": "2026-10-04",
+  "workspace_version": "0.1.7",
+  "published_version": "0.1.6",
+  "base_commit": "b767fc53ee125b840637f3b120992c945abe662e",
+  "full_local_gate": {
+    "run": 57,
+    "skipped": 0,
+    "log": "/tmp/compme-0.1.7-full-local-gate.log",
+    "sha256": "53ffee5c2f309e5b829234c84e1ac6968ef87686aa30f872ca6c127cb435f77f",
+    "selected_commands": {
+      "3": {
+        "command": "cargo test --locked --workspace --exclude platform_macos --exclude app --all-targets",
+        "passed": 1206,
+        "ignored": 9
+      },
+      "4": {
+        "command": "cargo test --locked -p platform_macos -p app --all-targets -- --test-threads=1",
+        "passed": 1070,
+        "ignored": 2
+      },
+      "51": {
+        "command": "bash tools/release/run-model-gates.sh",
+        "passed": 10,
+        "ignored": 0
+      },
+      "52": {
+        "command": "bash tools/release/check-quality.sh",
+        "passed": 1,
+        "ignored": 0
+      },
+      "56": {
+        "command": "cargo test --locked",
+        "passed": 43,
+        "ignored": 1
+      }
+    }
+  },
+  "a1b": {
+    "scripted_pass": 21,
+    "scripted_fail": 0,
+    "unselected_browser_marker": 1,
+    "unresolved_manual": 22,
+    "exit_code": 1,
+    "log": "/tmp/compme-0.1.7-a1b-final.log"
+  },
+  "bundle": {
+    "path": "target/bundle/Compme.app",
+    "signature": "ad-hoc",
+    "binary_sha256": "79e5b6c301e8679713c7cbd4bdb67182f563768cce8993fb5c95f30452cee354"
+  },
+  "not_executed": [
+    "22 complete manual/live rows",
+    "additional Tier-4 acceptance",
+    "v0.1.7 signing/notarization/publication/cask finalization/post_verify"
+  ]
+}

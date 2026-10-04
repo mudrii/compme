@@ -70,7 +70,7 @@ fn keyring_behaves_as_the_runner_declared() {
         // exactly what happens, which is why the layer list below is a set.
         let result = read_memory_key_on(&connection);
         let Err(PlatformError::CannotComplete { reason }) = result else {
-            panic!("a bus with no keyring daemon must fail closed, got {result:?}");
+            panic!("a bus with no keyring daemon must fail closed");
         };
         // Every error this module produces is prefixed "secret-service", so that
         // substring alone proves nothing about *which* failure happened. Require a
@@ -102,7 +102,7 @@ fn keyring_behaves_as_the_runner_declared() {
         let second = read_memory_key_on(&connection);
         assert!(
             matches!(second, Err(PlatformError::CannotComplete { .. })),
-            "a failed read must not have created anything: {second:?}"
+            "a failed read must not have created anything"
         );
 
         // The whole store, not just the transport: no key is returned, and no
@@ -122,7 +122,7 @@ fn keyring_behaves_as_the_runner_declared() {
         // stored memory row undecryptable.
         let result = read_memory_key_on(&connection);
         let Err(PlatformError::CannotComplete { reason }) = result else {
-            panic!("a locked keyring must fail closed, got {result:?}");
+            panic!("a locked keyring must fail closed");
         };
         assert!(
             reason.contains("locked"),

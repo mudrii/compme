@@ -1374,3 +1374,69 @@ preparation work; signing/notarization, publication, cask finalization and
 `post_verify` execute after tagging. Windows/Linux feature milestones and the
 optional updater do not block this macOS release; A2 remains local/manual,
 outside automated tag gates, with roadmap acceptance work still applicable.
+
+## 28. macOS v0.1.7 preparation — 2026-10-04
+
+This release-preparation pass started from clean, synchronized main
+`b767fc53ee125b840637f3b120992c945abe662e`. Its five native CI lanes passed in
+[run 37182609839](https://github.com/mudrii/compme/actions/runs/37182609839).
+The Mac audit passed 56 Full Local Gate commands; ShellCheck was the sole
+missing tool. ShellCheck 0.11.0 is now installed, and this preparation passed
+**57/57 commands with zero skips**. Root tests: **2276 passed, 11 ignored**
+(2287 inventory); spike: **43 passed, 1 ignored**. The strict real-Mac wrapper
+passed eight CPU tests (including both exclusive 500 ms latency assertions),
+one Metal cancellation test and the spike latency integration. The real-model
+quality gate passed its unchanged 80% threshold. These are gate verdicts, not
+fresh numeric medians or a measured exact corpus score.
+
+Repairs and preparation:
+
+- Workspace/bundle version **0.1.7**, with all 26 workspace lockfile entries
+  refreshed. The published v0.1.6 cask version/checksum pair is unchanged.
+- Published version claims follow the cask, while DEVELOPMENT separately pins
+  the workspace candidate. Regression coverage exercises the preparation
+  window, stale/ambiguous claims, mixed historical versions, missing anchors,
+  invalid tag SHA and post-finalization reconciliation. Verified cask
+  finalization freezes the checker from the tag and stages the eight published
+  documentation surfaces with the cask. The release policy pins the helper,
+  exact file set and pre-push ordering, with an omitted-sync mutation test.
+- The TextEdit E2E launcher dropped caller-supplied trailing-space, screen-context
+  and accept-key settings. Its real child-environment regression failed with
+  `FAIL self-test-e2e-product-settings-forwarded`; the live word-only case
+  failed with `E2E: expected readback suffix missing [FAIL]`. The isolated
+  launcher now forwards these four explicit settings, rejects unrelated
+  inherited completion settings, and both regressions pass.
+- The initial A1b attempt also saw no native Option+Tab readback change, with
+  no Compme accept callback. A later isolated run observed a literal tab, and
+  the fresh full scripted run passed this gate without a product change.
+  The final A1b summary is **21 pass, 0 fail, 1 unselected browser-marker
+  target, 22 unresolved manual rows**. Exit 1 is retained for those open rows;
+  it is not an overall acceptance pass.
+- Three Linux live-keyring panic/assert diagnostics no longer format a
+  potentially returned key. The audit's three production CodeQL logging
+  findings contain lengths/coordinates or a parsed action/scope/trust summary;
+  the remaining flagged test diagnostics use fixtures. No alert was dismissed
+  and no production plaintext disclosure was demonstrated by this audit.
+
+Committed, portable evidence summaries and the before/after regressions are in
+[`tools/acceptance/evidence/release/v0.1.7-20261004`](tools/acceptance/evidence/release/v0.1.7-20261004).
+The full Mac gate log is `/tmp/compme-0.1.7-full-local-gate.log`; its hash and
+selected command counts are recorded in `local-validation.json`. The ad-hoc
+candidate app is `target/bundle/Compme.app`, with its binary hash recorded there.
+The original v0.1.6 artifact also passed fresh checksum/manifest/cask,
+attestation, strict codesign, stapler and Gatekeeper verification on this Mac.
+This verifies the old artifact; it does not sign or publish 0.1.7.
+
+**Still required:** exact pushed native CI; closure of all 22 live/manual rows
+and declared additional Tier-4 observations, including physical G7 shortcuts,
+accept/dismiss/cycle/rearm and memory privacy/erase. One browser-marker target
+was not selected in the A1b run. Input Monitoring was observed granted, so the
+revoked-permission spot-check remains conditional and unexecuted. Windows/Linux
+native GUI acceptance and feature milestones remain outside this macOS patch.
+Dependency PRs #9/#10 were not merged; #10's failed timeout tests do not affect
+the audited lockfile. Signing/notarization, publication, cask finalization and
+post_verify require a real protected tag and have not run for 0.1.7.
+
+**Release decision:** preparation is implemented and the Mac local gate is
+green; the candidate is not ready to tag until the remaining acceptance and
+exact-commit CI requirements are satisfied.

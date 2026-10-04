@@ -1042,7 +1042,7 @@ published_lines = active_shell_lines(published_body)
 validate_lines = active_shell_lines(function_body(source, "validate_finalized_cask"))
 finalize_lines = active_shell_lines(function_body(source, "finalize_cask"))
 [
-  'for helper in validate-version.sh update-cask.sh; do',
+  'for helper in validate-version.sh update-cask.sh check-version-docs.sh; do',
   'tag_sha="$2"',
   'destination="$frozen_root/tools/release/$helper"',
   'git -C "$repo_root" show "$tag_sha:tools/release/$helper" >"$destination"',
@@ -1092,11 +1092,14 @@ abort("missing release gate: cask finalizer strictly parses published checksum")
   'verify_published_artifact \\',
   'frozen_validator="$frozen_root/tools/release/validate-version.sh"',
   'frozen_updater="$frozen_root/tools/release/update-cask.sh"',
+  'frozen_docs="$frozen_root/tools/release/check-version-docs.sh"',
   '"$frozen_validator" "$version"',
   'COMPME_CASK_PATH="$cask_path"',
   'COMPME_CASK_ARTIFACT="$artifact_path"',
   '"$frozen_updater" "$tag"',
   'validate_finalized_cask "$cask_path" "$version" "$artifact_path"',
+  'COMPME_VERSION_DOCS_ROOT="$repo_root" "$frozen_docs" --sync-published "$tag_sha"',
+  'release_surfaces=(Casks/compme.rb README.md SECURITY.md docs/ROADMAP.md docs/RELEASING.md docs/DEVELOPMENT.md docs/ACCEPTANCE.md docs/ARCHITECTURE.md docs/MANUAL-VALIDATION.md)',
 ].each { |fragment| require_active_fragment!(finalize_lines, fragment) }
 [
   'echo "failed to fetch release tag $tag and origin/$default_branch" >&2',
@@ -1113,7 +1116,8 @@ checkout_index = finalize_lines.index { |line| line.include?('git checkout "$def
 pull_index = finalize_lines.index { |line| line.include?('git pull --ff-only --no-tags origin "$default_branch"') }
 updater_index = finalize_lines.index { |line| line.include?('"$frozen_updater" "$tag"') }
 validation_index = finalize_lines.index { |line| line.include?('validate_finalized_cask "$cask_path" "$version" "$artifact_path"') }
-git_add_index = finalize_lines.index { |line| line.include?('git add Casks/compme.rb') }
+docs_sync_index = finalize_lines.index { |line| line.include?('"$frozen_docs" --sync-published "$tag_sha"') }
+git_add_index = finalize_lines.index { |line| line.include?('git add "${release_surfaces[@]}"') }
 commit_index = finalize_lines.index { |line| line.include?('commit -m "chore(release): cask $tag"') }
 push_index = finalize_lines.index { |line| line.include?('git push origin "HEAD:$default_branch"') }
 abort("missing release gate: cask finalizer verifies tag provenance and published artifact before mutable branch operations") unless
@@ -1121,8 +1125,9 @@ abort("missing release gate: cask finalizer verifies tag provenance and publishe
   fetch_index < tag_sha_index && tag_sha_index < tag_sha_verification_index && tag_sha_verification_index < ancestry_index &&
   ancestry_index < freeze_index && freeze_index < published_index && published_index < checkout_index && checkout_index < pull_index
 abort("missing release gate: cask finalizer validates the frozen-updater result before git publication") unless
-  updater_index && validation_index && git_add_index && commit_index && push_index &&
-  updater_index < validation_index && validation_index < git_add_index && validation_index < commit_index && validation_index < push_index
+  updater_index && validation_index && docs_sync_index && git_add_index && commit_index && push_index &&
+  updater_index < validation_index && validation_index < docs_sync_index && docs_sync_index < git_add_index &&
+  docs_sync_index < commit_index && docs_sync_index < push_index
 
 finalize_lines.each do |line|
   if line.match?(%r{(?:\A|[[:space:]])(?:"?\$repo_root/)?tools/release/update-cask\.sh["[:space:]]+"?\$tag"?})
@@ -3932,6 +3937,14 @@ YAML
   validate_finalized_cask "$cask_path" "$version" "$artifact_path"))' "$finalizer_fixture"
   if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
     echo "release gate self-test failed: post-push finalized-cask validation was accepted" >&2
+    cleanup
+    return 1
+  fi
+
+  cp "$finalize_cask_script" "$finalizer_fixture"
+  ruby -0pi -e 'sub(%q(  COMPME_VERSION_DOCS_ROOT="$repo_root" "$frozen_docs" --sync-published "$tag_sha"), %q(  # COMPME_VERSION_DOCS_ROOT="$repo_root" "$frozen_docs" --sync-published "$tag_sha"))' "$finalizer_fixture"
+  if check_finalizer_helper_contract "$finalizer_fixture" >/dev/null 2>&1; then
+    echo "release gate self-test failed: omitted published-doc reconciliation was accepted" >&2
     cleanup
     return 1
   fi

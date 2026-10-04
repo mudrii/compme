@@ -176,7 +176,33 @@ tested**. Everything below is what the plan still calls for.
 
 ---
 
-## Current release — v0.1.6 audit remediation
+## Current release — v0.1.7 candidate
+
+### macOS release preparation — 2026-10-04
+
+At this preparation checkpoint, the workspace and bundle metadata identify the unpublished v0.1.7
+candidate; Cargo.lock records that version for all 26 workspace packages.
+Published-release claims remain at the verified v0.1.6 cask version. The
+version-docs checker validates both states, and cask finalization reconciles
+the eight published documentation surfaces using helpers frozen from the
+verified tag. Its policy pins and mutation self-tests cover this ordering.
+
+The live E2E harness now forwards the four settings its caller explicitly
+supplies (screen context, trailing space, and both accept keys), while retaining
+an isolated launch environment. The child-environment regression failed
+before the repair and passes afterward. Exact TextEdit trailing-space readback
+also failed before the fix and passed afterward. A fresh A1b run passed all
+21 scripted checks, with one unselected browser-marker target and 22 unresolved
+manual rows; its exit remains nonzero because those manual rows are open.
+
+ShellCheck 0.11.0 is installed on this Mac. This candidate passed all **57/57
+Full Local Gate commands with zero skips**, all 2276 non-ignored root tests,
+CPU latency/cancellation, Metal cancellation, spike latency and model quality.
+Exact pushed native CI remains required, followed by all 22 manual/live
+closures and declared Tier-4 observations. Three
+Linux live-keyring failure diagnostics no longer format potential key bytes.
+Evidence and remaining work are recorded in Qfd §28 and
+[`local-validation.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/local-validation.json).
 
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 

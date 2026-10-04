@@ -214,8 +214,17 @@ in [ACCEPTANCE.md](ACCEPTANCE.md)'s Manual/Live Gate Ledger.
    and `sha256` stay a consistent pair) until the cask-finalization job rewrites
    both lines from the published artifact, so `brew install --cask compme` keeps
    working throughout the release. Refresh `Cargo.lock` so its package entries record the same
-   version (for example, run `cargo check --workspace` once without `--locked`), then
-   validate the version and bundle metadata before committing:
+   version (for example, run `cargo check --workspace` once without `--locked`).
+
+   Update the `**Workspace version:**` line in `docs/DEVELOPMENT.md` to the
+   candidate version. Keep the eight published-release documentation surfaces
+   at the cask version: `check-version-docs.sh` checks the workspace and published
+   versions separately. After publication, `finalize-cask.sh` uses the verified
+   tag's frozen checker with `--sync-published TAG_SHA` to reconcile those
+   boundaries in the same commit as the cask version and checksum. Dated release
+   history is preserved; a missing boundary fails finalization before any push.
+
+   Validate the version and bundle metadata before committing:
 
    ```sh
    version="X.Y.Z"

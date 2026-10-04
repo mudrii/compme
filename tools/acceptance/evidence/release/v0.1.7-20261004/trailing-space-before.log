@@ -1,0 +1,10 @@
+E2E compme: prefix_chars=43 stub_chars=6 pid=3570 run_ms=5000 accept=word-only real_model=0
+E2E evidence: log=/tmp/compme-trailing-space-product-before.log log_lines=14 log_bytes=735 document_chars=48
+E2E: compme exited successfully [PASS]
+E2E: stub text inserted into document [PASS]
+E2E: stage present: 'focus' [PASS]
+E2E: stage present: 'request gen=' [PASS]
+E2E: stage present: 'completion gen=2' [PASS]
+E2E: stage present: 'accept Word' [PASS]
+E2E: expected readback suffix missing [FAIL]
+E2E FAIL: pipeline assertions failed (see log: /tmp/compme-trailing-space-product-before.log)

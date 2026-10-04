@@ -23,6 +23,10 @@ promoted into the workspace.
 
 ### Current platform support
 
+For current workspace changes, see the
+[draft release notes](docs/RELEASE-NOTES-v0.1.7.md) and
+[release prerequisites](docs/ROADMAP.md#current-release--v017-candidate).
+
 | Platform | Product status | Current boundary |
 |---|---|---|
 | macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.6` | The v0.1.6 audit-remediation patch: 69 verified findings closed and test-pinned; 22 runner-pinned manual/live acceptance gates are tracked in the [acceptance ledger](docs/ACCEPTANCE.md), where 19 are still recorded as "never recorded" — v0.1.6 was tagged with none of the 22 closed, and whether patch releases may ship that way is an open owner decision (`Qfd.md` §20, G11). |

@@ -16,7 +16,7 @@ freeze_release_helpers() {
   frozen_root="$1"
   tag_sha="$2"
   mkdir -p "$frozen_root/tools/release"
-  for helper in validate-version.sh update-cask.sh; do
+  for helper in validate-version.sh update-cask.sh check-version-docs.sh; do
     destination="$frozen_root/tools/release/$helper"
     if ! git -C "$repo_root" show "$tag_sha:tools/release/$helper" >"$destination"; then
       rm -f "$destination"
@@ -186,6 +186,7 @@ finalize_cask() {
   freeze_release_helpers "$frozen_root" "$tag_sha"
   frozen_validator="$frozen_root/tools/release/validate-version.sh"
   frozen_updater="$frozen_root/tools/release/update-cask.sh"
+  frozen_docs="$frozen_root/tools/release/check-version-docs.sh"
   "$frozen_validator" "$version"
   verify_published_artifact \
     "$tag" "$artifact_path" "$version" "$frozen_root/published-checksum" "$repository"
@@ -214,10 +215,12 @@ finalize_cask() {
     COMPME_CASK_ARTIFACT="$artifact_path" \
     "$frozen_updater" "$tag"
   validate_finalized_cask "$cask_path" "$version" "$artifact_path"
-  if git diff --quiet -- Casks/compme.rb; then
+  COMPME_VERSION_DOCS_ROOT="$repo_root" "$frozen_docs" --sync-published "$tag_sha"
+  release_surfaces=(Casks/compme.rb README.md SECURITY.md docs/ROADMAP.md docs/RELEASING.md docs/DEVELOPMENT.md docs/ACCEPTANCE.md docs/ARCHITECTURE.md docs/MANUAL-VALIDATION.md)
+  if git diff --quiet -- "${release_surfaces[@]}"; then
     echo "Casks/compme.rb already matches $tag"
   else
-    git add Casks/compme.rb
+    git add "${release_surfaces[@]}"
     git -c user.name="github-actions[bot]" \
       -c user.email="41898282+github-actions[bot]@users.noreply.github.com" \
       commit -m "chore(release): cask $tag"
@@ -266,6 +269,11 @@ make_fixture_repo() {
   fixture_step "$fixture_label origin setup" \
     git -C "$work" remote add origin "$root/remote.git" || return 1
   mkdir -p "$work/Casks" "$work/tools/release"
+  mkdir -p "$work/docs"
+  printf 'published fixture v%s\n' "$cask_version" >"$work/README.md"
+  touch "$work/SECURITY.md" "$work/docs/ROADMAP.md" "$work/docs/RELEASING.md" \
+    "$work/docs/DEVELOPMENT.md" "$work/docs/ACCEPTANCE.md" \
+    "$work/docs/ARCHITECTURE.md" "$work/docs/MANUAL-VALIDATION.md"
   cat >"$work/Casks/compme.rb" <<CASK
 cask "compme" do
   version "$cask_version"
@@ -308,7 +316,16 @@ case "$behavior" in
   fail) exit 42 ;;
 esac
 SH
-  chmod +x "$work/tools/release/validate-version.sh" "$work/tools/release/update-cask.sh"
+  cat >"$work/tools/release/check-version-docs.sh" <<'SH'
+#!/usr/bin/env bash
+set -euo pipefail
+test "$1" = --sync-published
+test -n "$2"
+test -n "${COMPME_VERSION_DOCS_ROOT:?explicit docs root is required}"
+printf '%s\n' "tag-docs" >>"${COMPME_FINALIZE_CASK_HELPER_LOG:-/dev/null}"
+ruby -pi -e 'sub(/published fixture v9\.8\.6/, "published fixture v9.8.7")' "$COMPME_VERSION_DOCS_ROOT/README.md"
+SH
+  chmod +x "$work/tools/release/validate-version.sh" "$work/tools/release/update-cask.sh" "$work/tools/release/check-version-docs.sh"
   fixture_step "$fixture_label add" git -C "$work" add . || return 1
   fixture_step "$fixture_label commit" \
     git -C "$work" -c user.name=t -c user.email=t@example.test \
@@ -571,6 +588,8 @@ SH
   git -C "$tmp/lagging/work" log --oneline origin/main -1 | grep -q "chore(release): cask v9.8.7"
   grep -q 'version "9.8.7"' "$tmp/lagging/work/Casks/compme.rb"
   grep -q "sha256 \"$lag_artifact_sha\"" "$tmp/lagging/work/Casks/compme.rb"
+  grep -Fxq 'published fixture v9.8.7' "$tmp/lagging/work/README.md"
+  git -C "$tmp/lagging/work" show --name-only --format= origin/main | grep -Fxq README.md
 
   # Same window with only the release tag in the local checkout: the previous
   # tag is recovered from origin by the finalizer's best-effort tag fetch.
@@ -685,6 +704,7 @@ SH
     "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   grep -Fxq "tag-validator" "$tmp/frozen-helpers.log"
   grep -Fxq "tag-updater" "$tmp/frozen-helpers.log"
+  grep -Fxq "tag-docs" "$tmp/frozen-helpers.log"
   if grep -Fq "default-" "$tmp/frozen-helpers.log"; then
     echo "finalize-cask self-test failed: default-branch helper executed" >&2
     return 1
@@ -713,6 +733,7 @@ SH
     "$0" v9.8.7 "$artifact" 9.8.7 main owner/repo >/dev/null
   grep -Fxq "tag-validator" "$tmp/dirty-tag-helpers.log"
   grep -Fxq "tag-updater" "$tmp/dirty-tag-helpers.log"
+  grep -Fxq "tag-docs" "$tmp/dirty-tag-helpers.log"
   if grep -Fq "dirty-" "$tmp/dirty-tag-helpers.log"; then
     echo "finalize-cask self-test failed: dirty working-tree helper executed" >&2
     return 1
