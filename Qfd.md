@@ -1487,3 +1487,20 @@ not physical acceptance. Portable, content-free probe evidence and baseline
 provenance are in `gui-resume.json` and `native-chrome-caret.log` alongside
 the preparation evidence. The temporary support forms were cleared and closed
 without submission.
+
+**Step 1 — focused TextEdit delivery (2026-10-04):** the full recheck of
+`77e46d6` initially produced two live readback failures: clipboard insertion
+and Option+Tab. Once the owner focused TextEdit, each probe passed three
+consecutive runs, with the target active at every recorded foreground sample.
+Clipboard produced the exact text delta and Option+Tab inserted a literal tab
+without an accept callback. No source change was required. Lost target
+foreground is supported as the earlier failure condition; a new G7 regression
+was not established. The follow-up behavioral A1b run used the unchanged,
+previously verified binaries (`--skip-build`) and reported 21 passed, zero
+failed, one unselected browser marker, zero incomplete and 22 manual rows.
+Its exit 1 reflects those unresolved manual rows. No manual/incomplete bypass
+was used and no manual row is closed. The production real-model candidate was
+restored to Ready with Memory Off. Logs, foreground samples and binary
+provenance are in
+[`step1/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step1/results.json).
+The Settings walkthrough is next; the release remains not ready to tag.

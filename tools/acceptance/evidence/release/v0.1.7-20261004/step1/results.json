@@ -1,0 +1,87 @@
+{
+  "checked_at_utc": "2026-10-04T15:39:40.245841+00:00",
+  "source_commit": "77e46d6a0bcd3e78a1cfbb9632b3da7db41a0400",
+  "candidate_version": "0.1.7",
+  "candidate_binary_sha256": "79e5b6c301e8679713c7cbd4bdb67182f563768cce8993fb5c95f30452cee354",
+  "macos": "27.0.1 (26A434)",
+  "textedit_pid": 81097,
+  "previous_red_probes": "Clipboard readback unchanged; Option+Tab no native tab delta. Earlier focus watcher timed out without sustained target foreground.",
+  "focused_probes": [
+    {
+      "probe": "clipboard",
+      "exit_code": 0,
+      "foreground_samples": 18,
+      "target_active_at_every_sample": true,
+      "log": "clipboard.log"
+    },
+    {
+      "probe": "option-tab",
+      "exit_code": 0,
+      "foreground_samples": 22,
+      "target_active_at_every_sample": true,
+      "log": "option-tab.log"
+    },
+    {
+      "probe": "clipboard-repeat-1",
+      "exit_code": 0,
+      "foreground_samples": 18,
+      "target_active_at_every_sample": true,
+      "log": "clipboard-repeat-1.log"
+    },
+    {
+      "probe": "option-tab-repeat-1",
+      "exit_code": 0,
+      "foreground_samples": 21,
+      "target_active_at_every_sample": true,
+      "log": "option-tab-repeat-1.log"
+    },
+    {
+      "probe": "clipboard-repeat-2",
+      "exit_code": 0,
+      "foreground_samples": 20,
+      "target_active_at_every_sample": true,
+      "log": "clipboard-repeat-2.log"
+    },
+    {
+      "probe": "option-tab-repeat-2",
+      "exit_code": 0,
+      "foreground_samples": 21,
+      "target_active_at_every_sample": true,
+      "log": "option-tab-repeat-2.log"
+    }
+  ],
+  "diagnosis": "The six focused runs and full live suite pass without a source change. This supports lost target foreground as the earlier failure condition; no new G7 regression is established.",
+  "a1b": {
+    "command": "tools/acceptance/run-a1b-live-gates.sh --skip-build --textedit-pid 81097 --log-dir <isolated-step1-log-dir>",
+    "started_utc": "2026-10-04T15:36:19Z",
+    "finished_utc": "2026-10-04T15:37:42Z",
+    "exit_code": 1,
+    "passed": 21,
+    "failed": 0,
+    "skipped": 1,
+    "incomplete": 0,
+    "manual": 22,
+    "builds": "Omitted via --skip-build; unchanged source and existing binaries previously passed the Full Local Gate.",
+    "browser_marker": "Skipped: no focused browser target/PID selected.",
+    "nonzero_reason": "All 22 manual acceptance rows remain open; no allow-manual or allow-incomplete bypass used.",
+    "committed_log_normalization": {
+      "change": "Trailing line whitespace removed only; exact field readbacks preserved.",
+      "raw_log_sha256": "dbd65ef6b365f83d66c7ecd105133b6b79743be3956a8f5d8e690a3cadfb8bc8"
+    }
+  },
+  "manual_rows_closed": 0,
+  "g7_physical_before_after_complete": false,
+  "ready_to_tag": false,
+  "next_step": "Open production candidate Settings and verify panes/controls using isolated config; physical and privacy residuals remain.",
+  "checkpoint_full_local_gate": {
+    "command": "tools/dev/check.sh",
+    "commands_passed": 57,
+    "commands_skipped": 0,
+    "exit_code": 0,
+    "started_utc": "2026-10-04T15:42:10Z",
+    "finished_utc": "2026-10-04T15:46:00Z",
+    "log_sha256": "6412284cf0f4c5f180050ea5dab5b6c56f28f06caf2c63ecfde7d6ebcc5cf50f",
+    "local_log": "/tmp/compme-release-steps-20261004.Hzckdl/step1-full-local-gate.log",
+    "notes": "Required gate run after the step-1 documentation edits; existing 16 vendored llama-cpp-2 warnings remain."
+  }
+}

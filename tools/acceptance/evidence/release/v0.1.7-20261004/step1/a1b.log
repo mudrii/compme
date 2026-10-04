@@ -1,0 +1,373 @@
+A1b live acceptance runner
+Root: /Users/mudrii/src/compme
+Logs: /tmp/compme-release-steps-20261004.Hzckdl/a1b-focused
+  |   "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kSCSecuritySessionID"=100021,"kCGSSessionSystemSafeBoot"=No,"kCGSessionLoginDoneKey"=Yes,"kCGSSessionIDKey"=257,"kCGSSessionUserNameKey"="mudrii","kCGSSessionGroupIDKey"=20,"CGSSessionUniqueSessionUUID"="5AE5FF80-8D0E-4CD4-BC50-08D409824FD4","kCGSessionLongUserNameKey"="Ion Mudreac","kCGSSessionAuditIDKey"=100021,"kCGSSessionLoginwindowSafeLogin"=No,"kCGSSessionUserIDKey"=501})
+    | |   "IOResourceMatched" = ("IOKit","IOPlatformUUID","AKSFileSystemKeyServices","AKSKernelServices","AKSFileVaultServices","CCPipe","IOAllCPUInitialized","IOPMU","IOTimeSyncTime","IOResourceMatched","IORTC","IONVRAM","IOTimeSyncDaemonService","com.apple.AppleFSCompression.Type1","IOBSD","SEP","com.apple.AppleFSCompression.Type5","com.apple.AppleFSCompression.Type3","com.apple.AppleFSCompression.Type4","com.apple.AppleFSCompression.Type7","com.apple.AppleFSCompression.Type8","com.apple.AppleFSCompression.Type9","com.apple.AppleFSCompression.Type10","com.apple.AppleFSCompression.Type11","com.apple.AppleFSCompression.Type12","com.apple.AppleFSCompression.Type13","com.apple.AppleFSCompression.Type14","com.apple.AppleFSCompression.Type15","com.apple.AppleFSCompression.Type16","AppleSMCEmbeddedResource","sepBootedOnce","boot-uuid-media","com.apple.AppleDiskImageController.load","CoreAnalyticsMessenger","IOTimeSyncClockManager","IOAVBLocalClock","OSKextReceiptQueried","IOConsoleUsersSeed","IOConsoleUsers","CCCapture","CCLogStream","CCDataStream","CCFaultReporter","IOAVBNub","com.apple.iokit.SCSISubsystemGlobals","KeyboardBacklight","als-lgp-version")
+    | |   "IOConsoleUsers" = ({"kCGSSessionOnConsoleKey"=Yes,"kSCSecuritySessionID"=100021,"kCGSSessionSystemSafeBoot"=No,"kCGSessionLoginDoneKey"=Yes,"kCGSSessionIDKey"=257,"kCGSSessionUserNameKey"="mudrii","kCGSSessionGroupIDKey"=20,"CGSSessionUniqueSessionUUID"="5AE5FF80-8D0E-4CD4-BC50-08D409824FD4","kCGSessionLongUserNameKey"="Ion Mudreac","kCGSSessionAuditIDKey"=100021,"kCGSSessionLoginwindowSafeLogin"=No,"kCGSSessionUserIDKey"=501})
+    | |   "IOConsoleUsersSeed" = <f1010000>
+
+== textedit-read ==
+  env COMPME_ACCEPTANCE_PID=81097 /Users/mudrii/src/compme/target/debug/examples/textedit_observer_acceptance 3000 read
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x76f2c54120|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x76f2c54120|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=85 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited
+PASS textedit-read
+
+== textedit-insert-synthetic ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_INSERT_TEXT=\ a1b-live-233619-synthetic /Users/mudrii/src/compme/target/debug/examples/textedit_observer_acceptance 3000 synthetic
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x756e82c150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x756e82c150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=85 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+PRE_INSERT_READ caret=85 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t" right=""
+INSERT bytes=26 chars=26 strategy=SyntheticKeys text=" a1b-live-233619-synthetic"
+POST_INSERT_READ caret=111 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic" right=""
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited
+PASS textedit-insert-synthetic
+
+== textedit-insert-clipboard ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_INSERT_TEXT=\ a1b-live-233619-clipboard /Users/mudrii/src/compme/target/debug/examples/textedit_observer_acceptance 3000 clipboard
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x7534c58150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2372.1474609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7534c58150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=111 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2372.1474609375, y: 205.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+PRE_INSERT_READ caret=111 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic" right=""
+INSERT bytes=26 chars=26 strategy=Clipboard text=" a1b-live-233619-clipboard"
+POST_INSERT_READ caret=137 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard" right=""
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited
+PASS textedit-insert-clipboard
+
+== textedit-insert-axset ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_INSERT_TEXT=\ a1b-live-233619 /Users/mudrii/src/compme/target/debug/examples/textedit_observer_acceptance 3000 insert
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x789ac5c000|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2544.333984375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x789ac5c000|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=137 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2544.333984375, y: 205.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+PRE_INSERT_READ caret=137 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard" right=""
+INSERT bytes=16 chars=16 strategy=AxSet text=" a1b-live-233619"
+POST_INSERT_READ caret=153 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619" right=""
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited
+PASS textedit-insert-axset
+
+== caret-marker-textedit-any ==
+  env COMPME_ACCEPTANCE_PID=81097 /Users/mudrii/src/compme/target/debug/examples/caret_marker_acceptance 1500 any
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x102b4b7c0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2650.294921875, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x102b4b7c0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+DIAG source=NativeFallback marker=None native=Some(ScreenRect { x: 2650.294921875, y: 205.0, w: 0.0, h: 13.0 }) resolved=Some(ScreenRect { x: 2650.294921875, y: 205.0, w: 0.0, h: 13.0 })
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+PASS caret-marker-textedit-any
+
+== accept-insert-full ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_insert_acceptance 1500 full
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2650.294921875, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+PRE_READ caret=153 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619" right=""
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2650.294921875, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POSTED_GRAVE
+ACCEPT_ACTION Full
+ACCEPT_INSERT_RESULT Ok(())
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x753d021b30|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POST_READ caret=167 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619 accepted-full" right=""
+SUMMARY actions=[Full] insert_results=[Ok(())]
+PASS accept-insert-full
+
+== accept-insert-word ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_insert_acceptance 1500 word
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+PRE_READ caret=167 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619 accepted-full" right=""
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2120.490234375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POSTED_TAB
+ACCEPT_ACTION Word
+ACCEPT_INSERT_RESULT Ok(())
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7a29411a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POST_READ caret=176 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619 accepted-full accepted" right=""
+SUMMARY actions=[Word] insert_results=[Ok(())]
+PASS accept-insert-word
+
+== accept-insert-option-tab ==
+  env COMPME_ACCEPTANCE_PID=81097 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_insert_acceptance 1500 option-tab
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+PRE_READ caret=176 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619 accepted-full accepted" right=""
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2180.09326171875, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POSTED_OPTION_TAB
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 218.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x79bd021ad0|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POST_READ caret=177 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard a1b-live-233619 accepted-full accepted\t" right=""
+SUMMARY actions=[] insert_results=[]
+PASS accept-insert-option-tab
+
+== e2e-compme-pipeline ==
+  env -i PATH=/Users/mudrii/.local/bin:/Users/mudrii/.asdf/shims:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.minimax/bin:/Users/mudrii/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/mudrii/Library/Python/3.14/bin:/Users/mudrii/.antigravity/antigravity/bin:/Users/mudrii/.cache/lm-studio/bin:/Users/mudrii/.mavis/bin:/Users/mudrii/.grok/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/System/Cryptexes/App/usr/bin:/Library/Apple/usr/bin:/Applications/Little\ Snitch.app/Contents/Components:/Users/mudrii/.codex/tmp/arg0/codex-arg0mXDMkP:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.3-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.2-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.1-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.158.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/installs/nodejs/24.19.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/plugins/nodejs/shims:/Users/mudrii/.asdf/installs/nodejs/24.19.0/bin:/Applications/Ghostty.app/Contents/MacOS:/Applications/Obsidian.app/Contents/MacOS:/opt/homebrew/opt/fzf/bin HOME=/Users/mudrii TMPDIR=/var/folders/t_/fzb0plxj4t78z05kk6lkqq500000gn/T/ RUST_BACKTRACE= COMPME_CONFIG=/tmp/compme-release-steps-20261004.Hzckdl/a1b-focused/e2e-isolated-config.env COMPME_SCREEN_CONTEXT=0 COMPME_ACCEPT_WORD_KEY=48 COMPME_ACCEPT_FULL_KEY=50 COMPME_ACCEPTANCE_PID=81097 COMPME_E2E_ACCEPT=full /Users/mudrii/src/compme/tools/acceptance/e2e-complete-me.sh
+E2E compme: prefix_chars=44 stub_chars=13 pid=81097 run_ms=5000 accept=full real_model=0
+E2E evidence: log=/Users/mudrii/src/compme/tools/acceptance/logs/e2e-compme-20261004-233650.log log_lines=18 log_bytes=1229 document_chars=56
+E2E: compme exited successfully [PASS]
+E2E: stub text inserted into document [PASS]
+E2E: stage present: 'focus' [PASS]
+E2E: stage present: 'request gen=' [PASS]
+E2E: stage present: 'completion gen=3' [PASS]
+E2E: stage present: 'accept Full' [PASS]
+E2E PASS: full focus->read->infer->ghost->accept->insert pipeline
+PASS e2e-compme-pipeline
+
+== e2e-compme-word-remainder ==
+  env -i PATH=/Users/mudrii/.local/bin:/Users/mudrii/.asdf/shims:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.minimax/bin:/Users/mudrii/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/mudrii/Library/Python/3.14/bin:/Users/mudrii/.antigravity/antigravity/bin:/Users/mudrii/.cache/lm-studio/bin:/Users/mudrii/.mavis/bin:/Users/mudrii/.grok/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/System/Cryptexes/App/usr/bin:/Library/Apple/usr/bin:/Applications/Little\ Snitch.app/Contents/Components:/Users/mudrii/.codex/tmp/arg0/codex-arg0mXDMkP:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.3-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.2-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.1-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.158.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/installs/nodejs/24.19.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/plugins/nodejs/shims:/Users/mudrii/.asdf/installs/nodejs/24.19.0/bin:/Applications/Ghostty.app/Contents/MacOS:/Applications/Obsidian.app/Contents/MacOS:/opt/homebrew/opt/fzf/bin HOME=/Users/mudrii TMPDIR=/var/folders/t_/fzb0plxj4t78z05kk6lkqq500000gn/T/ RUST_BACKTRACE= COMPME_CONFIG=/tmp/compme-release-steps-20261004.Hzckdl/a1b-focused/e2e-isolated-config.env COMPME_SCREEN_CONTEXT=0 COMPME_ACCEPT_WORD_KEY=48 COMPME_ACCEPT_FULL_KEY=50 COMPME_ACCEPTANCE_PID=81097 COMPME_E2E_ACCEPT=word /Users/mudrii/src/compme/tools/acceptance/e2e-complete-me.sh
+E2E compme: prefix_chars=44 stub_chars=11 pid=81097 run_ms=5000 accept=word real_model=0
+E2E evidence: log=/Users/mudrii/src/compme/tools/acceptance/logs/e2e-compme-20261004-233658.log log_lines=19 log_bytes=1249 document_chars=54
+E2E: compme exited successfully [PASS]
+E2E: stub text inserted into document [PASS]
+E2E: stage present: 'focus' [PASS]
+E2E: stage present: 'request gen=' [PASS]
+E2E: stage present: 'completion gen=2' [PASS]
+E2E: stage present: 'accept Word' [PASS]
+E2E: stage present: 'accept Full' [PASS]
+E2E PASS: word focus->read->infer->ghost->accept->insert pipeline
+PASS e2e-compme-word-remainder
+
+== e2e-compme-trailing-space ==
+  env -i PATH=/Users/mudrii/.local/bin:/Users/mudrii/.asdf/shims:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.160.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.minimax/bin:/Users/mudrii/.cargo/bin:/opt/homebrew/bin:/opt/homebrew/sbin:/Users/mudrii/Library/Python/3.14/bin:/Users/mudrii/.antigravity/antigravity/bin:/Users/mudrii/.cache/lm-studio/bin:/Users/mudrii/.mavis/bin:/Users/mudrii/.grok/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin:/System/Cryptexes/App/usr/bin:/Library/Apple/usr/bin:/Applications/Little\ Snitch.app/Contents/Components:/Users/mudrii/.codex/tmp/arg0/codex-arg0mXDMkP:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.3-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.2-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.1-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.159.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.codex/packages/app-server-daemon/releases/0.158.0-aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/installs/nodejs/24.19.0/lib/node_modules/@openai/codex/node_modules/@openai/codex-darwin-arm64/vendor/aarch64-apple-darwin/codex-path:/Users/mudrii/.asdf/plugins/nodejs/shims:/Users/mudrii/.asdf/installs/nodejs/24.19.0/bin:/Applications/Ghostty.app/Contents/MacOS:/Applications/Obsidian.app/Contents/MacOS:/opt/homebrew/opt/fzf/bin HOME=/Users/mudrii TMPDIR=/var/folders/t_/fzb0plxj4t78z05kk6lkqq500000gn/T/ RUST_BACKTRACE= COMPME_CONFIG=/tmp/compme-release-steps-20261004.Hzckdl/a1b-focused/e2e-trailing-space-config.env COMPME_SCREEN_CONTEXT=0 COMPME_TRAILING_SPACE=1 COMPME_ACCEPT_WORD_KEY=48 COMPME_ACCEPT_FULL_KEY=50 COMPME_ACCEPTANCE_PID=81097 COMPME_E2E_ACCEPT=word-only COMPME_E2E_STUB=\ trail COMPME_E2E_EXPECT_SUFFIX=\ trail\  /Users/mudrii/src/compme/tools/acceptance/e2e-complete-me.sh
+E2E compme: prefix_chars=44 stub_chars=6 pid=81097 run_ms=5000 accept=word-only real_model=0
+E2E evidence: log=/Users/mudrii/src/compme/tools/acceptance/logs/e2e-compme-20261004-233705.log log_lines=19 log_bytes=1364 document_chars=50
+E2E: compme exited successfully [PASS]
+E2E: stub text inserted into document [PASS]
+E2E: stage present: 'focus' [PASS]
+E2E: stage present: 'request gen=' [PASS]
+E2E: stage present: 'completion gen=3' [PASS]
+E2E: stage present: 'accept Word' [PASS]
+E2E: expected readback suffix matched [PASS]
+E2E PASS: word-only focus->read->infer->ghost->accept->insert pipeline
+PASS e2e-compme-trailing-space
+
+== caret-marker-browser-marker ==
+SKIP caret-marker-browser-marker: pass --browser-pid after focusing a Chrome/Safari text field
+
+== popup-fallback-fixture ==
+  /Users/mudrii/src/compme/target/debug/examples/popup_fallback_acceptance 1500
+FIXTURE pid=77924 window_ready=true
+compme: AX worker started
+READ Ok(TextContext { left: "popup fixture value", right: "", left_scalars: 19, selection: None, selected_text: None, caret: 19, source: Accessibility, field_id: FieldHandle { app: "pid:77924", pid: Some(77924), element_id: "ax:pid=77924|id=compme-a1b-popup-fixture|role=AXTextField", generation: 1 }, offset_encoding: Utf16CodeUnits })
+RECT Ok(None)
+CAPS Ok(Capabilities { readable_text: true, readable_caret: false, writable: true, assistant_field: false, secure: false, security_state: Normal, toolkit: AppKit, multiline: false, insert_strategy: AxSet, accept_intercept: CarbonHotkey, overlay_at_caret: None, coords_global_screen: true })
+ANCHOR Ok(Some(ScreenRect { x: 360.0, y: 1048.0, w: 520.0, h: 192.0 }))
+INSERT Ok(Inserted { bytes: 9, chars: 9, strategy: AxSet })
+READ_AFTER_INSERT Ok(TextContext { left: "popup fixture value inserted", right: "", left_scalars: 28, selection: None, selected_text: None, caret: 28, source: Accessibility, field_id: FieldHandle { app: "pid:77924", pid: Some(77924), element_id: "ax:pid=77924|id=compme-a1b-popup-fixture|role=AXTextField", generation: 1 }, offset_encoding: Utf16CodeUnits })
+compme: AX worker exited
+SUMMARY popup=true fixture_pid=77924
+PASS popup-fallback-fixture
+
+== accept-tap-inactive ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 inactive
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_TAB
+SUMMARY controls=[]
+compme: AX worker exited
+PASS accept-tap-inactive
+
+== accept-tap-full ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 full
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_GRAVE
+ACCEPT_ACTION Accept(Full)
+SUMMARY controls=[Accept(Full)]
+compme: AX worker exited
+PASS accept-tap-full
+
+== accept-tap-word ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 word
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_TAB
+ACCEPT_ACTION Accept(Word)
+SUMMARY controls=[Accept(Word)]
+compme: AX worker exited
+PASS accept-tap-word
+
+== accept-tap-escape ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 escape
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_ESCAPE
+ACCEPT_ACTION Dismiss
+SUMMARY controls=[Dismiss]
+compme: AX worker exited
+PASS accept-tap-escape
+
+== accept-tap-option-tab ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 option-tab
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_OPTION_TAB
+SUMMARY controls=[]
+compme: AX worker exited
+PASS accept-tap-option-tab
+
+== accept-tap-cycle ==
+  env COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 cycle
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_DOWN
+ACCEPT_ACTION Cycle
+SUMMARY controls=[Cycle]
+compme: AX worker exited
+PASS accept-tap-cycle
+
+== accept-tap-delayed-hide ==
+  env COMPME_ACCEPTANCE_HIDE_AFTER_MS=100 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 delayed-hide
+-- attempt 1/3 --
+compme: AX worker started
+front_app=Some("pid:81097")
+POSTED_TAB
+SUMMARY controls=[]
+compme: AX worker exited
+PASS accept-tap-delayed-hide
+
+== overlay-presenter ==
+  /Users/mudrii/src/compme/target/debug/examples/overlay_presenter_acceptance 3000
+SHOW rect=ScreenRect { x: 520.0, y: 240.0, w: 1.0, h: 18.0 } text="ghost completion text" pid=78232
+SHOW_DIAG MacosOverlayDiagnostics { has_panel: true, visible: true, ignores_mouse_events: true, nonactivating_panel: true, can_become_key_window: false, level: 101, joins_all_spaces: true, fullscreen_auxiliary: true, panel_frame: Some(ScreenRect { x: 520.0, y: 1322.0, w: 240.0, h: 22.0 }), has_underline_panel: false, underline_visible: false, underline_frame: None }
+UPDATE text="updated ghost completion text"
+UPDATE_DIAG MacosOverlayDiagnostics { has_panel: true, visible: true, ignores_mouse_events: true, nonactivating_panel: true, can_become_key_window: false, level: 101, joins_all_spaces: true, fullscreen_auxiliary: true, panel_frame: Some(ScreenRect { x: 520.0, y: 1322.0, w: 240.0, h: 22.0 }), has_underline_panel: false, underline_visible: false, underline_frame: None }
+HIDE
+HIDE_DIAG MacosOverlayDiagnostics { has_panel: true, visible: false, ignores_mouse_events: true, nonactivating_panel: true, can_become_key_window: false, level: 101, joins_all_spaces: true, fullscreen_auxiliary: true, panel_frame: Some(ScreenRect { x: 520.0, y: 1322.0, w: 240.0, h: 22.0 }), has_underline_panel: false, underline_visible: false, underline_frame: None }
+SUMMARY shown=true updated=true hidden=true click_through=true nonactivating=true can_key=false
+PASS overlay-presenter
+
+== overlay-correction-presenter ==
+  env COMPME_OVERLAY_MODE=correction COMPME_OVERLAY_W=80 COMPME_OVERLAY_TEXT=the /Users/mudrii/src/compme/target/debug/examples/overlay_presenter_acceptance 3000
+CORRECTION_SHOW rect=ScreenRect { x: 520.0, y: 240.0, w: 80.0, h: 18.0 } suggestion="the" pid=78357
+CORRECTION_SHOW_DIAG MacosOverlayDiagnostics { has_panel: true, visible: true, ignores_mouse_events: true, nonactivating_panel: true, can_become_key_window: false, level: 101, joins_all_spaces: true, fullscreen_auxiliary: true, panel_frame: Some(ScreenRect { x: 520.0, y: 1364.0, w: 96.0, h: 26.0 }), has_underline_panel: true, underline_visible: true, underline_frame: Some(ScreenRect { x: 520.0, y: 1340.0, w: 80.0, h: 2.0 }) }
+HIDE
+HIDE_DIAG MacosOverlayDiagnostics { has_panel: true, visible: false, ignores_mouse_events: true, nonactivating_panel: true, can_become_key_window: false, level: 101, joins_all_spaces: true, fullscreen_auxiliary: true, panel_frame: Some(ScreenRect { x: 520.0, y: 1364.0, w: 96.0, h: 26.0 }), has_underline_panel: true, underline_visible: false, underline_frame: Some(ScreenRect { x: 520.0, y: 1340.0, w: 80.0, h: 2.0 }) }
+SUMMARY correction_shown=true hidden=true underline_visible_before=true click_through=true nonactivating=true can_key=false
+PASS overlay-correction-presenter
+
+== apps-policy-toggle-look ==
+MANUAL apps-policy-toggle-look: open Settings > Apps with at least two rows; verify On/Tab/Mid/AC/GF checkbox columns do not overlap names, toggle Enabled and Grammar fix for the focused app, confirm suggestions/corrections dismiss and config persists
+
+== personalization-pane-look ==
+MANUAL personalization-pane-look: open Settings > Personalization; edit instructions, sender, and strength, confirm multi-line commit/persistence and that the next request uses updated steering without relaunch
+
+== menu-bar-icon-look ==
+MANUAL menu-bar-icon-look: verify the menu bar icon renders crisply in light/dark appearances, status changes are visible, and the fallback title remains readable when the icon is unavailable
+
+== shortcuts-recorder-look ==
+MANUAL shortcuts-recorder-look: open Settings > Shortcuts; click a recorder box, press a modifier-combo accept key, confirm the resolved chord displays, live rebind works, and the value persists after reopening Settings
+
+== always-on-hotkeys-physical-look ==
+MANUAL always-on-hotkeys-physical-look: with shortcuts configured, press force-activate, per-app toggle, global toggle, and grammar-check as physical keypress hotkeys; confirm each dispatches without reopening Settings and persists across relaunch
+
+== setup-model-picker-look ==
+MANUAL setup-model-picker-look: open Settings > Setup; verify exactly one Show Models Folder control is visible and no Reveal Model in Finder control remains; verify model picker rows show fit suffixes, Download uses the selected row, license prompts appear before encumbered fetches, and dest-exists blocks re-fetch
+
+== nine-tab-settings-walkthrough ==
+MANUAL nine-tab-settings-walkthrough: walk all nine Settings panes: Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, and About; verify controls fit, reflect current state, and live-apply where documented
+
+== full-autocorrect-prose-code-look ==
+MANUAL full-autocorrect-prose-code-look: launch with COMPME_FULL_AUTOCORRECT=1; in TextEdit type a whole misspelled word and confirm the macOS correction offer replaces it atomically, then type equivalent prose in a code editor main pane and confirm no correction appears
+
+== cross-app-previous-inputs-look ==
+MANUAL cross-app-previous-inputs-look: launch with COMPME_CROSS_APP_PREVIOUS_INPUTS=1 and COMPME_DIAG_CONTEXT=1; Full-accept in one of two supported apps, type in the other, and confirm prompt_context reports sources=recent without logging content; turn the switch off and confirm the global ring is cleared before re-enable
+
+== selection-thesaurus-look ==
+MANUAL selection-thesaurus-look: launch with COMPME_THESAURUS_SELECTION=1; select one word in TextEdit, confirm the correction banner, use Down to cycle, full-accept into the exact selected range, then move or collapse the stale selection and confirm it cannot apply
+
+== tray-external-links-look ==
+MANUAL tray-external-links-look: click Visit Website and Contact Support once each; confirm the browser opens the exact repository and new-issue pages without duplicate launches
+
+== caret-marker-chromium-forks-calibration ==
+MANUAL caret-marker-chromium-forks-calibration: on a granted desktop, type in Brave, Edge, and Vivaldi; confirm whether each ghost lands one line low before adding any bundle prefix to RECT_IS_LINE_BUNDLE_PREFIXES
+
+== caret-marker-chrome-marker ==
+MANUAL caret-marker-chrome-marker: focus a Google Chrome textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics
+
+== caret-marker-chromium-marker ==
+MANUAL caret-marker-chromium-marker: focus a Chromium build textarea or content-editable field; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics
+
+== caret-marker-electron-marker ==
+MANUAL caret-marker-electron-marker: focus an Electron app text field such as VS Code; confirm the ghost lands on the caret line with MacosCaretRectSource::Marker in COMPME_DEBUG caret diagnostics
+
+== sidebar-only-editor-assistant-look ==
+MANUAL sidebar-only-editor-assistant-look: with COMPME_DEBUG=1, test VS Code, Cursor, and Windsurf: each main editor must produce no request, while a positively labelled assistant/chat field must submit a request with app_allows=true
+
+== encrypted-memory-all-monitored-live ==
+MANUAL encrypted-memory-all-monitored-live: remaining residual after 2026-06-17 TextEdit and Chrome product-loop proofs: confirm secure-input, snoozed policy transition, and volatile-pid cases add no rows
+
+== grammar-fix-textedit-look ==
+MANUAL grammar-fix-textedit-look: launch compme with COMPME_GRAMMAR_FIX=1 plus COMPME_GRAMMAR_CHECK_KEY and COMPME_GRAMMAR_ACCEPT_KEY; in TextEdit verify 'teh' shows underline/banner, accept replaces exactly, and caret move/edit stales the correction
+
+== mirror-window-firefox-zen-look ==
+MANUAL mirror-window-firefox-zen-look: focus Firefox and Zen text fields with mirror-window mode enabled; confirm the ghost appears in the mirror window aligned to the focused text field and never in the source app window
+
+== setup-needed-docs-arc-onboarding ==
+MANUAL setup-needed-docs-arc-onboarding: focus Google Docs in Arc with Accessibility missing or unsupported element state; confirm setup-needed onboarding appears, names the missing Accessibility/setup action, and no completion request is submitted
+
+== multi-candidate-cycle-physical-look ==
+MANUAL multi-candidate-cycle-physical-look: with a multi-candidate suggestion visible, press the physical Down-arrow; confirm it cycles candidates in order, wraps predictably, and accept inserts selected candidate
+
+== input-monitoring-revoked-carbon-accept ==
+  /Users/mudrii/src/compme/target/debug/examples/input_monitoring_preflight_acceptance revoked
+  env COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 full
+  env COMPME_ACCEPTANCE_REQUIRE_INPUT_MONITORING_REVOKED=1 COMPME_ACCEPTANCE_POST_TAB_AFTER_MS=300 /Users/mudrii/src/compme/target/debug/examples/accept_tap_acceptance 1500 word
+INPUT_MONITORING granted=true
+SUMMARY input_monitoring_revoked=false
+MANUAL input-monitoring-revoked-carbon-accept: current process is not in the revoked Input Monitoring state; revoke it manually and rerun to automate this spot-check
+
+Summary: pass=21 fail=0 skip=1 incomplete=0 manual=22 logs=/tmp/compme-release-steps-20261004.Hzckdl/a1b-focused
+FAIL manual: unresolved MANUAL gates; use --allow-manual only after executing and recording the checklist

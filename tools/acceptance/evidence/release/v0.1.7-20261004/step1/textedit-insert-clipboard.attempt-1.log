@@ -1,0 +1,12 @@
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x7534c58150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2372.1474609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7534c58150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=111 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2372.1474609375, y: 205.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+PRE_INSERT_READ caret=111 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic" right=""
+INSERT bytes=26 chars=26 strategy=Clipboard text=" a1b-live-233619-clipboard"
+POST_INSERT_READ caret=137 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t a1b-live-233619-synthetic a1b-live-233619-clipboard" right=""
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited

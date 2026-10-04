@@ -228,6 +228,26 @@ These partial observations close none of the 22 rows. See
 [`gui-resume.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/gui-resume.json)
 and the in-place acceptance ledger for the exact limits.
 
+### Step 1 — focused TextEdit delivery verified — 2026-10-04
+
+The detailed recheck at `77e46d6` initially found unchanged readback for
+clipboard insertion and Option+Tab. After the owner focused TextEdit, each
+probe passed three consecutive runs, with TextEdit active at every recorded
+foreground sample. Clipboard insertion produced the exact requested delta;
+Option+Tab inserted a literal tab with no accept callback. No source change
+was needed. This supports lost target foreground as the earlier failure
+condition, rather than an established new G7 regression.
+
+The follow-up A1b suite, using the unchanged, previously verified binaries
+with `--skip-build`, recorded **21 passed, 0 failed, 1 skipped, 0 incomplete,
+22 manual**. The browser-marker target was not selected. Exit 1 is still
+required because all 22 manual rows remain open; no manual/incomplete bypass
+was used. Logs, sampled foreground evidence and candidate provenance are in
+[`step1/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step1/results.json).
+The real-model candidate was restored to Ready. Next is the Settings
+walkthrough; physical G7 before/after, the fresh A2 matrix and the remaining
+manual/Tier-4 observations are still required before tagging.
+
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 
 Fresh independent review and production probes found two additional privacy

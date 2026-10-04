@@ -1,0 +1,15 @@
+compme: AX worker startedfront_app=Some("pid:81097")
+
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2305.921875, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+PRE_READ caret=32 selection=None left=" clipboard-step1-round2-20261004" right=""
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2305.921875, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POSTED_OPTION_TAB
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c0d021980|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POST_READ caret=33 selection=None left=" clipboard-step1-round2-20261004\t" right=""
+SUMMARY actions=[] insert_results=[]

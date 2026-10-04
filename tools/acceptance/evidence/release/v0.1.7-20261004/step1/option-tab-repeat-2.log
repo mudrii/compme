@@ -1,0 +1,15 @@
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2146.98046875, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+PRE_READ caret=84 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2" right=""
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2146.98046875, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POSTED_OPTION_TAB
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2199.9609375, y: 205.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x77fb021a70|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+POST_READ caret=85 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1\t clipboard-step1-repeat-2\t" right=""
+SUMMARY actions=[] insert_results=[]

@@ -1,0 +1,12 @@
+compme: AX worker started
+front_app=Some("pid:81097")
+FOCUS app=pid:81097 pid=Some(81097) generation=1 element=ax:ptr=ax:0x7c84c54150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+CARET app=pid:81097 pid=Some(81097) generation=1 rect=Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 }) element=ax:ptr=ax:0x7c84c54150|pid=81097|hash=1668326424|id=First Text View|role=AXTextArea
+READ caret=33 selection=None left=" clipboard-step1-round2-20261004\t" right="" source=Accessibility encoding=Utf16CodeUnits
+RECT Some(ScreenRect { x: 2358.90234375, y: 192.0, w: 0.0, h: 13.0 })
+CAPS readable_text=true readable_caret=true writable=true secure=false state=Normal toolkit=AppKit multiline=true insert=AxSet intercept=CarbonHotkey overlay=NativePanel coords_global=true ux=Inline
+PRE_INSERT_READ caret=33 selection=None left=" clipboard-step1-round2-20261004\t" right=""
+INSERT bytes=25 chars=25 strategy=Clipboard text=" clipboard-step1-repeat-1"
+POST_INSERT_READ caret=58 selection=None left=" clipboard-step1-round2-20261004\t clipboard-step1-repeat-1" right=""
+SUMMARY focus=1 caret=1 apps={"pid:81097"}
+compme: AX worker exited

@@ -361,6 +361,25 @@ Failure classification looks for common blockers:
 - wrong focused target
 - transient AX observer setup failures
 
+### Focused TextEdit follow-up — 2026-10-04
+
+On candidate source `77e46d6`, clipboard insertion and Option+Tab initially
+returned unchanged field readback. After the owner focused TextEdit, both
+probes passed three consecutive runs. TextEdit was active at every recorded
+foreground sample; each clipboard delta matched exactly, and each Option+Tab
+inserted `\t` with no accept callback. No code was changed. The passing runs
+support lost target foreground as the earlier failure condition.
+
+The complete behavioral A1b rerun used `--skip-build` with the unchanged,
+previously verified binaries and reported `pass=21 fail=0 skip=1 incomplete=0
+manual=22`. It exited 1 because the 22 manual rows remain open. The optional
+browser marker had no selected target; no `--allow-manual`,
+`--allow-incomplete`, `--force` or `--skip-e2e` bypass was used. This closes
+the two scripted failures, not any physical-keyboard or manual LOOK row.
+The production candidate restarted with a real model, Memory Off and Ready
+status. See the [step-1 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step1/results.json)
+and [runner log](../tools/acceptance/evidence/release/v0.1.7-20261004/step1/a1b.log).
+
 ### Expected exit codes
 
 **Exit code 70 during model warm-up is expected, not a failure** (Qfd §20,
