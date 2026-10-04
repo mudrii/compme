@@ -1,0 +1,19 @@
+Bounded product-loop probe, 2026-10-04, local macOS 27
+Candidate binary SHA-256: 79e5b6c301e8679713c7cbd4bdb67182f563768cce8993fb5c95f30452cee354
+Disposable config/database; public test-fixture key; no OS key-store writes.
+COMPME_MEMORY=all; COMPME_RUN_MS=5000; stub completion configured.
+Read-only session preflight: screen locked; Secure Input owned by loginwindow.
+
+Selected product output:
+compme: encrypted memory enabled (mode=AllMonitored)
+compme: state=ready
+compme: status=Blocked(SecureInput) enabled=true snoozed=false
+compme: read_context: SecureInput { state: SecureInputEnabled }
+compme: shutting down
+compme: usage shown=0 accepted=0 dismissed=0 superseded=0 words=0 latency_avg=None latency_p95=None
+
+After clean exit: read-only SQLite query found memories=0.
+No completion request was logged. Exit code: 0.
+This is a locked-session negative check, not closure of the full memory gate:
+no physical typing, live snooze transition, volatile app identity, mode-picker
+persistence, or erase operation was exercised.

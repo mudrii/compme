@@ -1418,6 +1418,23 @@ Repairs and preparation:
   the remaining flagged test diagnostics use fixtures. No alert was dismissed
   and no production plaintext disclosure was demonstrated by this audit.
 
+The fresh CodeQL analysis of preparation commit
+`aa199ea0943ff8927802a9faac0b592db83f25bc` passed in
+[run 37191289043](https://github.com/mudrii/compme/actions/runs/37191289043).
+Its open cleartext-logging alerts fell from 20 to 17 after the three live-keyring
+diagnostics were removed; all remaining alert instances name this analyzed
+commit. No alert was dismissed.
+
+All five native CI lanes passed that same preparation commit in
+[run 37191288847](https://github.com/mudrii/compme/actions/runs/37191288847):
+workflow actionlint, macOS root/model/quality/policy gates, macOS spike,
+Linux portable/live acceptance, and Windows portable/app build. The Docs lane
+also passed in [run 37191288803](https://github.com/mudrii/compme/actions/runs/37191288803).
+The final evidence update passed another Full Local Gate: 57 commands, zero
+skips, unchanged test counts, and the strict real-Mac model/quality gates.
+Its separate log hash is in `local-validation.json`. Later commits still
+require their own applicable checks before tagging.
+
 Committed, portable evidence summaries and the before/after regressions are in
 [`tools/acceptance/evidence/release/v0.1.7-20261004`](tools/acceptance/evidence/release/v0.1.7-20261004).
 The full Mac gate log is `/tmp/compme-0.1.7-full-local-gate.log`; its hash and
@@ -1427,7 +1444,17 @@ The original v0.1.6 artifact also passed fresh checksum/manifest/cask,
 attestation, strict codesign, stapler and Gatekeeper verification on this Mac.
 This verifies the old artifact; it does not sign or publish 0.1.7.
 
-**Still required:** exact pushed native CI; closure of all 22 live/manual rows
+A later bounded product-loop privacy probe ran the same candidate for five
+seconds in AllMonitored mode with a disposable config/database and a public
+fixture key. The Mac was locked with loginwindow owning Secure Input. The
+product reached Ready, reported `Blocked(SecureInput)`, refused the context
+read, logged no completion request and exited cleanly with zero `memories`
+rows (read-only SQLite query after shutdown). Selected output is committed as
+`secure-input-memory.log`. This is a negative startup check, not closure of
+the physical typing, snooze/volatile-identity, mode-picker or erase legs.
+The remaining GUI checks could not run while the session was locked.
+
+**Still required:** closure of all 22 live/manual rows
 and declared additional Tier-4 observations, including physical G7 shortcuts,
 accept/dismiss/cycle/rearm and memory privacy/erase. One browser-marker target
 was not selected in the A1b run. Input Monitoring was observed granted, so the
@@ -1437,6 +1464,7 @@ Dependency PRs #9/#10 were not merged; #10's failed timeout tests do not affect
 the audited lockfile. Signing/notarization, publication, cask finalization and
 post_verify require a real protected tag and have not run for 0.1.7.
 
-**Release decision:** preparation is implemented and the Mac local gate is
-green; the candidate is not ready to tag until the remaining acceptance and
-exact-commit CI requirements are satisfied.
+**Release decision:** preparation is implemented. The Mac local gate
+and the preparation commit's native CI are green; the candidate is not ready
+to tag until the remaining acceptance requirements are satisfied. Verify
+exact-tip CI again after any further commit.

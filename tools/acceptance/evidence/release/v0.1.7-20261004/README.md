@@ -6,6 +6,12 @@ The base commit and built candidate binary hash are in `local-validation.json`.
 
 - `tools/dev/check.sh`: 57 commands run, zero skipped; 2276 root tests passed,
   11 ignored. The strict CPU/Metal/spike model gates and quality gate passed.
+  The final evidence update passed the same full gate again; both log hashes
+  and selected command counts are in `local-validation.json`.
+- All five native CI lanes passed preparation commit `aa199ea` in
+  [run 37191288847](https://github.com/mudrii/compme/actions/runs/37191288847).
+  Docs and CodeQL also passed that commit. These links identify the tested
+  preparation commit; any later commit must pass its applicable checks.
 - `tools/acceptance/run-a1b-live-gates.sh --skip-build --log-dir /tmp/compme-0.1.7-a1b-final`:
   21 scripted checks passed; one browser-marker target was unselected; 22
   manual rows remain open. The runner exited 1, correctly refusing overall
@@ -14,6 +20,10 @@ The base commit and built candidate binary hash are in `local-validation.json`.
   tests for gate-setting forwarding and exclusion of inherited completion data.
 - `trailing-space-{before,after}.log`: live TextEdit word-only readback failed
   before the harness fix and passed afterward with the exact trailing space.
+- `secure-input-memory.log`: the bounded AllMonitored product loop reached
+  Ready in a locked session, blocked Secure Input reads, issued no completion
+  request and left zero encrypted-memory rows. This does not close the broader
+  live memory/mode/erase gate.
 
 The candidate is locally ad-hoc signed. It is not a published/notarized 0.1.7
 artifact. No physical keyboard or revoked Input Monitoring result is inferred

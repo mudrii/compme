@@ -53,5 +53,86 @@
     "22 complete manual/live rows",
     "additional Tier-4 acceptance",
     "v0.1.7 signing/notarization/publication/cask finalization/post_verify"
-  ]
+  ],
+  "secure_input_memory_probe": {
+    "duration_ms": 5000,
+    "mode": "AllMonitored",
+    "screen_locked": true,
+    "secure_input_owner": "loginwindow",
+    "completion_requests": 0,
+    "memory_rows_after_shutdown": 0,
+    "exit_code": 0,
+    "full_manual_gate_closed": false,
+    "evidence": "secure-input-memory.log"
+  },
+  "codeql": {
+    "run_id": 37191289043,
+    "head_sha": "aa199ea0943ff8927802a9faac0b592db83f25bc",
+    "conclusion": "success",
+    "open_alerts_before": 20,
+    "open_alerts_after": 17,
+    "live_keyring_diagnostics_removed": 3,
+    "alerts_dismissed": 0
+  },
+  "evidence_commit_full_local_gate": {
+    "run": 57,
+    "skipped": 0,
+    "log": "/tmp/compme-0.1.7-evidence-full-local-gate.log",
+    "sha256": "03c91e4d355bb68be6704a993f55572ec8acf83e61dae83678a064d899e781bd",
+    "selected_commands": {
+      "3": {
+        "passed": 1206,
+        "ignored": 9
+      },
+      "4": {
+        "passed": 1070,
+        "ignored": 2
+      },
+      "51": {
+        "passed": 10,
+        "ignored": 0
+      },
+      "52": {
+        "passed": 1,
+        "ignored": 0
+      },
+      "56": {
+        "passed": 43,
+        "ignored": 1
+      }
+    }
+  },
+  "native_ci": {
+    "head_sha": "aa199ea0943ff8927802a9faac0b592db83f25bc",
+    "run_id": 37191288847,
+    "url": "https://github.com/mudrii/compme/actions/runs/37191288847",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "actionlint (workflows)",
+        "conclusion": "success"
+      },
+      {
+        "name": "portable workspace + platform_linux (Linux)",
+        "conclusion": "success"
+      },
+      {
+        "name": "fmt \u00b7 clippy \u00b7 test (macOS)",
+        "conclusion": "success"
+      },
+      {
+        "name": "spike fmt \u00b7 clippy \u00b7 test \u00b7 build (macOS)",
+        "conclusion": "success"
+      },
+      {
+        "name": "portable workspace + platform_windows (Windows)",
+        "conclusion": "success"
+      }
+    ]
+  },
+  "docs_ci": {
+    "head_sha": "aa199ea0943ff8927802a9faac0b592db83f25bc",
+    "run_id": 37191288803,
+    "conclusion": "success"
+  }
 }

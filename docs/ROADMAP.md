@@ -198,9 +198,11 @@ manual rows; its exit remains nonzero because those manual rows are open.
 ShellCheck 0.11.0 is installed on this Mac. This candidate passed all **57/57
 Full Local Gate commands with zero skips**, all 2276 non-ignored root tests,
 CPU latency/cancellation, Metal cancellation, spike latency and model quality.
-Exact pushed native CI remains required, followed by all 22 manual/live
-closures and declared Tier-4 observations. Three
-Linux live-keyring failure diagnostics no longer format potential key bytes.
+All five native CI lanes passed preparation commit `aa199ea` in
+[run 37191288847](https://github.com/mudrii/compme/actions/runs/37191288847),
+including the model smoke/quality and Linux live gates. All 22 manual/live
+closures and declared Tier-4 observations remain required. Three Linux
+live-keyring failure diagnostics no longer format potential key bytes.
 Evidence and remaining work are recorded in Qfd §28 and
 [`local-validation.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/local-validation.json).
 
