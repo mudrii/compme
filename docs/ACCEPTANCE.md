@@ -801,17 +801,17 @@ closed for a tag.
 |---|---|---|---|---|
 | `apps-policy-toggle-look` | never recorded | — | — | — |
 | `personalization-pane-look` | never recorded | — | — | — |
-| `menu-bar-icon-look` | never recorded | — | — | — |
+| `menu-bar-icon-look` | partial (user report) | 2026-10-04 | 0.1.7 / `df7a3a7` | Owner reported icon visible after unlock; light/dark and state appearances unverified; see release `gui-resume.json` |
 | `shortcuts-recorder-look` | never recorded | — | — | — |
 | `always-on-hotkeys-physical-look` | never recorded | — | — | — |
 | `setup-model-picker-look` | never recorded | — | — | — |
 | `nine-tab-settings-walkthrough` | never recorded | — | — | — |
 | `full-autocorrect-prose-code-look` | never recorded | — | — | — |
 | `cross-app-previous-inputs-look` | never recorded | — | — | — |
-| `selection-thesaurus-look` | never recorded | — | — | — |
+| `selection-thesaurus-look` | partial (assisted banner) | 2026-10-04 | 0.1.7 / `df7a3a7` | TextEdit selected-word banner rendered with acceptance PID override; physical cycle/full-accept and stale replacement refusal unverified; see release `gui-resume.json` |
 | `tray-external-links-look` | never recorded | — | — | — |
 | `caret-marker-chromium-forks-calibration` | never recorded | — | — | — |
-| `caret-marker-chrome-marker` | never recorded | — | — | — |
+| `caret-marker-chrome-marker` | partial (fallback only) | 2026-10-04 | 0.1.7 / `df7a3a7` | Chrome 154 assisted textarea: strict marker probe exit 1 (zero-height marker), fallback probe exit 0; normal foreground calibration/insertion unverified; see release `native-chrome-caret.log` |
 | `caret-marker-chromium-marker` | never recorded | — | — | — |
 | `caret-marker-electron-marker` | never recorded | — | — | — |
 | `sidebar-only-editor-assistant-look` | never recorded | — | — | — |

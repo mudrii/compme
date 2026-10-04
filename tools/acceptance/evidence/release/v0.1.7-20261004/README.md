@@ -24,6 +24,10 @@ The base commit and built candidate binary hash are in `local-validation.json`.
   Ready in a locked session, blocked Secure Input reads, issued no completion
   request and left zero encrypted-memory rows. This does not close the broader
   live memory/mode/erase gate.
+- `gui-resume.json` and `native-chrome-caret.log`: resumed assisted observations
+  after unlocking, the exact limits of the Chrome marker/fallback probes, and
+  the source/binary provenance of the prepared pre-G7 physical baseline.
+  No complete manual gate is claimed by these partial observations.
 
 The candidate is locally ad-hoc signed. It is not a published/notarized 0.1.7
 artifact. No physical keyboard or revoked Input Monitoring result is inferred

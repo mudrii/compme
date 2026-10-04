@@ -1,0 +1,88 @@
+{
+  "date": "2026-10-04",
+  "source_commit": "df7a3a771fb9bf8208ec9c19eac7faf927336fe5",
+  "macos": "27.0.1 (26A434)",
+  "textedit": "1.21",
+  "candidate_binary_sha256": "79e5b6c301e8679713c7cbd4bdb67182f563768cce8993fb5c95f30452cee354",
+  "menu_bar_icon": {
+    "observation": "owner reported visible after unlock",
+    "complete_gate": false,
+    "remaining": [
+      "light/dark appearance",
+      "runtime state appearances"
+    ]
+  },
+  "settings": {
+    "observed_open": false,
+    "user_action_requested": "Open Settings from the menu-bar icon"
+  },
+  "textedit_assisted": {
+    "acceptance_pid_override": true,
+    "normal_foreground_observed": "app.zen-browser.zen",
+    "completion_rendered": true,
+    "selection_thesaurus_banner_rendered": true,
+    "suggestion_chars": 4,
+    "assisted_tab": "literal tab; no physical accept proof",
+    "remaining": [
+      "physical cycle",
+      "physical full accept",
+      "stale replacement refusal"
+    ],
+    "memory_mode": "Off",
+    "memory_database_created": false,
+    "private_fixture": "/tmp/compme-release-ui.WmETta/compme-release-acceptance.txt",
+    "complete_gate": false
+  },
+  "native_chrome": {
+    "bundle_id": "com.google.Chrome",
+    "version": "154.0.8037.98",
+    "surface": "temporary GitHub issue-description textarea; no submission",
+    "acceptance_pid_override": true,
+    "strict_marker_probe": {
+      "duration_ms": 4000,
+      "requirement": "marker",
+      "exit_code": 1
+    },
+    "fallback_probe": {
+      "duration_ms": 1000,
+      "requirement": "fallback",
+      "exit_code": 0
+    },
+    "source": "NativeFallback",
+    "marker": {
+      "x": 1932.0,
+      "y": 112.0,
+      "w": 0.0,
+      "h": 0.0
+    },
+    "native": {
+      "x": 2469.0,
+      "y": 436.0,
+      "w": 0.0,
+      "h": 17.0
+    },
+    "remaining": [
+      "normal-foreground calibration",
+      "insertion round trip"
+    ],
+    "production_defect_confirmed": false,
+    "temporary_form_cleared_and_closed": true,
+    "complete_gate": false,
+    "evidence": "native-chrome-caret.log",
+    "probe_binary_sha256": "4c144fe7e2c69e18c818d6aceeec8812dafff2e3d2e3b27c0741e821275461d9"
+  },
+  "pre_g7_baseline": {
+    "source_commit": "12d581555dcbcaa811654f9e4a98e998bf7383b9",
+    "relationship": "7894243^",
+    "workspace_version": "0.1.6",
+    "build": "cargo build --locked --release -p app",
+    "rust": "1.99.0 (Homebrew)",
+    "bundle": "/tmp/compme-g7-before.OQkH5K/bundle/Compme.app",
+    "signature": "ad-hoc; strict verification passed",
+    "binary_sha256": "312eb6daa4b5a340756612471b1b491852e3558a98f3975595ecf24357c9d295",
+    "physical_executed": false,
+    "launch_services_registration": "skipped to preserve candidate registration"
+  },
+  "manual_rows_closed_this_session": 0,
+  "ready_to_tag": false
+}

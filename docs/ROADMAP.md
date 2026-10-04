@@ -206,6 +206,28 @@ live-keyring failure diagnostics no longer format potential key bytes.
 Evidence and remaining work are recorded in Qfd §28 and
 [`local-validation.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/local-validation.json).
 
+### Resumed macOS acceptance — 2026-10-04 (partial)
+
+All five CI lanes, Docs and CodeQL passed the evidence commit `df7a3a7`.
+The Mac Full Local Gate and strict model/performance checks are verified;
+G7's remaining prerequisite is physical before/after acceptance. An isolated,
+ad-hoc-signed baseline built from `7894243^` (`12d5815`) is prepared, but has
+not been physically exercised.
+
+After unlocking, the owner reported the menu-bar icon visible. Assisted
+TextEdit control rendered a completion and the selection-thesaurus banner.
+The app-control surface did not change the normal macOS foreground app, so
+these TextEdit observations used the existing acceptance PID override and do
+not establish physical hotkey delivery. Native Chrome 154.0.8037.98 returned
+an unusable zero-height text-marker rectangle and usable native fallback
+geometry; its strict marker-source probe exited 1, while the fallback probe
+passed. Foreground calibration and insertion evidence remain required before
+diagnosing a production regression. Settings has not yet been observed open.
+
+These partial observations close none of the 22 rows. See
+[`gui-resume.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/gui-resume.json)
+and the in-place acceptance ledger for the exact limits.
+
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 
 Fresh independent review and production probes found two additional privacy
@@ -473,7 +495,7 @@ existing evidence requirements.
 | 1 | Linux mutation timeout safety | Implemented; serialized dispatch, uncertain-outcome quarantine and regression tests; Astra-reviewed |
 | 2–5 | Windows UIA offsets, pattern detection, COM cleanup, identity parsing | Implemented; 39 portable tests and MSVC cross-check pass; Astra-reviewed; native Windows provider proof pending |
 | 6 | Reconcile implementation instructions | Updated; superseded STA and synchronous Carbon dispatch recipes removed; current evidence separated from historical snapshots |
-| 19 | G7 Carbon main-thread registration | Implemented `7894243`, test cleanup corrected `261a1e6`; independently reviewed; all five native CI lanes pass on `261a1e6` (run 36532353871). Mac Full Local Gate and physical before/after acceptance remain pending (Qfd §22.5) |
+| 19 | G7 Carbon main-thread registration | Implemented `7894243`, test cleanup corrected `261a1e6`; independently reviewed; all five native CI lanes pass on `261a1e6` (run 36532353871). Mac Full Local Gate subsequently passed 57/57 with zero skips on the 0.1.7 candidate (2026-10-04, Qfd §28); physical before/after acceptance remains pending (Qfd §22.5) |
 | 20 | Erase existing memory while collection is Off | Implemented and reviewed: existing-store/key-only cleanup, no creation or prompt hydration |
 | 21 | Per-domain memory deletion | Implemented and reviewed: transactional schema v2, authenticated app/domain metadata, navigation-safe buffers, confirmed global domain erase |
 | 22 | Memory-mode controls | Implemented and reviewed: live/persisted Off / AcceptedOnly / AllMonitored with rollback and context clearing; native Apps-pane LOOK pending |

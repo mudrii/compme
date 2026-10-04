@@ -1,0 +1,14 @@
+# Native Chrome 154.0.8037.98 assisted caret probes, macOS 27.0.1
+# Source: df7a3a771fb9bf8208ec9c19eac7faf927336fe5
+# Existing acceptance PID override; normal foreground calibration still required.
+# Metadata only; no form content, keys or private document values.
+
+COMMAND COMPME_ACCEPTANCE_PID=<native-chrome-pid> target/debug/examples/caret_marker_acceptance 4000 marker
+DIAG source=NativeFallback marker=Some(ScreenRect { x: 1932.0, y: 112.0, w: 0.0, h: 0.0 }) native=Some(ScreenRect { x: 2469.0, y: 436.0, w: 0.0, h: 17.0 }) resolved=Some(ScreenRect { x: 2469.0, y: 436.0, w: 0.0, h: 17.0 })
+SUMMARY focus=1 caret=8 apps={"pid:2206"}
+EXIT 1
+
+COMMAND COMPME_ACCEPTANCE_PID=<native-chrome-pid> target/debug/examples/caret_marker_acceptance 1000 fallback
+DIAG source=NativeFallback marker=Some(ScreenRect { x: 1932.0, y: 112.0, w: 0.0, h: 0.0 }) native=Some(ScreenRect { x: 2469.0, y: 436.0, w: 0.0, h: 17.0 }) resolved=Some(ScreenRect { x: 2469.0, y: 436.0, w: 0.0, h: 17.0 })
+SUMMARY focus=1 caret=1 apps={"pid:2206"}
+EXIT 0
