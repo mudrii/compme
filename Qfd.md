@@ -1504,3 +1504,27 @@ restored to Ready with Memory Off. Logs, foreground samples and binary
 provenance are in
 [`step1/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step1/results.json).
 The Settings walkthrough is next; the release remains not ready to tag.
+
+**Step 2 — Settings controls and model picker (2026-10-05):** the owner opened
+the actual candidate Settings window. All nine panes rendered within the
+window without visible overlap or clipping. Live UI checks exercised General
+switches, multiline instructions and sender fields, all six strength stops,
+emoji preferences, statistics range/grouping and shortcut recording. Test
+personalization was cleared and ordinary controls restored; Word remains
+temporarily Shift+F5 for a pending live acceptance check. Collision rejection,
+reserved Down and Esc cancellation held. Recorder capture/Carbon-registration
+debug logs were not emitted because this process lacks `COMPME_DEBUG`; those
+logs, live routing and reopen resynchronization remain required.
+
+Setup passed its applicable legs: one Show Models Folder action, correct Finder
+handoff, all four catalog rows with fit labels, a selected non-recommended Qwen
+1.5B download matching the pinned checksum, unchanged size/hash/inode/mtime on
+reuse, and the Llama license prompt cancelled before any file was fetched or
+acceptance persisted. Low-RAM refusal is not applicable on this 128 GiB Mac.
+`setup-model-picker-look` is closed; 21 manual rows remain open. Apps has no
+recorded-input rows with Memory Off, so policy layout and all memory-control
+legs still need test records. Next-request personalization steering, Context
+privacy and physical before/after G7 are also outstanding. No source change or
+physical-keyboard pass is claimed. Controlled evidence is in
+[`step2/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json).
+The release remains not ready to tag.

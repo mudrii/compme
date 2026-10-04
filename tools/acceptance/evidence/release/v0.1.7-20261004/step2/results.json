@@ -1,0 +1,101 @@
+{
+  "checked_at_utc": "2026-10-04T23:18:55.167996+00:00",
+  "source_commit": "714c879168d69fb3793f57636c0624a820ee6796",
+  "candidate_version": "0.1.7",
+  "candidate_binary_sha256": "79e5b6c301e8679713c7cbd4bdb67182f563768cce8993fb5c95f30452cee354",
+  "macos": "27.0.1 (26A434)",
+  "interaction": "Owner opened candidate Settings; assisted live UI actions through CUA. No physical-key result claimed.",
+  "settings_layout": {
+    "panes": [
+      "setup",
+      "general",
+      "personalization",
+      "apps",
+      "context",
+      "emoji",
+      "shortcuts",
+      "statistics",
+      "about"
+    ],
+    "observed": "All nine panes render within the 680x450 window without visible overlap or clipped controls. Apps has no recorded-input rows while Memory is Off.",
+    "evidence": "<pane>.png and <pane>.ax.txt"
+  },
+  "setup_model_picker": {
+    "result": "passed applicable legs; low-RAM leg not applicable on this host",
+    "models_folder_control_count": 1,
+    "reveal_model_control_count": 0,
+    "finder_handoff": "Finder selected/revealed /private/tmp/compme-release-ui.WmETta/models/ in its parent folder; preview listed the downloaded GGUF. No unrelated Finder inventory committed.",
+    "catalog_rows": [
+      {
+        "model": "qwen2.5-0.5b-q4_k_m",
+        "ram_verdict": "fits"
+      },
+      {
+        "model": "llama-3.2-1b-q4_k_m",
+        "ram_verdict": "fits"
+      },
+      {
+        "model": "qwen2.5-1.5b-q4_k_m",
+        "ram_verdict": "fits"
+      },
+      {
+        "model": "gemma-2-2b-q4_k_m",
+        "ram_verdict": "fits"
+      }
+    ],
+    "nonrecommended_download": {
+      "model": "qwen2.5-1.5b-q4_k_m",
+      "bytes": 1117320736,
+      "sha256": "6a1a2eb6d15622bf3c96857206351ba97e1af16c30d7a74ee38970e434e9407e",
+      "hash_matches_pinned_catalog": true
+    },
+    "existing_file_reuse": "Second Download completed through the worker existing-file guard. SHA256, size, inode and nanosecond mtime stayed identical; no .part files. No network packet capture was taken.",
+    "license_prompt": "Llama Community License prompt appeared before fetch, with Cancel focused. Cancel left no Llama file, no partial file and no COMPME_LICENSE_ACCEPTED setting.",
+    "low_ram_block": "Not applicable: physical RAM is 128 GiB and all four rows report fits. No artificial RAM override or low-RAM pass claimed.",
+    "active_model": "Current process still uses launch-env Qwen 0.5B; downloaded model selection requires relaunch."
+  },
+  "live_controls": {
+    "general": "Enable 1->0->1, mid-line 0->1->0, trailing-space 0->1->0; UI/config readbacks and Ready/Disabled log transition observed. Launch at Login untouched.",
+    "personalization": "Multiline instructions, fixture sender name/email and all six strength stops persisted. Fields cleared and Balanced restored. Next-request steering still requires a live request comparison.",
+    "strength_values": {
+      "Off": 0,
+      "Very gentle": 1,
+      "Gentle": 2,
+      "Balanced": 3,
+      "Strong": 4,
+      "Strict": 5
+    },
+    "shortcuts": "Word recorded as Shift+F5 (shift+96); Full collision rejected with In use message; Down stayed in recording without rebinding; Esc restored current role; Grammar Shift+F7 persisted then restored to Shift+F6. Word Shift+F5 remains temporarily set for the pending live test.",
+    "shortcuts_limits": "Candidate was launched without COMPME_DEBUG, so recorder capture/Carbon-registration log lines were not emitted. Live Word delivery, correction-only Grammar routing and reopen resync remain unverified.",
+    "emoji": "Skin tone Default->Medium->Default and gender Neutral->Female->Neutral; UI and config/log readback observed.",
+    "statistics": "Last 7 days/Daily->Last 14 days/Weekly->Last 7 days/Daily; visible labels and rows updated.",
+    "context": "All switches remain Off; no clipboard/OCR permission or live-source test claimed.",
+    "apps": "Memory stays Off with empty recorded-input rows; app policy, mode lifecycle and erase legs are not exercised."
+  },
+  "manual_rows_closed_this_step": [
+    "setup-model-picker-look"
+  ],
+  "manual_rows_remaining": 21,
+  "ready_to_tag": false,
+  "pending_operator_step": "Focus TextEdit test document and type :smile; capture foreground/suggestion before testing the recorded shortcut. Physical before/after G7 still separate and open.",
+  "prior_tip_ci": {
+    "head_sha": "714c879168d69fb3793f57636c0624a820ee6796",
+    "ci_run": 37214490289,
+    "five_native_lanes": "success",
+    "docs_run": 37214490264,
+    "docs": "success",
+    "codeql_run": 37214490107,
+    "codeql": "success"
+  },
+  "checkpoint_full_local_gate": {
+    "command": "tools/dev/check.sh",
+    "commands_passed": 57,
+    "commands_skipped": 0,
+    "exit_code": 0,
+    "started_utc": "2026-10-04T23:20:34Z",
+    "finished_utc": "2026-10-04T23:24:36Z",
+    "local_log": "/tmp/compme-release-steps-20261004.Hzckdl/step2-full-local-gate.log",
+    "log_sha256": "073b85b7a21b529c477b3fa0a00a26608ee9ff1984f0b56e77af527e44b6f90b",
+    "notes": "No source changes; existing 16 vendored llama-cpp-2 warnings and the documented allowed informational ttf-parser unmaintained advisory remain."
+  }
+}

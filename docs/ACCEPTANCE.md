@@ -380,6 +380,30 @@ The production candidate restarted with a real model, Memory Off and Ready
 status. See the [step-1 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step1/results.json)
 and [runner log](../tools/acceptance/evidence/release/v0.1.7-20261004/step1/a1b.log).
 
+### Settings follow-up — 2026-10-05
+
+The owner opened the production candidate Settings window. All nine panes
+rendered without visible overlap or clipped controls. Assisted UI checks
+exercised General's Enabled, mid-line and trailing-space switches, multiline
+personalization and sender fields, all six strength stops, emoji preferences,
+statistics range/grouping and shortcut recording. The test fields were cleared;
+General, emoji, statistics and strength returned to their initial values.
+Word acceptance remains temporarily bound to Shift+F5 for the pending live test.
+
+Setup passed its applicable legs: one Show Models Folder control, the four
+fit-labelled catalog entries, a selected non-recommended Qwen 1.5B download
+matching its pinned SHA-256, unchanged existing-file fingerprints on a second
+Download, and a Llama license prompt cancelled before fetching. Finder revealed
+the correct isolated models folder. All entries fit this 128 GiB Mac, so the
+low-RAM refusal leg was not applicable and has no live result on this host.
+
+This closes `setup-model-picker-look`; 21 ledger rows remain open. The empty
+Apps pane cannot establish policy-row layout or the six memory-control legs.
+Personalization next-request steering, recorder debug/registration logs, live
+accept routing and reopen resynchronization remain unverified. No physical-key
+result is claimed. See [step-2 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json)
+and the captured pane screenshots and readbacks alongside it.
+
 ### Expected exit codes
 
 **Exit code 70 during model warm-up is expected, not a failure** (Qfd §20,
@@ -650,7 +674,7 @@ label for this machine's available memory (`ram_verdict`):
 download block. To exercise:
 
 1. Confirm the Setup pane exposes exactly one **Show Models Folder** control and
-   no **Reveal Model in Finder** control; click it and verify Finder opens the
+   no **Reveal Model in Finder** control; click it and verify Finder reveals the
    models directory.
    Automated coverage pins create-before-reveal ordering, the exact filesystem
    path, and fail-closed behavior when directory creation fails; this live step
@@ -819,12 +843,12 @@ closed for a tag.
 | Gate | Last result | Date | Binary / commit | Evidence |
 |---|---|---|---|---|
 | `apps-policy-toggle-look` | never recorded | — | — | — |
-| `personalization-pane-look` | never recorded | — | — | — |
+| `personalization-pane-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Multiline instructions, sender fields and all six strength stops persisted; fields cleared and Balanced restored. Next-request steering unverified; see release `step2/results.json` |
 | `menu-bar-icon-look` | partial (user report) | 2026-10-04 | 0.1.7 / `df7a3a7` | Owner reported icon visible after unlock; light/dark and state appearances unverified; see release `gui-resume.json` |
-| `shortcuts-recorder-look` | never recorded | — | — | — |
+| `shortcuts-recorder-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Shift+F5 Word capture/persistence, collision rejection, reserved Down and Esc cancellation observed; Grammar rebind restored. Debug capture/registration logs, live routing and reopen resync still required; see release `step2/results.json` |
 | `always-on-hotkeys-physical-look` | never recorded | — | — | — |
-| `setup-model-picker-look` | never recorded | — | — | — |
-| `nine-tab-settings-walkthrough` | never recorded | — | — | — |
+| `setup-model-picker-look` | passed applicable legs; low-RAM leg not applicable | 2026-10-05 | 0.1.7 / `714c879` | Correct Finder handoff, four fit-labelled rows, non-recommended download/pinned hash, existing-file reuse and cancelled pre-fetch license prompt. All models fit this 128 GiB host; see release `step2/results.json` |
+| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | All nine panes captured; General/personalization/emoji/statistics controls exercised. Apps policy/memory/erase, context privacy and remaining recorder legs unverified; see release `step2/results.json` |
 | `full-autocorrect-prose-code-look` | never recorded | — | — | — |
 | `cross-app-previous-inputs-look` | never recorded | — | — | — |
 | `selection-thesaurus-look` | partial (assisted banner) | 2026-10-04 | 0.1.7 / `df7a3a7` | TextEdit selected-word banner rendered with acceptance PID override; physical cycle/full-accept and stale replacement refusal unverified; see release `gui-resume.json` |

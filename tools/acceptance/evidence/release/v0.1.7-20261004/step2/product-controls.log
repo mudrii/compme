@@ -1,0 +1,32 @@
+compme: persisted enabled=false to /tmp/compme-release-ui.WmETta/config.env
+compme: status=Disabled enabled=false snoozed=false
+compme: trailing space enabled
+compme: persisted enabled=true to /tmp/compme-release-ui.WmETta/config.env
+compme: status=Ready enabled=true snoozed=false
+compme: trailing space disabled
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_SENDER_NAME updated
+compme: personalization COMPME_SENDER_EMAIL updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: personalization COMPME_STRENGTH updated
+compme: downloading qwen2.5-1.5b-q4_k_m (1118 MB) — progress in this log
+compme: model download running
+compme: model downloaded to /tmp/compme-release-ui.WmETta/models/qwen2.5-1.5b-q4_k_m.gguf — COMPME_MODEL_PATH set, relaunch to use
+compme: COMPME_MODEL_PATH set to /tmp/compme-release-ui.WmETta/models/qwen2.5-1.5b-q4_k_m.gguf — relaunch to use it
+compme: emoji skin tone set to medium
+compme: emoji gender set to female
+compme: emoji gender set to neutral
+compme: emoji skin tone set to default
+compme: downloading qwen2.5-1.5b-q4_k_m (1118 MB) — progress in this log
+compme: model download running
+compme: model downloaded to /tmp/compme-release-ui.WmETta/models/qwen2.5-1.5b-q4_k_m.gguf — COMPME_MODEL_PATH set, relaunch to use
+compme: COMPME_MODEL_PATH set to /tmp/compme-release-ui.WmETta/models/qwen2.5-1.5b-q4_k_m.gguf — relaunch to use it
+compme: download of llama-3.2-1b-q4_k_m cancelled (license not accepted)
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_SENDER_NAME updated
+compme: personalization COMPME_SENDER_EMAIL updated

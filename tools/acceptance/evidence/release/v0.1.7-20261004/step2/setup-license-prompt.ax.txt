@@ -1,0 +1,10 @@
+Window: "", App: Compme.
+0 dialog Description: alert, Secondary Actions: Raise
+	1 image Compme alert
+	2 text Accept model license? llama-3.2-1b-q4_k_m is distributed under the Llama Community License.
+Downloading requires accepting its terms:
+https://www.llama.com/llama3_2/license/
+	3 button Cancel, ID: action-button-1
+	4 button Accept, ID: action-button-2
+
+The focused UI element is 3 button Cancel, ID: action-button-1

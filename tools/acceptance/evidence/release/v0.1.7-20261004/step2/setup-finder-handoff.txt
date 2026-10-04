@@ -1,0 +1,4 @@
+Window: "compme-release-ui.WmETta", App: Finder.
+						64 text field (settable) URL: file:///private/tmp/compme-release-ui.WmETta/models/, Value: models, Secondary Actions: Open Finder item
+			146 text URL: file:///, Value: Macintosh HD private tmp compme-release-ui.WmETta models, Secondary Actions: open
+					151 row (selectable) qwen2.5-1.5b-q4_k_m.gguf

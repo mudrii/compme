@@ -1,0 +1,26 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 1
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Global instructions (steer every suggestion):
+		12 text field (settable)
+		13 text Your name:
+		14 text field (settable)
+		15 text Your email:
+		16 text field (settable)
+		17 text Steering strength:
+		18 pop up button Balanced
+	19 close button
+	20 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	21 minimize button
+	22 text Compme Settings
+
+The focused UI element is 12 text field (settable)

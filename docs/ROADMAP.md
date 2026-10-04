@@ -248,6 +248,28 @@ The real-model candidate was restored to Ready. Next is the Settings
 walkthrough; physical G7 before/after, the fresh A2 matrix and the remaining
 manual/Tier-4 observations are still required before tagging.
 
+### Step 2 — Settings controls and model picker — 2026-10-05 (partial)
+
+The owner opened candidate Settings. All nine panes rendered without visible
+overlap or clipped controls. General switches, multiline personalization,
+sender fields, all six strength stops, emoji preferences, statistics controls
+and shortcut recording were exercised through the live UI. Test personalization
+was cleared and ordinary controls restored; Word remains temporarily Shift+F5
+for the pending live acceptance check. Recorder collision rejection, reserved
+Down and Esc cancellation held, but debug/registration logs, live accept routing
+and reopen resynchronization are still required.
+
+The Setup model-picker gate passed its applicable legs: correct Finder handoff,
+four fit-labelled catalog rows, a non-recommended Qwen 1.5B download matching
+the pinned checksum, existing-file reuse without clobber and a licence prompt
+cancelled before fetch. Low-RAM refusal is not applicable on this 128 GiB host.
+One manual row is now closed; **21 remain open**. The nine-pane walkthrough
+still needs Apps policy/memory/erase and Context privacy checks; live steering
+and physical G7 before/after remain open. Controlled screenshots, readbacks,
+file fingerprints and exact limits are in
+[`step2/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json).
+The candidate is not ready to tag.
+
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 
 Fresh independent review and production probes found two additional privacy

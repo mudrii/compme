@@ -1,0 +1,23 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 1
+	10 text Compme v0.1.7
+Apache-2.0 — Copyright 2026 Compme contributors
+All inference is local (llama.cpp), with no proprietary telemetry.
+https://github.com/mudrii/compme
+
+Built with: llama-cpp-2, encoding_rs, rusqlite, aes-gcm, getrandom, accessibility-sys, core-foundation, core-graphics, objc2, objc2-app-kit, objc2-foundation, objc2-service-management, security-framework, regex, libc
+	11 close button
+	12 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	13 minimize button
+	14 text Compme Settings
+
+The focused UI element is 0 standard window Compme Settings, Secondary Actions: Raise

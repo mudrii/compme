@@ -1,0 +1,22 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 1
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text This session + lifetime
+		12 pop up button Last 14 days
+		13 pop up button Weekly
+		14 text Shown    ▁▁▁▁▁▁█  2 Accepted ▁▁▁▁▁▁▁  0 Words    ▁▁▁▁▁▁▁  0 Lifetime 11 words · 11 accepted
+	15 close button
+	16 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	17 minimize button
+	18 text Compme Settings
+
+The focused UI element is 12 pop up button Last 14 days

@@ -1,0 +1,32 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 1
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Enable completions
+		12 switch 0
+		13 text Launch at Login
+		14 switch 0
+		15 text Mid-line completions (show even with text after the cursor)
+		16 switch 1
+		17 text Autocorrect typos (offer the fix as you type)
+		18 switch 1
+		19 text Full autocorrect (macOS spelling suggestions, prose only)
+		20 switch 1
+		21 text Offer synonyms when a single word is selected
+		22 switch 1
+		23 text Trailing space after single-word completions
+		24 switch 1
+	25 close button
+	26 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	27 minimize button
+	28 text Compme Settings
+
+The focused UI element is 12 switch 0

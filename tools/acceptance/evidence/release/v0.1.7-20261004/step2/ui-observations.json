@@ -1,0 +1,141 @@
+{
+  "captures": [
+    {
+      "pane": "setup",
+      "observed_at": "2026-10-04T22:59:34.148Z"
+    },
+    {
+      "pane": "general",
+      "observed_at": "2026-10-04T22:59:34.880Z"
+    },
+    {
+      "pane": "personalization",
+      "observed_at": "2026-10-04T22:59:35.573Z"
+    },
+    {
+      "pane": "apps",
+      "observed_at": "2026-10-04T22:59:44.031Z"
+    },
+    {
+      "pane": "context",
+      "observed_at": "2026-10-04T22:59:44.749Z"
+    },
+    {
+      "pane": "emoji",
+      "observed_at": "2026-10-04T22:59:45.451Z"
+    },
+    {
+      "pane": "shortcuts",
+      "observed_at": "2026-10-04T22:59:52.163Z"
+    },
+    {
+      "pane": "statistics",
+      "observed_at": "2026-10-04T22:59:52.866Z"
+    },
+    {
+      "pane": "about",
+      "observed_at": "2026-10-04T22:59:53.558Z"
+    },
+    {
+      "pane": "general-live-changed",
+      "observed_at": "2026-10-04T23:03:39.621Z"
+    },
+    {
+      "pane": "personalization-live-edited",
+      "observed_at": "2026-10-04T23:04:45.452Z"
+    },
+    {
+      "pane": "statistics-14-days-weekly",
+      "observed_at": "2026-10-04T23:11:36.192Z"
+    },
+    {
+      "pane": "statistics-restored",
+      "observed_at": "2026-10-04T23:11:39.125Z"
+    },
+    {
+      "pane": "emoji-medium-female",
+      "observed_at": "2026-10-04T23:12:21.012Z"
+    },
+    {
+      "pane": "emoji-restored",
+      "observed_at": "2026-10-04T23:12:23.941Z"
+    },
+    {
+      "pane": "setup-license-prompt",
+      "observed_at": "2026-10-04T23:13:27.670Z"
+    },
+    {
+      "pane": "shortcuts-word-shift-f5",
+      "observed_at": "2026-10-04T23:13:41.764Z"
+    },
+    {
+      "pane": "shortcuts-collision",
+      "observed_at": "2026-10-04T23:14:04.199Z"
+    },
+    {
+      "pane": "shortcuts-collision-cancelled",
+      "observed_at": "2026-10-04T23:14:04.899Z"
+    },
+    {
+      "pane": "shortcuts-reserved-down",
+      "observed_at": "2026-10-04T23:14:11.906Z"
+    },
+    {
+      "pane": "shortcuts-grammar-shift-f7",
+      "observed_at": "2026-10-04T23:14:20.965Z"
+    },
+    {
+      "pane": "shortcuts-grammar-restored",
+      "observed_at": "2026-10-04T23:14:22.112Z"
+    },
+    {
+      "pane": "personalization-restored",
+      "observed_at": "2026-10-04T23:14:43.529Z"
+    }
+  ],
+  "strength_choices": [
+    {
+      "label": "Off",
+      "persisted": [
+        "COMPME_STRENGTH=0"
+      ]
+    },
+    {
+      "label": "Very gentle",
+      "persisted": [
+        "COMPME_STRENGTH=1"
+      ]
+    },
+    {
+      "label": "Gentle",
+      "persisted": [
+        "COMPME_STRENGTH=2"
+      ]
+    },
+    {
+      "label": "Balanced",
+      "persisted": [
+        "COMPME_STRENGTH=3"
+      ]
+    },
+    {
+      "label": "Strong",
+      "persisted": [
+        "COMPME_STRENGTH=4"
+      ]
+    },
+    {
+      "label": "Strict",
+      "persisted": [
+        "COMPME_STRENGTH=5"
+      ]
+    },
+    {
+      "label": "Balanced",
+      "persisted": [
+        "COMPME_STRENGTH=3"
+      ]
+    }
+  ],
+  "notes": "Only final observations associated with committed pane readbacks are listed. Additional captures remain local."
+}

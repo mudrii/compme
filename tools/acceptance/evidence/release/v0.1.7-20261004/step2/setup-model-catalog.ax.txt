@@ -1,0 +1,28 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 1
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Setup checklist ✓ Accessibility ✓ Model file Model to download:
+		12 pop up button qwen2.5-0.5b-q4_k_m · fits
+			13 menu Secondary Actions: Cancel
+				14 (selected) qwen2.5-0.5b-q4_k_m · fits
+				15 llama-3.2-1b-q4_k_m · fits
+				16 qwen2.5-1.5b-q4_k_m · fits
+				17 gemma-2-2b-q4_k_m · fits
+		18 button Download Model
+		19 button Show Models Folder
+		20 button Choose Model…
+	21 close button
+	22 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	23 minimize button
+	24 text Compme Settings
+
+The focused UI element is 12 pop up button qwen2.5-0.5b-q4_k_m · fits

@@ -1,0 +1,24 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 0
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 1
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Accept word: ⇧F5
+Accept full: ` (backtick)
+Dismiss: Esc
+Cycle candidates: Down arrow
+Grammar check: config-only via COMPME_GRAMMAR_CHECK_KEY
+Grammar accept: ⇧F7
+
+To change: set COMPME_ACCEPT_WORD_KEY / COMPME_ACCEPT_FULL_KEY / COMPME_GRAMMAR_ACCEPT_KEY (macOS keycodes, e.g. "shift+48") in config.env — applies at relaunch (the in-app recorder applies live). Accept word: ⇧F5 Accept full: ` (backtick) Grammar accept: ⇧F7
+	12 close button
+	13 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	14 minimize button
+	15 text Compme Settings
