@@ -1,0 +1,13 @@
+{
+  "at_utc": "2026-10-05T01:21:28.295122+00:00",
+  "result": "passed",
+  "operator_action": "Reopened candidate Apps, clicked Firefox Delete, pressed Escape; owner reported cancelled",
+  "prompt_log_line": 1195,
+  "prompt_response": 1000,
+  "before_firefox_count": 2,
+  "after_firefox_count": 2,
+  "after_total_count": 8,
+  "ui_readback": "firefox-cancel-verified.txt",
+  "screenshot": "firefox-cancel-verified.png",
+  "limits": "Only cancellation and unchanged encrypted-store counts established; subsequent live collection and confirmed erase context legs remain pending"
+}

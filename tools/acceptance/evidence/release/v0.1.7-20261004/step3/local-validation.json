@@ -1,0 +1,11 @@
+{
+  "recorded_at_utc": "2026-10-05T02:11:08.263069+00:00",
+  "command": "tools/dev/check.sh",
+  "exit_code": 0,
+  "commands_run": 57,
+  "commands_skipped": 0,
+  "log_sha256": "82669354671e97439a2e375d31b5335d9208b9007890cba54bdd58e7077d8735",
+  "source_file": "crates/platform_macos/src/ui_prompt.rs",
+  "source_sha256": "666b361f32dc4c7d127bbe585b669612f1803f9be1cea62f56608d2f5cbe7d28",
+  "scope": "Full Local Gate and two focused confirmation-safety tests; physical post-patch GUI verification remains pending"
+}

@@ -88,3 +88,4 @@ one-line rule before continuing.
   quoting a command.
 - A number in a dated record section is a citation: check it against its
   source document, not today's value.
+- Before handing off a native confirmation, verify it is visible and reachable on the active desktop; accessibility text alone is insufficient.

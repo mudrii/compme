@@ -1,0 +1,33 @@
+{
+  "at_utc": "2026-10-05T01:31:12.567485+00:00",
+  "result": "passed for seeded store scope",
+  "operator_action": "Owner clicked Delete Domain and reported deleted",
+  "domain": "release-source.example.invalid",
+  "prompt_log_line": 1295,
+  "prompt_response": 1001,
+  "before_matching_by_app": {
+    "com.google.Chrome": 1,
+    "org.mozilla.firefox": 1
+  },
+  "after_matching_by_app": {},
+  "before_other_domain_by_app": {
+    "com.google.Chrome": 1,
+    "org.mozilla.firefox": 1
+  },
+  "after_other_domain_by_app": {
+    "com.google.Chrome": 1,
+    "org.mozilla.firefox": 1
+  },
+  "before_total_count": 8,
+  "after_total_count": 6,
+  "after_app_counts": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "ui_readback": "domain-delete-verified.txt",
+  "screenshot": "domain-delete-verified.png",
+  "limits": "Seeded domain identities and store erase scope only; actual domain detection and buffered/live previous-input clearing remain unverified"
+}

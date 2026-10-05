@@ -404,6 +404,33 @@ accept routing and reopen resynchronization remain unverified. No physical-key
 result is claimed. See [step-2 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json)
 and the captured pane screenshots and readbacks alongside it.
 
+### Memory controls and blocked confirmation — 2026-10-05 (partial)
+
+At source `5d84d59`, a private disposable store contained eight harmless,
+encrypted fixture rows across five apps. With collection Off, the TextEdit
+Enabled and Grammar fix switches persisted and were restored. Physical Escape
+cancelled app-row, Erase All and domain confirmations with response 1000;
+read-only SQLite and native Apps readback verified all eight records remained.
+Confirmed domain deletion returned 1001 and removed exactly two matching rows
+across Chrome and Firefox (8 → 6), preserving the other seeded domain in both.
+These are native control/store checks; seeded domain metadata supplies no live
+browser-detection or volatile-context proof.
+
+The next TextEdit confirmation blocked physical clicks. A main-thread sample
+showed the nested `NSAlert::runModal` wait while another app was foregrounded;
+General's highlight changed but Apps content remained. The blocked instance
+was stopped with six rows preserved. The visibility patch lays out the alert,
+activates Compme and explicitly orders the alert above other apps, matching
+Settings' existing sequence. Its two existing safety tests pass and the patched
+ad-hoc bundle restarts to Ready. Post-patch visible-prompt cancellation and
+physical click recovery remain unverified.
+
+Long Apps labels clip counts, and deleting rows leaves stale trailing labels.
+Actual collection-mode transitions, confirmed app/global erase with buffered
+and previous-input clearing, Context privacy and other manual requirements
+remain open. No additional ledger row is closed. See
+[step-3 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
+
 ### Expected exit codes
 
 **Exit code 70 during model warm-up is expected, not a failure** (Qfd §20,
@@ -842,13 +869,13 @@ closed for a tag.
 
 | Gate | Last result | Date | Binary / commit | Evidence |
 |---|---|---|---|---|
-| `apps-policy-toggle-look` | never recorded | — | — | — |
+| `apps-policy-toggle-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `5d84d59` | TextEdit Enabled and Grammar fix persisted/restored; count-label clipping and stale rows observed. Live suggestion/correction dismissal and layout repair still required; see release `step3/results.json` |
 | `personalization-pane-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Multiline instructions, sender fields and all six strength stops persisted; fields cleared and Balanced restored. Next-request steering unverified; see release `step2/results.json` |
 | `menu-bar-icon-look` | partial (user report) | 2026-10-04 | 0.1.7 / `df7a3a7` | Owner reported icon visible after unlock; light/dark and state appearances unverified; see release `gui-resume.json` |
 | `shortcuts-recorder-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Shift+F5 Word capture/persistence, collision rejection, reserved Down and Esc cancellation observed; Grammar rebind restored. Debug capture/registration logs, live routing and reopen resync still required; see release `step2/results.json` |
 | `always-on-hotkeys-physical-look` | never recorded | — | — | — |
 | `setup-model-picker-look` | passed applicable legs; low-RAM leg not applicable | 2026-10-05 | 0.1.7 / `714c879` | Correct Finder handoff, four fit-labelled rows, non-recommended download/pinned hash, existing-file reuse and cancelled pre-fetch license prompt. All models fit this 128 GiB host; see release `step2/results.json` |
-| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | All nine panes captured; General/personalization/emoji/statistics controls exercised. Apps policy/memory/erase, context privacy and remaining recorder legs unverified; see release `step2/results.json` |
+| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `5d84d59` | Nine panes captured in step2; step3 verifies app/global/domain cancellation and scoped seeded-domain erase with Memory Off. Actual mode collection, buffered/context clearing, UI repairs, Context privacy and remaining recorder legs still required; see release `step3/results.json` |
 | `full-autocorrect-prose-code-look` | never recorded | — | — | — |
 | `cross-app-previous-inputs-look` | never recorded | — | — | — |
 | `selection-thesaurus-look` | partial (assisted banner) | 2026-10-04 | 0.1.7 / `df7a3a7` | TextEdit selected-word banner rendered with acceptance PID override; physical cycle/full-accept and stale replacement refusal unverified; see release `gui-resume.json` |

@@ -1,0 +1,2 @@
+COMPME_ENABLED_APPS=com.apple.TextEdit
+COMPME_GRAMMAR_FIX_OFF_APPS=com.apple.TextEdit

@@ -1,0 +1,22 @@
+{
+  "at_utc": "2026-10-05T01:56:30.157587+00:00",
+  "candidate_pid": 39232,
+  "counts": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "symptom": "Owner unable to click Settings after pending TextEdit confirmation",
+  "ui_probe": "General selection changed but Apps content stayed; actual pane check failed",
+  "sample_main_thread": "run_loop::run -> ui_prompt::confirm_prompt -> NSAlert runModal -> NSApplication runModalForWindow -> event wait",
+  "window_observations": {
+    "settings_onscreen": false,
+    "alert_onscreen": true,
+    "foreground_bundle": "app.zen-browser.zen",
+    "candidate_active": false
+  },
+  "scope": "Hidden/background modal; six fixture records unchanged. CUA Escape on Settings did not return a prompt result; manual CmdTab/Escape recovery requested.",
+  "proposed_fix": "Match Settings foreground ordering for confirmation alert before runModal"
+}

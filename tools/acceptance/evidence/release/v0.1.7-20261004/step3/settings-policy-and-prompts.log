@@ -1,0 +1,8 @@
+compme: app policy Enabled for com.apple.TextEdit set to false
+compme: app policy Enabled for com.apple.TextEdit set to true
+compme: app policy GrammarFix for com.apple.TextEdit set to false
+compme: app policy GrammarFix for com.apple.TextEdit set to true
+compme: prompt response=1001 (first=1000)
+compme: deleted 2 records for com.apple.TextEdit
+compme: prompt response=1001 (first=1000)
+compme: deleted 2 records for com.google.Chrome

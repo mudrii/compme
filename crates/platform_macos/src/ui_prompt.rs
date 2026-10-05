@@ -6,7 +6,7 @@
 //! prompt-or-not DECISION is the pure, tested part (`webconfig`).
 
 use objc2::MainThreadMarker;
-use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn};
+use objc2_app_kit::{NSAlert, NSAlertFirstButtonReturn, NSApplication};
 use objc2_foundation::NSString;
 use platform::PlatformError;
 
@@ -41,6 +41,14 @@ fn run_confirm(
     for title in confirmation_button_titles(confirm_label) {
         let _ = alert.addButtonWithTitle(&NSString::from_str(title));
     }
+    // Match Settings' foreground handling: cooperative activation alone can
+    // leave a modal alert behind another app, blocking Settings with no prompt
+    // the user can reach. Lay out first so the ordered window has its final size.
+    alert.layout();
+    NSApplication::sharedApplication(mtm).activate();
+    let window = alert.window();
+    window.makeKeyAndOrderFront(None);
+    window.orderFrontRegardless();
     let response = alert.runModal();
     if crate::debug_enabled() {
         eprintln!("compme: prompt response={response:?} (first={NSAlertFirstButtonReturn:?})");

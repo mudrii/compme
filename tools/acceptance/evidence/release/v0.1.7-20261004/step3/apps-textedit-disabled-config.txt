@@ -1,0 +1,1 @@
+COMPME_DISABLED_APPS=com.apple.TextEdit

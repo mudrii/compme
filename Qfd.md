@@ -1528,3 +1528,25 @@ privacy and physical before/after G7 are also outstanding. No source change or
 physical-keyboard pass is claimed. Controlled evidence is in
 [`step2/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json).
 The release remains not ready to tag.
+
+**Step 3 — memory controls and modal visibility (2026-10-05, partial):**
+a disposable encrypted store seeded eight harmless records across five apps.
+With collection Off, TextEdit's Enabled and Grammar fix controls persisted and
+were restored. Physical Escape cancelled app, global and domain confirmations
+(response 1000), preserving all eight rows. Confirmed domain deletion returned
+1001 and removed exactly one matching record from Chrome and Firefox (8 → 6);
+the other seeded domain remained in both browsers. This proves native control
+and store scope only, not actual browser-domain detection or volatile-context
+clearing.
+
+The next TextEdit confirmation blocked Settings clicks while the candidate
+was inactive. The main-thread sample showed `NSAlert::runModal`; selecting
+General changed the highlight but left Apps content. The stopped instance's
+six records were preserved. Confirmation alerts now use the existing Settings
+activation/explicit window-ordering sequence before entering the modal loop.
+The patch builds, both existing confirmation-safety tests pass and its ad-hoc
+real-model candidate reaches Ready. Post-patch GUI visibility/click recovery
+still needs owner verification. Apps count clipping and stale trailing labels
+after deletion are also observed and remain to be repaired. No additional
+manual row closes; 21 remain open. Controlled evidence and exact limits are in
+[`step3/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).

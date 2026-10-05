@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-10-04 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-10-05 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -269,6 +269,30 @@ and physical G7 before/after remain open. Controlled screenshots, readbacks,
 file fingerprints and exact limits are in
 [`step2/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step2/results.json).
 The candidate is not ready to tag.
+
+### Step 3 — memory controls and confirmation visibility — 2026-10-05 (partial)
+
+With a disposable encrypted store and Memory Off, TextEdit's Enabled and
+Grammar fix controls persisted and were restored. Physical Escape cancelled
+app, global and domain deletion with response 1000 and all eight fixture rows
+preserved. Confirmed domain deletion removed one matching record from each of
+Chrome and Firefox (8 → 6), preserving the other domain in both browsers.
+These seeded identities establish native erase scope, not actual domain
+detection or live previous-input clearing.
+
+A subsequent app confirmation blocked Settings while the candidate was not
+foregrounded. The main-thread sample showed `NSAlert::runModal`; General's
+selection changed without its content rendering. Confirmation alerts now use
+Settings' activation and explicit window-ordering sequence. The patched bundle
+builds, both existing confirmation-safety tests pass, and the real-model
+candidate restarts to Ready with six records preserved. Post-patch GUI
+visibility and physical click recovery still require owner verification.
+
+Long Apps labels clip their counts and shortened row lists leave stale trailing
+labels; both need repair and live verification. Actual memory-mode collection,
+buffer/context erase, confirmed global erase and remaining manual/Tier-4 checks
+are still pending. No additional manual row is closed: **21 remain open**.
+See [`step3/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
 
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 

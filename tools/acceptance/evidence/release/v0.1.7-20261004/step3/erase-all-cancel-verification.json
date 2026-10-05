@@ -1,0 +1,19 @@
+{
+  "at_utc": "2026-10-05T01:27:06.014502+00:00",
+  "result": "passed",
+  "operator_action": "Erase All Recorded Inputs then physical Escape; owner reported cancelled",
+  "prompt_log_line": 1212,
+  "prompt_response": 1000,
+  "before_total_count": 8,
+  "after_total_count": 8,
+  "after_app_counts": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 2,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 2
+  },
+  "ui_readback": "erase-all-cancel-verified.txt",
+  "screenshot": "erase-all-cancel-verified.png",
+  "limits": "Cancellation only; confirmed global erase and live-context clearing remain pending"
+}

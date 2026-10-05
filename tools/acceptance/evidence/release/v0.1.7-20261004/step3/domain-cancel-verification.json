@@ -1,0 +1,18 @@
+{
+  "at_utc": "2026-10-05T01:29:29.801554+00:00",
+  "result": "passed",
+  "operator_action": "Delete Domain then physical Escape; owner reported cancelled",
+  "domain": "release-source.example.invalid",
+  "prompt_log_line": 1268,
+  "prompt_response": 1000,
+  "before_matching_count": 2,
+  "after_matching_by_app": {
+    "com.google.Chrome": 1,
+    "org.mozilla.firefox": 1
+  },
+  "before_total_count": 8,
+  "after_total_count": 8,
+  "ui_readback": "domain-cancel-verified.txt",
+  "screenshot": "domain-cancel-verified.png",
+  "limits": "Cancellation with seeded domain identities only; live detection, erase and buffered-context checks remain pending"
+}
