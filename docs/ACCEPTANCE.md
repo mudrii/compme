@@ -421,14 +421,21 @@ showed the nested `NSAlert::runModal` wait while another app was foregrounded;
 General's highlight changed but Apps content remained. The blocked instance
 was stopped with six rows preserved. The visibility patch lays out the alert,
 activates Compme and explicitly orders the alert above other apps, matching
-Settings' existing sequence. Its two existing safety tests pass and the patched
-ad-hoc bundle restarts to Ready. Post-patch visible-prompt cancellation and
-physical click recovery remain unverified.
+Settings' existing sequence. On `8e8d076`, the owner reported working physical
+clicks; matching General/Apps pane content and the foreground native confirmation
+were captured. Physical cancellation preserved six rows. Confirmed TextEdit erase
+removed exactly two rows and preserved four others; confirmed global erase then
+left zero rows. All five CI lanes, Docs and CodeQL passed that source.
 
-Long Apps labels clip counts, and deleting rows leaves stale trailing labels.
-Actual collection-mode transitions, confirmed app/global erase with buffered
-and previous-input clearing, Context privacy and other manual requirements
-remain open. No additional ledger row is closed. See
+After global erase, Apps still rendered four old labels despite the empty store.
+The repair clears all unused label/tooltip slots on refresh and reopen, widens
+names and preserves count suffixes by middle truncation. Its 36 focused Settings
+tests and all 57/57 Full Local Gate commands pass with zero skips. Native CI
+and post-patch live readbacks are required before closing the UI repair.
+Actual collection-mode transitions, buffered and previous-input clearing,
+Context privacy and other manual requirements remain open. No additional ledger
+row is closed. See the [follow-up evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3-followup/results.json)
+and the earlier
 [step-3 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
 
 ### Expected exit codes
@@ -869,13 +876,13 @@ closed for a tag.
 
 | Gate | Last result | Date | Binary / commit | Evidence |
 |---|---|---|---|---|
-| `apps-policy-toggle-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `5d84d59` | TextEdit Enabled and Grammar fix persisted/restored; count-label clipping and stale rows observed. Live suggestion/correction dismissal and layout repair still required; see release `step3/results.json` |
+| `apps-policy-toggle-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `8e8d076` | TextEdit Enabled and Grammar fix persisted/restored; scoped app erase and global empty-store result verified. UI repair live proof and live suggestion/correction dismissal still required; see release `step3-followup/results.json` |
 | `personalization-pane-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Multiline instructions, sender fields and all six strength stops persisted; fields cleared and Balanced restored. Next-request steering unverified; see release `step2/results.json` |
 | `menu-bar-icon-look` | partial (user report) | 2026-10-04 | 0.1.7 / `df7a3a7` | Owner reported icon visible after unlock; light/dark and state appearances unverified; see release `gui-resume.json` |
 | `shortcuts-recorder-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Shift+F5 Word capture/persistence, collision rejection, reserved Down and Esc cancellation observed; Grammar rebind restored. Debug capture/registration logs, live routing and reopen resync still required; see release `step2/results.json` |
 | `always-on-hotkeys-physical-look` | never recorded | — | — | — |
 | `setup-model-picker-look` | passed applicable legs; low-RAM leg not applicable | 2026-10-05 | 0.1.7 / `714c879` | Correct Finder handoff, four fit-labelled rows, non-recommended download/pinned hash, existing-file reuse and cancelled pre-fetch license prompt. All models fit this 128 GiB host; see release `step2/results.json` |
-| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `5d84d59` | Nine panes captured in step2; step3 verifies app/global/domain cancellation and scoped seeded-domain erase with Memory Off. Actual mode collection, buffered/context clearing, UI repairs, Context privacy and remaining recorder legs still required; see release `step3/results.json` |
+| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `8e8d076` | Nine panes captured in step2; app/global/domain cancellation and seeded store erases verified with Memory Off. Actual mode collection, buffered/context clearing, repaired UI readback, Context privacy and recorder legs still required; see release `step3-followup/results.json` |
 | `full-autocorrect-prose-code-look` | never recorded | — | — | — |
 | `cross-app-previous-inputs-look` | never recorded | — | — | — |
 | `selection-thesaurus-look` | partial (assisted banner) | 2026-10-04 | 0.1.7 / `df7a3a7` | TextEdit selected-word banner rendered with acceptance PID override; physical cycle/full-accept and stale replacement refusal unverified; see release `gui-resume.json` |

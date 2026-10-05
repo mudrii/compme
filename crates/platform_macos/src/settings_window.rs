@@ -21,7 +21,7 @@ use objc2::runtime::AnyObject;
 use objc2::{define_class, sel, DefinedClass, MainThreadMarker, MainThreadOnly};
 use objc2_app_kit::{
     NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSButton, NSButtonType,
-    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFocusRingType, NSFont,
+    NSControlStateValue, NSControlStateValueOn, NSEvent, NSFocusRingType, NSFont, NSLineBreakMode,
     NSModalResponseOK, NSOpenPanel, NSPopUpButton, NSResponder, NSSegmentSwitchTracking,
     NSSegmentedControl, NSSwitch, NSTabView, NSTabViewItem, NSTabViewType, NSTextField, NSView,
     NSWindow, NSWindowStyleMask,
@@ -962,6 +962,16 @@ fn refresh_apps_policy_checkbox_visibility(checkboxes: &[Retained<NSButton>], li
     }
 }
 
+fn refresh_apps_row_labels(labels: &[Retained<NSTextField>], lines: &[String]) {
+    for (row, label) in labels.iter().enumerate() {
+        // A delete can shorten the list; overwrite every slot so removed rows
+        // cannot retain an old name or count, including when Settings reopens.
+        let text = NSString::from_str(lines.get(row).map(String::as_str).unwrap_or(""));
+        label.setStringValue(&text);
+        label.setToolTip(lines.get(row).map(|_| &*text));
+    }
+}
+
 /// Re-seed the per-row policy checkbox CHECKED state from `bits` (composed by
 /// the run loop alongside `apps_lines`, same order/cap). Checkboxes are stored
 /// row-major (`APP_POLICY_FIELDS` per row), so flat index `idx` is row
@@ -1119,9 +1129,7 @@ impl MacosSettingsWindow {
         }
         {
             let lines = lock_recover(&self.flags.apps_lines);
-            for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
-                label.setStringValue(&NSString::from_str(line));
-            }
+            refresh_apps_row_labels(&self.apps_labels, &lines);
             for (i, button) in self.apps_delete_buttons.iter().enumerate() {
                 button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
@@ -1305,9 +1313,7 @@ impl MacosSettingsWindow {
         }
         {
             let lines = lock_recover(&self.flags.apps_lines);
-            for (label, line) in self.apps_labels.iter().zip(lines.iter()) {
-                label.setStringValue(&NSString::from_str(line));
-            }
+            refresh_apps_row_labels(&self.apps_labels, &lines);
             for (i, button) in self.apps_delete_buttons.iter().enumerate() {
                 button.setHidden(!lines.get(i).is_some_and(|l| apps_row_is_deletable(l)));
             }
@@ -1449,7 +1455,7 @@ mod pers_layout {
     pub const BUDGET_H: f64 = 350.0;
 }
 
-/// Apps pane layout — one COMPACT line per recorded app: name, four title-less
+/// Apps pane layout — one COMPACT line per recorded app: name, five title-less
 /// policy checkboxes as columns (labelled by a header row + per-checkbox
 /// tooltips), and a Delete button, so N apps stack at one row-step with no
 /// overlap. Shared by `build_window` and the geometry test. Replaces a
@@ -1482,20 +1488,20 @@ mod apps_layout {
     pub const NAME_HEADER: PaneRect = PaneRect {
         x: 20.0,
         y: COL_HEADER_Y,
-        w: 150.0,
+        w: NAME_W,
         h: COL_HEADER_H,
     };
     /// First data-row baseline; each row steps down by `ROW_STEP`.
     pub const ROW_BASE_Y: f64 = 250.0;
     pub const ROW_STEP: f64 = 26.0;
     const NAME_X: f64 = 20.0;
-    const NAME_W: f64 = 150.0;
+    const NAME_W: f64 = 290.0;
     const NAME_H: f64 = 20.0;
     /// Left edge of each checkbox column (header label sits at the same x).
-    pub const COL_X: [f64; APP_POLICY_FIELDS] = [176.0, 220.0, 264.0, 308.0, 352.0];
+    pub const COL_X: [f64; APP_POLICY_FIELDS] = [316.0, 360.0, 404.0, 448.0, 492.0];
     const COL_W: f64 = 44.0;
     const CB_H: f64 = 18.0;
-    const DELETE_X: f64 = 410.0;
+    const DELETE_X: f64 = 548.0;
     const DELETE_W: f64 = 70.0;
     const DELETE_H: f64 = 20.0;
 
@@ -2117,6 +2123,12 @@ fn build_window(
             let text = initial.get(row).map(String::as_str).unwrap_or("");
             let label = NSTextField::labelWithString(&NSString::from_str(text), mtm);
             label.setFrame(apps_layout::name_rect(row).ns());
+            // Preserve the count suffix for even longer bundle identifiers;
+            // the tooltip keeps the complete row available.
+            if let Some(cell) = label.cell() {
+                cell.setLineBreakMode(NSLineBreakMode::ByTruncatingMiddle);
+            }
+            label.setToolTip(Some(&NSString::from_str(text)));
             apps.addSubview(&label);
             apps_labels.push(label);
 
@@ -2657,7 +2669,7 @@ pub fn pane_titles() -> [&'static str; PANE_COUNT] {
 mod tests {
     use super::*;
 
-    fn assert_no_overlaps_within_budget(all: &[(&str, PaneRect)]) {
+    fn assert_no_overlaps_within_budget(all: &[(&str, PaneRect)], budget_w: f64) {
         for (i, (na, a)) in all.iter().enumerate() {
             for (nb, b) in all.iter().skip(i + 1) {
                 assert!(
@@ -2677,10 +2689,10 @@ mod tests {
         for (name, r) in all {
             assert!(r.x >= 0.0 && r.y >= 0.0, "{name} has a negative origin");
             assert!(
-                r.x + r.w <= pers_layout::BUDGET_W,
+                r.x + r.w <= budget_w,
                 "{name} overflows pane width ({} > {})",
                 r.x + r.w,
-                pers_layout::BUDGET_W
+                budget_w
             );
             assert!(
                 r.y + r.h <= pers_layout::BUDGET_H,
@@ -2702,7 +2714,7 @@ mod tests {
         // or overflows the pane fails here instead of only showing up on a Mac.
         let all = pers_layout::ALL;
 
-        assert_no_overlaps_within_budget(&all);
+        assert_no_overlaps_within_budget(&all, pers_layout::BUDGET_W);
     }
 
     #[test]
@@ -2711,7 +2723,7 @@ mod tests {
         // each row's four policy checkboxes over the NEXT row's app name (28
         // collisions with 8 rows — the geometry check that surfaced this). The
         // compact one-line grid must keep every control of every row collision-
-        // free and inside the ~500x350 pane budget.
+        // free and inside the 652x350 tab-content frame.
         let mut all: Vec<(&'static str, PaneRect)> = vec![
             ("mode_label", apps_layout::MODE_LABEL),
             ("mode_popup", apps_layout::MODE_POPUP),
@@ -2735,17 +2747,17 @@ mod tests {
         all.push(("domain_field", apps_layout::DOMAIN_FIELD));
         all.push(("delete_domain", apps_layout::DELETE_DOMAIN));
 
-        assert_no_overlaps_within_budget(&all);
+        assert_no_overlaps_within_budget(&all, 652.0);
     }
 
     #[test]
     fn emoji_pane_picker_layout_has_no_overlaps_within_budget() {
-        assert_no_overlaps_within_budget(&emoji_layout::ALL);
+        assert_no_overlaps_within_budget(&emoji_layout::ALL, pers_layout::BUDGET_W);
     }
 
     #[test]
     fn statistics_pane_header_pickers_have_no_overlaps_within_budget() {
-        assert_no_overlaps_within_budget(&stats_layout::all());
+        assert_no_overlaps_within_budget(&stats_layout::all(), pers_layout::BUDGET_W);
     }
 
     #[test]

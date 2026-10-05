@@ -1,0 +1,25 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 1
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Input memory:
+		12 pop up button Off
+		13 text Recorded inputs by app App On Tab Mid AC GF No recorded inputs yet com.microsoft.VSCode — 1 com.todesktop.230313mzl4w4u92 — 1 org.mozilla.firefox — 1 org.mozilla.firefox — 1
+		14 button Erase All Recorded Inputs
+		15 text Domain:
+		16 text field (settable) example.com
+		17 button Delete
+	18 close button
+	19 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	20 minimize button
+	21 text Compme Settings
+
+The focused UI element is 16 text field (settable) example.com

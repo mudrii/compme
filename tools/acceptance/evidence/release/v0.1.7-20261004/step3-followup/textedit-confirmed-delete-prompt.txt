@@ -1,0 +1,8 @@
+Window: "", App: Compme.
+0 dialog Description: alert, Secondary Actions: Raise
+	1 image Compme alert
+	2 text Delete recorded inputs? All recorded inputs for com.apple.TextEdit will be permanently erased.
+	3 button Cancel, ID: action-button-1
+	4 button Delete, ID: action-button-2
+
+The focused UI element is 3 button Cancel, ID: action-button-1

@@ -1,0 +1,181 @@
+{
+  "observed_at_utc": "2026-10-05T03:42:44.835447+00:00",
+  "version": "0.1.7",
+  "observation_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+  "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+  "candidate_pid": 43515,
+  "memory_mode": "off",
+  "settings_click_recovery": {
+    "at_utc": "2026-10-05T03:32:18.934626+00:00",
+    "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+    "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+    "candidate_pid": 43515,
+    "operator_report": "works",
+    "result": "passed",
+    "readbacks": [
+      "prompt-fix-recovery-general.txt",
+      "prompt-fix-recovery-apps-after.txt"
+    ],
+    "scope": "Main Settings click recovery only; new confirmation visibility and cancellation still to verify"
+  },
+  "prompt_fix_cancel": {
+    "observed_at_utc": "2026-10-05T03:33:48.737704+00:00",
+    "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+    "operator_report": "cancelled",
+    "before": {
+      "com.apple.TextEdit": 2,
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "after": {
+      "com.apple.TextEdit": 2,
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "new_prompt_log": [
+      {
+        "line": 6088,
+        "text": "compme: prompt response=1000 (first=1000)"
+      },
+      {
+        "line": 6102,
+        "text": "compme: prompt response=1000 (first=1000)"
+      }
+    ],
+    "result": "passed",
+    "ui_readback": "prompt-fix-cancel-verified.txt",
+    "screenshot": "prompt-fix-cancel-verified.png",
+    "limits": "Settings recovery and seeded-record cancellation; two Cancel responses observed, no Delete response; formal live memory gate remains open"
+  },
+  "confirmed_app_delete": {
+    "observed_at_utc": "2026-10-05T03:35:48.441721+00:00",
+    "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+    "candidate_pid": 43515,
+    "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+    "operator_report": "deleted",
+    "before": {
+      "com.apple.TextEdit": 2,
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "after": {
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "expected_after": {
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "new_prompt_log": [
+      {
+        "line": 6145,
+        "text": "compme: prompt response=1001 (first=1000)"
+      },
+      {
+        "line": 6146,
+        "text": "compme: deleted 2 records for com.apple.TextEdit"
+      }
+    ],
+    "store_scope_matches": true,
+    "result": "passed for seeded store deletion scope",
+    "ui_readback": "textedit-confirmed-delete-verified.txt",
+    "screenshot": "textedit-confirmed-delete-verified.png",
+    "ui_issue": "Stale trailing Firefox label remains after row list shrinks",
+    "limits": "Seeded record scope only; actual collection and live previous-input clearing remain unverified"
+  },
+  "confirmed_global_erase": {
+    "observed_at_utc": "2026-10-05T03:37:26.167259+00:00",
+    "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+    "candidate_pid": 43515,
+    "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+    "operator_report": "erased",
+    "before": {
+      "com.google.Chrome": 1,
+      "com.microsoft.VSCode": 1,
+      "com.todesktop.230313mzl4w4u92": 1,
+      "org.mozilla.firefox": 1
+    },
+    "before_total_count": 4,
+    "after": {},
+    "after_total_count": 0,
+    "new_prompt_log": [
+      {
+        "line": 6216,
+        "text": "compme: prompt response=1001 (first=1000)"
+      },
+      {
+        "line": 6217,
+        "text": "compme: erased all recorded inputs"
+      }
+    ],
+    "empty_store_verified": true,
+    "result": "passed for seeded store global erase",
+    "ui_readback": "global-erase-verified.txt",
+    "screenshot": "global-erase-verified.png",
+    "ui_result": "failed: zero stored records but four stale labels remain",
+    "limits": "Seeded store erasure only; live collection and buffered previous-input clearing remain unverified"
+  },
+  "ui_regression": {
+    "expected": "No recorded app count labels when store has zero rows",
+    "actual": [
+      "com.microsoft.VSCode \u2014 1",
+      "com.todesktop.230313mzl4w4u92 \u2014 1",
+      "org.mozilla.firefox \u2014 1",
+      "org.mozilla.firefox \u2014 1"
+    ],
+    "pass": false
+  },
+  "apps_ui_patch": {
+    "source_file": "crates/platform_macos/src/settings_window.rs",
+    "source_sha256": "b7d593a89874545ba30b32bd07eae111b570e8dc2ccfeae42490e48ded2374e5",
+    "changes": [
+      "Overwrite all label slots on live refresh and reopen, clearing absent rows and tooltips",
+      "Widen app name column, preserve count suffix through middle truncation, expose complete row in tooltip"
+    ],
+    "focused_tests": {
+      "command": "cargo test --locked -p platform_macos --lib settings_window::tests -- --test-threads=1",
+      "passed": 36,
+      "failed": 0
+    },
+    "full_local_gate": {
+      "command": "tools/dev/check.sh",
+      "commands_run": 57,
+      "commands_skipped": 0,
+      "exit_code": 0,
+      "log_sha256": "016682cfb207b4a31c8a0ce69cd2b104162e9fec1a0e8488bf6aabbe187e0e7d",
+      "at_utc": "2026-10-05T03:51:03.686181+00:00"
+    },
+    "native_ci": "pending",
+    "live_shrink_and_count_visibility": "pending repaired-candidate probe",
+    "repaired_runtime": {
+      "at_utc": "2026-10-05T03:44:57.612913+00:00",
+      "pid": 93319,
+      "exec_session": 20425,
+      "binary_path": "/Users/mudrii/src/compme/target/bundle/Compme.app/Contents/MacOS/compme",
+      "binary_sha256": "2f9e37671eea81806368ac69eb553118082466bcfad9cf1a7eb17dac883d9b53",
+      "log_path": "/tmp/compme-release-steps-20261004.Hzckdl/candidate-apps-label-fix-20261005.log",
+      "ready": "compme: status=Ready enabled=true snoozed=false",
+      "memory_mode": "off",
+      "fixture_total": 4,
+      "source_state": "uncommitted Apps label/layout repair on 8e8d076",
+      "gui_regression": "pending owner opens Settings"
+    }
+  },
+  "manual_gates_closed": 0,
+  "manual_gates_remaining": 21,
+  "limits": [
+    "Seeded identities establish native store scope only",
+    "Actual mode collection, browser-domain detection and buffered/previous-input clearing remain open",
+    "Stale label and clipped-count repair still requires post-patch live proof"
+  ]
+}

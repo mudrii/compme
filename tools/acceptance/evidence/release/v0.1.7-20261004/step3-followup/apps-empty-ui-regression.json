@@ -1,0 +1,10 @@
+{
+  "expected": "No recorded app count labels when store has zero rows",
+  "actual": [
+    "com.microsoft.VSCode — 1",
+    "com.todesktop.230313mzl4w4u92 — 1",
+    "org.mozilla.firefox — 1",
+    "org.mozilla.firefox — 1"
+  ],
+  "pass": false
+}

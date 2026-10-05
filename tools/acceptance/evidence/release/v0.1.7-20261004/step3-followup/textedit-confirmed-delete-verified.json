@@ -1,0 +1,42 @@
+{
+  "observed_at_utc": "2026-10-05T03:35:48.441721+00:00",
+  "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+  "candidate_pid": 43515,
+  "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+  "operator_report": "deleted",
+  "before": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "after": {
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "expected_after": {
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "new_prompt_log": [
+    {
+      "line": 6145,
+      "text": "compme: prompt response=1001 (first=1000)"
+    },
+    {
+      "line": 6146,
+      "text": "compme: deleted 2 records for com.apple.TextEdit"
+    }
+  ],
+  "store_scope_matches": true,
+  "result": "passed for seeded store deletion scope",
+  "ui_readback": "textedit-confirmed-delete-verified.txt",
+  "screenshot": "textedit-confirmed-delete-verified.png",
+  "ui_issue": "Stale trailing Firefox label remains after row list shrinks",
+  "limits": "Seeded record scope only; actual collection and live previous-input clearing remain unverified"
+}

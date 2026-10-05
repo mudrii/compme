@@ -1,0 +1,13 @@
+{
+  "at_utc": "2026-10-05T03:32:18.934626+00:00",
+  "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+  "binary_sha256": "7af848b42bcaca8116b034fbb0a26b9efef776e66e68e92adcfe39cbbbfacebc",
+  "candidate_pid": 43515,
+  "operator_report": "works",
+  "result": "passed",
+  "readbacks": [
+    "prompt-fix-recovery-general.txt",
+    "prompt-fix-recovery-apps-after.txt"
+  ],
+  "scope": "Main Settings click recovery only; new confirmation visibility and cancellation still to verify"
+}

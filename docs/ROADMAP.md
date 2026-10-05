@@ -283,15 +283,21 @@ detection or live previous-input clearing.
 A subsequent app confirmation blocked Settings while the candidate was not
 foregrounded. The main-thread sample showed `NSAlert::runModal`; General's
 selection changed without its content rendering. Confirmation alerts now use
-Settings' activation and explicit window-ordering sequence. The patched bundle
-builds, both existing confirmation-safety tests pass, and the real-model
-candidate restarts to Ready with six records preserved. Post-patch GUI
-visibility and physical click recovery still require owner verification.
+Settings' activation and explicit window-ordering sequence. On `8e8d076`,
+all five CI lanes, Docs and CodeQL passed. The owner verified click recovery;
+matching General/Apps pane bodies and a visible, focused Cancel were captured.
+Physical cancellation preserved six rows. Confirmed TextEdit deletion removed
+only its two rows (6 → 4), then confirmed global erase emptied the store (4 → 0).
 
-Long Apps labels clip their counts and shortened row lists leave stale trailing
-labels; both need repair and live verification. Actual memory-mode collection,
-buffer/context erase, confirmed global erase and remaining manual/Tier-4 checks
-are still pending. No additional manual row is closed: **21 remain open**.
+The empty store exposed four stale labels in Apps. Label refresh now overwrites
+every slot on both refresh and reopen; the name column is wider and middle
+truncation preserves the count suffix with the full row in a tooltip. All 36
+focused Settings tests and all 57/57 Full Local Gate commands pass with zero
+skips. Pushed native CI and live post-patch shrink/count readbacks are required
+before closing this UI repair.
+Actual memory-mode collection, buffer/context erase and remaining manual/Tier-4
+checks remain pending. No additional manual row is closed: **21 remain open**.
+See the [follow-up evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3-followup/results.json).
 See [`step3/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
 
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)

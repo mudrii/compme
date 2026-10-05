@@ -1544,9 +1544,17 @@ was inactive. The main-thread sample showed `NSAlert::runModal`; selecting
 General changed the highlight but left Apps content. The stopped instance's
 six records were preserved. Confirmation alerts now use the existing Settings
 activation/explicit window-ordering sequence before entering the modal loop.
-The patch builds, both existing confirmation-safety tests pass and its ad-hoc
-real-model candidate reaches Ready. Post-patch GUI visibility/click recovery
-still needs owner verification. Apps count clipping and stale trailing labels
-after deletion are also observed and remain to be repaired. No additional
-manual row closes; 21 remain open. Controlled evidence and exact limits are in
+On `8e8d076`, all five CI lanes, Docs and CodeQL passed. The owner verified
+physical click recovery, matching pane bodies and a visible native confirmation
+were captured, and physical cancellation preserved all six rows. Confirmed
+TextEdit deletion removed only two rows (6 → 4); confirmed global erase left
+zero rows (4 → 0). Seeded records establish store scope, not live context erasure.
+
+Global erase exposed four stale labels in the empty Apps pane. Both refresh and
+reopen now overwrite every label/tooltip slot, and a wider name column with
+middle truncation keeps counts readable. All 36 focused Settings tests and
+57/57 Full Local Gate commands pass with zero skips; pushed native CI and
+post-patch live shrink/count proof are required before closing the repair. No additional manual row closes; 21 remain open. Follow-up evidence is
+in [`step3-followup/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step3-followup/results.json).
+Earlier controlled evidence and exact limits are in
 [`step3/results.json`](tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).

@@ -1,0 +1,33 @@
+{
+  "observed_at_utc": "2026-10-05T03:33:48.737704+00:00",
+  "source_commit": "8e8d0762ff99ccdb6f3404c53614833c59c3943c",
+  "operator_report": "cancelled",
+  "before": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "after": {
+    "com.apple.TextEdit": 2,
+    "com.google.Chrome": 1,
+    "com.microsoft.VSCode": 1,
+    "com.todesktop.230313mzl4w4u92": 1,
+    "org.mozilla.firefox": 1
+  },
+  "new_prompt_log": [
+    {
+      "line": 6088,
+      "text": "compme: prompt response=1000 (first=1000)"
+    },
+    {
+      "line": 6102,
+      "text": "compme: prompt response=1000 (first=1000)"
+    }
+  ],
+  "result": "passed",
+  "ui_readback": "prompt-fix-cancel-verified.txt",
+  "screenshot": "prompt-fix-cancel-verified.png",
+  "limits": "Settings recovery and seeded-record cancellation; two Cancel responses observed, no Delete response; formal live memory gate remains open"
+}

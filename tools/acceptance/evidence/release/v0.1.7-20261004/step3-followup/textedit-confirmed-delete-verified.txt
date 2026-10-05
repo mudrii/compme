@@ -1,0 +1,53 @@
+Window: "Compme Settings", App: Compme.
+0 standard window Compme Settings, Secondary Actions: Raise
+	1 radio button Description: Setup, Value: 0
+	2 radio button Description: General, Value: 0
+	3 radio button Description: Personalization, Value: 0
+	4 radio button Description: Apps, Value: 1
+	5 radio button Description: Context, Value: 0
+	6 radio button Description: Emoji, Value: 0
+	7 radio button Description: Shortcuts, Value: 0
+	8 radio button Description: Statistics, Value: 0
+	9 radio button Description: About, Value: 0
+	10 container
+		11 text Input memory:
+		12 pop up button Off
+		13 text Recorded inputs by app App On Tab Mid AC GF com.google.Chrome — 1
+		14 button Delete
+		15 checkbox Help: Enabled, Value: 1
+		16 checkbox Help: Tab key, Value: 0
+		17 checkbox Help: Mid-line, Value: 0
+		18 checkbox Help: Autocorrect, Value: 1
+		19 checkbox Help: Grammar fix, Value: 1
+		20 text com.microsoft.VSCode — 1
+		21 button Delete
+		22 checkbox Help: Enabled, Value: 1
+		23 checkbox Help: Tab key, Value: 0
+		24 checkbox Help: Mid-line, Value: 0
+		25 checkbox Help: Autocorrect, Value: 1
+		26 checkbox Help: Grammar fix, Value: 1
+		27 text com.todesktop.230313mzl4w4u92 — 1
+		28 button Delete
+		29 checkbox Help: Enabled, Value: 1
+		30 checkbox Help: Tab key, Value: 0
+		31 checkbox Help: Mid-line, Value: 0
+		32 checkbox Help: Autocorrect, Value: 1
+		33 checkbox Help: Grammar fix, Value: 1
+		34 text org.mozilla.firefox — 1
+		35 button Delete
+		36 checkbox Help: Enabled, Value: 1
+		37 checkbox Help: Tab key, Value: 0
+		38 checkbox Help: Mid-line, Value: 0
+		39 checkbox Help: Autocorrect, Value: 1
+		40 checkbox Help: Grammar fix, Value: 1
+		41 text org.mozilla.firefox — 1
+		42 button Erase All Recorded Inputs
+		43 text Domain:
+		44 text field (settable) example.com
+		45 button Delete
+	46 close button
+	47 full screen button Help: this button also has an action to zoom the window, Secondary Actions: zoom the window
+	48 minimize button
+	49 text Compme Settings
+
+The focused UI element is 44 text field (settable) example.com
