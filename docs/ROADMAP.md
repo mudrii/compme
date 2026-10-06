@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-10-05 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-10-06 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -299,6 +299,22 @@ Actual memory-mode collection, buffer/context erase and remaining manual/Tier-4
 checks remain pending. No additional manual row is closed: **21 remain open**.
 See the [follow-up evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3-followup/results.json).
 See [`step3/results.json`](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
+
+### Step 4 — memory modes and Computer Use — 2026-10-06 (partial)
+
+Current `b2ad7a9` passed all five native CI lanes and a fresh 57/57 Full Local
+Gate with zero skips. Owner-operated live probes established basic collection
+behavior in AcceptedOnly, AllMonitored and Off; mode/count persistence across
+relaunch; app/global erase cancellation and confirmation; cleared stale Apps
+counts; and fresh-only stored text after active-mode app erasure. The unfinished
+marker had already flushed, so buffer-specific and live prompt-context/domain
+proof remain open. Computer Use verified nine-pane layout, reversible General
+and Context changes, instructions persistence, and shortcut recorder capture,
+debug registration, collision rejection and cancellation. Synthetic typing did
+not establish reliable product foreground observation; physical and browser
+runtime gates remain open. Preferences restored, Memory Off, store empty.
+**21 manual rows remain open; not ready to tag.** See
+[step-4 evidence and per-gate residuals](../tools/acceptance/evidence/release/v0.1.7-20261004/step4/README.md).
 
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 

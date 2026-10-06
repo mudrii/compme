@@ -1,0 +1,267 @@
+compme: accept keys rebound (word=Some((96, 512)) full=Some((50, 0)) grammar=Some((97, 512)))
+compme: carbon hotkey registered id=5 keycode=96 modifiers=6144
+compme: carbon hotkey registered id=6 keycode=97 modifiers=6144
+compme: carbon hotkey registered id=7 keycode=98 modifiers=6144
+compme: carbon hotkey registered id=8 keycode=111 modifiers=6144
+compme: encrypted memory available for deletion (collection off)
+compme: status=Ready enabled=true snoozed=false
+compme: status=Ready enabled=true snoozed=false
+compme: prompt response=1000 (first=1000)
+compme: delete for com.apple.TextEdit cancelled
+compme: prompt response=1001 (first=1000)
+compme: deleted 5 records for com.apple.TextEdit
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: memory mode set to AllMonitored
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: prompt response=1001 (first=1000)
+compme: deleted 5 records for com.apple.TextEdit
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: prompt response=1000 (first=1000)
+compme: erase all cancelled
+compme: prompt response=1001 (first=1000)
+compme: erased all recorded inputs
+compme: cross-app previous-input context enabled
+compme: cross-app previous-input context disabled
+compme: recorder mouseDown role=Word first_responder=true key_window=false
+compme: recorder keyDown role=Word keycode=53 mask=0
+compme: memory mode set to Off
+compme: persisted enabled=false to /tmp/compme-readiness-20261006/config.env
+compme: status=Disabled enabled=false snoozed=false
+compme: mid-line completions enabled
+compme: trailing space enabled
+compme: persisted enabled=true to /tmp/compme-readiness-20261006/config.env
+compme: status=Ready enabled=true snoozed=false
+compme: mid-line completions disabled
+compme: trailing space disabled
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: personalization COMPME_INSTRUCTIONS updated
+compme: recorder mouseDown role=Word first_responder=true key_window=true
+compme: recorder flagsChanged role=Word mask=512
+compme: recorder keyDown role=Word keycode=98 mask=512
+compme: recorder flagsChanged role=Word mask=0
+compme: carbon hotkey registered id=1 keycode=98 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: accept keys rebound (word=(98, 512) full=(50, 0) grammar_accept=Some((97, 512)))
+compme: recorder mouseDown role=Word first_responder=true key_window=true
+compme: recorder flagsChanged role=Word mask=512
+compme: recorder keyDown role=Word keycode=97 mask=512
+compme: recorder flagsChanged role=Word mask=0
+compme: recorder keyDown role=Word keycode=125 mask=0
+compme: recorder keyDown role=Word keycode=53 mask=0
+compme: recorder mouseDown role=Word first_responder=true key_window=true
+compme: recorder flagsChanged role=Word mask=512
+compme: recorder keyDown role=Word keycode=96 mask=512
+compme: recorder flagsChanged role=Word mask=0
+compme: carbon hotkey registered id=1 keycode=96 modifiers=512
+compme: carbon hotkey registered id=2 keycode=50 modifiers=0
+compme: carbon hotkey registered id=3 keycode=53 modifiers=0
+compme: carbon hotkey registered id=4 keycode=125 modifiers=0
+compme: accept keys rebound (word=(96, 512) full=(50, 0) grammar_accept=Some((97, 512)))

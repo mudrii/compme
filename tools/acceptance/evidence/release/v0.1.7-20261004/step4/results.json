@@ -1,0 +1,290 @@
+{
+  "checked_at_utc": "2026-10-06T05:43:38.300136+00:00",
+  "source_commit": "b2ad7a91d15d8aca8ea8e0e5d465e0fde56df05b",
+  "binary_sha256": "2f9e37671eea81806368ac69eb553118082466bcfad9cf1a7eb17dac883d9b53",
+  "ready_to_tag": false,
+  "manual_gates_remaining": 21,
+  "prior_candidate_running": false,
+  "next_probe": "Fresh monitored typing after global erase; verify only new marker stored",
+  "store": "fresh isolated test store; prior artifacts preserved",
+  "full_local_gate": {
+    "exit_code": 0,
+    "commands_run": 57,
+    "commands_skipped": 0,
+    "finished_at_utc": "2026-10-06T05:48:31.338325+00:00",
+    "log": "/tmp/compme-readiness-20261006-gate.log",
+    "log_sha256": "0f2e6ee161935d1f9f7733d032ed88dbe7a2086d33f2f14c58e42dc66a8d0d6a"
+  },
+  "native_ci": {
+    "conclusion": "success",
+    "url": "https://github.com/mudrii/compme/actions/runs/37261099778",
+    "lanes": 5
+  },
+  "physical_acceptance": "Live AcceptedOnly, AllMonitored and Off collection behaviors verified; relaunch persistence, privacy and erase residuals remain open",
+  "accepted_completions_probe": {
+    "verified_at_utc": "2026-10-06T07:24:32.412996+00:00",
+    "owner_action": "physical backtick; owner reported accepted",
+    "textedit_readback": "The acceptance test will be conducted on the new version of the",
+    "runtime_event": "compme: accept Full",
+    "records_before": 0,
+    "records_after": 1,
+    "app_counts": {
+      "com.apple.TextEdit": 1
+    },
+    "result": "pass"
+  },
+  "ordinary_typing_probe": {
+    "verified_at_utc": "2026-10-06T07:34:49.086941+00:00",
+    "textedit_readback": "Ordinary typing probe gamma\n",
+    "punctuation_note": "Expected final period absent in readback; newline present",
+    "records_before": 1,
+    "records_after": 1,
+    "new_accept_events": 0,
+    "result": "pass for AcceptedOnly exclusion"
+  },
+  "all_monitored_typing_probe": {
+    "verified_at_utc": "2026-10-06T08:25:00.181706+00:00",
+    "owner_action": "selected All monitored typing; typed without acceptance",
+    "textedit_readback": "Monitored typing probe delta\n",
+    "persisted_mode": "all",
+    "runtime_event": "compme: memory mode set to AllMonitored",
+    "records_before": 1,
+    "records_after": 5,
+    "app_counts": {
+      "com.apple.TextEdit": 5
+    },
+    "new_accept_events": 0,
+    "result": "pass for live monitored collection",
+    "limits": "Individual encrypted record contents not inspected; broader privacy and erase legs remain open"
+  },
+  "off_typing_probe": {
+    "verified_at_utc": "2026-10-06T08:26:22.273958+00:00",
+    "textedit_readback": "Memory off probe epsilon\n",
+    "persisted_mode": "off",
+    "runtime_event": "compme: memory mode set to Off",
+    "records_before": 5,
+    "records_after": 5,
+    "new_accept_events": 0,
+    "result": "pass for disabling live typing collection"
+  },
+  "off_acceptance_attempt": {
+    "verified_at_utc": "2026-10-06T08:29:03.312970+00:00",
+    "owner_report": "no suggestion",
+    "textedit_readback": "The privacy check will `\n",
+    "records_before": 5,
+    "records_after": 5,
+    "new_accept_events": 0,
+    "model_requests_completed": true,
+    "result": "unverified: no suggestion accepted",
+    "next_probe": "Retry the previously successful acceptance prefix in Off mode"
+  },
+  "off_acceptance_probe": {
+    "verified_at_utc": "2026-10-06T08:59:43.532598+00:00",
+    "owner_report": "accepted",
+    "textedit_readback": "The acceptance test will be conducted on the new version of the",
+    "persisted_mode": "off",
+    "runtime_event": "compme: accept Full",
+    "runtime_log_line": 9275,
+    "records_before": 5,
+    "records_after": 5,
+    "result": "pass for acceptance collection suppression"
+  },
+  "settings_reopen_probe": {
+    "verified_at_utc": "2026-10-06T09:00:16.235497+00:00",
+    "owner_report": "confirmed",
+    "memory_mode_displayed": "Off",
+    "textedit_records_displayed": 5,
+    "result": "pass by owner observation"
+  },
+  "relaunch_probe": {
+    "verified_at_utc": "2026-10-06T09:00:36.719971+00:00",
+    "persisted_mode": "off",
+    "records_before": 5,
+    "records_after": 5,
+    "runtime_event": "compme: encrypted memory available for deletion (collection off)",
+    "status": "Ready",
+    "runtime_log": "/tmp/compme-readiness-20261006/candidate-relaunch.log",
+    "result": "pass: runtime and owner UI readback",
+    "post_relaunch_ui": {
+      "owner_report": "confirmed",
+      "mode": "Off",
+      "textedit_records": 5,
+      "verified_at_utc": "2026-10-06T09:30:09.982045+00:00"
+    }
+  },
+  "off_delete_cancel_probe": {
+    "verified_at_utc": "2026-10-06T09:33:20.786029+00:00",
+    "owner_report": "cancelled",
+    "mode": "off",
+    "runtime_event": "compme: delete for com.apple.TextEdit cancelled",
+    "prompt_response": 1000,
+    "records_before": 5,
+    "records_after": 5,
+    "result": "pass"
+  },
+  "off_delete_confirm_probe": {
+    "verified_at_utc": "2026-10-06T09:37:03.006453+00:00",
+    "owner_report": "deleted",
+    "mode": "off",
+    "runtime_event": "compme: deleted 5 records for com.apple.TextEdit",
+    "prompt_response": 1001,
+    "records_before": 5,
+    "records_after": 0,
+    "result": "pass: store erasure and owner-confirmed stale count clearing",
+    "apps_ui": {
+      "owner_report": "clear and typed",
+      "stale_five_record_count": false
+    }
+  },
+  "off_post_erase_typing_probe": {
+    "verified_at_utc": "2026-10-06T09:38:04.396281+00:00",
+    "textedit_readback": "\nAfter erase probe zeta\n",
+    "owner_report": "clear and typed",
+    "mode": "off",
+    "records_before": 0,
+    "records_after": 0,
+    "new_accept_events": 0,
+    "result": "pass",
+    "artifact_note": "Earlier document text absent in current readback; prior probe readbacks retained in this evidence file"
+  },
+  "post_erase_all_monitored_probe": {
+    "verified_at_utc": "2026-10-06T09:39:39.052353+00:00",
+    "textedit_readback": "Fresh monitored probe eta\n",
+    "persisted_mode": "all",
+    "runtime_event": "compme: memory mode set to AllMonitored",
+    "records_before": 0,
+    "records_after": 4,
+    "new_accept_events": 0,
+    "result": "pass"
+  },
+  "unfinished_marker_attempt": {
+    "verified_at_utc": "2026-10-06T09:41:30.078208+00:00",
+    "textedit_readback": "UnfinishedBufferTheta\n",
+    "records_before": 4,
+    "records_after": 5,
+    "result": "marker reached store; unfinished-buffer precondition unverified",
+    "evidence": "runtime readback contains newline after marker"
+  },
+  "all_monitored_delete_probe": {
+    "verified_at_utc": "2026-10-06T09:42:37.184903+00:00",
+    "owner_report": "deleted",
+    "persisted_mode": "all",
+    "runtime_event": "compme: deleted 5 records for com.apple.TextEdit",
+    "runtime_log_line": 1787,
+    "records_before": 5,
+    "records_after": 0,
+    "result": "pass for live app erasure while collection active",
+    "limits": "Unfinished-buffer precondition was not established"
+  },
+  "active_mode_post_erase_typing_probe": {
+    "verified_at_utc": "2026-10-06T09:46:18.019242+00:00",
+    "records_before": 0,
+    "records_after": 1,
+    "decrypted_test_records": [
+      {
+        "app": "com.apple.TextEdit",
+        "text": "FreshAfterDeleteIota\n"
+      }
+    ],
+    "old_marker_present": false,
+    "result": "pass",
+    "limits": "Unfinished buffer and previous-input prompt context not proven by this check"
+  },
+  "erase_all_cancel_probe": {
+    "verified_at_utc": "2026-10-06T09:47:30.465587+00:00",
+    "owner_report": "cancelled",
+    "mode": "all",
+    "runtime_event": "compme: erase all cancelled",
+    "prompt_response": 1000,
+    "records_before": 1,
+    "records_after": 1,
+    "result": "pass"
+  },
+  "erase_all_confirm_probe": {
+    "verified_at_utc": "2026-10-06T09:48:04.146791+00:00",
+    "owner_report": "erased",
+    "mode": "all",
+    "runtime_event": "compme: erased all recorded inputs",
+    "prompt_response": 1001,
+    "records_before": 1,
+    "records_after": 0,
+    "result": "pass for store erasure",
+    "limits": "Global erasure observed with only TextEdit represented; multi-app and live prompt-context clearing remain unverified"
+  },
+  "computer_use_followup": {
+    "checked_at_utc": "2026-10-06T09:56:56.245228+00:00",
+    "input_method": "Computer Use native app and browser APIs; synthetic input",
+    "nine_panes": "Setup, General, Personalization, Apps, Context, Emoji, Shortcuts, Statistics, About inspected via AX and screenshots; no visible clipping",
+    "general_switches": {
+      "changed": [
+        "enabled false",
+        "midline true",
+        "trailing space true"
+      ],
+      "persisted_across_reopen": true,
+      "runtime_disabled_event": true,
+      "restored": {
+        "enabled": true,
+        "midline": false,
+        "trailing_space": false
+      }
+    },
+    "context_previous_inputs": {
+      "enabled_and_reopened": true,
+      "restored_disabled": true,
+      "clipboard_and_screen_ocr": "left disabled"
+    },
+    "personalization": {
+      "test_instructions": "Use concise plain English.",
+      "persisted_and_reopened": true,
+      "restored_empty": true,
+      "next_request_steering": "unverified"
+    },
+    "shortcut_recorder": {
+      "word_capture": "Shift+F7",
+      "persisted_key": "shift+98",
+      "runtime_keydown_and_carbon_registration": true,
+      "collision": "Shift+F6 rejected: In use \u2014 press another",
+      "reserved_down": "binding unchanged",
+      "escape": "cancelled to Shift+F7",
+      "restored": "Shift+F5 / shift+96",
+      "live_text_acceptance": "unverified"
+    },
+    "apps_empty_store": "AX: No recorded inputs yet; owner previously confirmed stale count cleared",
+    "synthetic_typing_attempts": [
+      {
+        "target": "TextEdit",
+        "text": "FreshAfterGlobalEraseKappa",
+        "store_count": 0,
+        "result": "inconclusive for collection; readback changed but monitored runtime did not capture marker"
+      },
+      {
+        "target": "TextEdit with AX Raise",
+        "text": "NativeFocusProbeLambda",
+        "store_count": 0,
+        "result": "same limitation"
+      },
+      {
+        "target": "native Google Chrome, local textarea",
+        "text": "The acceptance test will ",
+        "result": "no visible suggestion; caret-source gate unverified"
+      }
+    ],
+    "foreground_limit": "App-targeted Computer Use input did not reliably foreground the target for Compme. Read-only NSWorkspace probe reported com.google.Chrome while Compme Settings was the targeted surface; this is a precondition limitation, not proven product regression.",
+    "uninstalled_named_targets": [
+      "Brave",
+      "Edge",
+      "Vivaldi",
+      "Chromium",
+      "Arc"
+    ],
+    "cleanup": {
+      "memory_mode": "off",
+      "store_count": 0,
+      "general_and_context_restored": true,
+      "instructions_empty": true,
+      "word_accept_restored": "Shift+F5",
+      "disposable_browser_tabs_closed": true
+    }
+  }
+}

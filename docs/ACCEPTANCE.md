@@ -438,6 +438,28 @@ row is closed. See the [follow-up evidence](../tools/acceptance/evidence/release
 and the earlier
 [step-3 evidence](../tools/acceptance/evidence/release/v0.1.7-20261004/step3/results.json).
 
+### Memory modes and Computer Use follow-up — 2026-10-06 (partial)
+
+On `b2ad7a9`, Full Local Gate passed 57/57 commands with zero skips and all five
+native CI lanes passed. Owner-operated TextEdit actions plus AX/database readback
+verified AcceptedOnly collection/exclusion, AllMonitored collection, Off-mode
+typing/acceptance suppression, and mode/count persistence across relaunch.
+App/global erase cancellation preserved rows; confirmed erasure emptied the
+isolated store. The owner confirmed stale Apps counts cleared. Fresh typing
+after active-mode app erasure stored only the fresh marker, verified by decrypting
+the disposable record. The unfinished marker had already flushed, so that
+buffer-specific leg remains unverified, as do live prompt-context and domain
+clearing. The global erase leg contained only TextEdit.
+
+Computer Use inspected all nine panes, verified General/Context and instructions
+persistence with baseline restoration, and captured shortcut recorder keyDown,
+Carbon registration, collision/reserved-key rejection and cancellation. Synthetic
+TextEdit/Chrome typing changed AX text but did not establish reliable foreground
+observation or visible browser completion. Those runtime probes are inconclusive
+and do not substitute for physical-key evidence. Memory was restored Off.
+No additional complete ledger row closes; **21 remain open**. See
+[step-4 results and gate disposition](../tools/acceptance/evidence/release/v0.1.7-20261004/step4/README.md).
+
 ### Expected exit codes
 
 **Exit code 70 during model warm-up is expected, not a failure** (Qfd §20,
@@ -876,13 +898,13 @@ closed for a tag.
 
 | Gate | Last result | Date | Binary / commit | Evidence |
 |---|---|---|---|---|
-| `apps-policy-toggle-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `8e8d076` | TextEdit Enabled and Grammar fix persisted/restored; scoped app erase and global empty-store result verified. UI repair live proof and live suggestion/correction dismissal still required; see release `step3-followup/results.json` |
-| `personalization-pane-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Multiline instructions, sender fields and all six strength stops persisted; fields cleared and Balanced restored. Next-request steering unverified; see release `step2/results.json` |
+| `apps-policy-toggle-look` | partial (live UI) | 2026-10-06 | 0.1.7 / `b2ad7a9` | Owner and Computer Use confirmed stale counts cleared after erase; prior policy persistence retained. Multi-row layout and live suggestion/correction dismissal remain; see release `step4/results.json` |
+| `personalization-pane-look` | partial (live UI) | 2026-10-06 | 0.1.7 / `b2ad7a9` | Instructions commit/reopen verified and restored empty; prior sender/strength evidence retained. Next-request steering remains; see release `step4/results.json` |
 | `menu-bar-icon-look` | partial (user report) | 2026-10-04 | 0.1.7 / `df7a3a7` | Owner reported icon visible after unlock; light/dark and state appearances unverified; see release `gui-resume.json` |
-| `shortcuts-recorder-look` | partial (live UI) | 2026-10-05 | 0.1.7 / `714c879` | Shift+F5 Word capture/persistence, collision rejection, reserved Down and Esc cancellation observed; Grammar rebind restored. Debug capture/registration logs, live routing and reopen resync still required; see release `step2/results.json` |
+| `shortcuts-recorder-look` | partial (live UI) | 2026-10-06 | 0.1.7 / `b2ad7a9` | Synthetic Shift+F7 capture/persistence, collision and reserved Down rejection, Escape cancellation, keyDown and Carbon registration logs verified; Shift+F5 restored. Live suggestion accept and full reopen resync remain; see release `step4/results.json` |
 | `always-on-hotkeys-physical-look` | never recorded | — | — | — |
 | `setup-model-picker-look` | passed applicable legs; low-RAM leg not applicable | 2026-10-05 | 0.1.7 / `714c879` | Correct Finder handoff, four fit-labelled rows, non-recommended download/pinned hash, existing-file reuse and cancelled pre-fetch license prompt. All models fit this 128 GiB host; see release `step2/results.json` |
-| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-05 | 0.1.7 / `8e8d076` | Nine panes captured in step2; app/global/domain cancellation and seeded store erases verified with Memory Off. Actual mode collection, buffered/context clearing, repaired UI readback, Context privacy and recorder legs still required; see release `step3-followup/results.json` |
+| `nine-tab-settings-walkthrough` | partial (live UI) | 2026-10-06 | 0.1.7 / `b2ad7a9` | Nine panes inspected; General/Context/instructions apply and reopen, memory collection modes/relaunch and app/global erases verified. Domain/context privacy and buffered-text residuals remain; see release `step4/results.json` |
 | `full-autocorrect-prose-code-look` | never recorded | — | — | — |
 | `cross-app-previous-inputs-look` | never recorded | — | — | — |
 | `selection-thesaurus-look` | partial (assisted banner) | 2026-10-04 | 0.1.7 / `df7a3a7` | TextEdit selected-word banner rendered with acceptance PID override; physical cycle/full-accept and stale replacement refusal unverified; see release `gui-resume.json` |
@@ -892,7 +914,7 @@ closed for a tag.
 | `caret-marker-chromium-marker` | never recorded | — | — | — |
 | `caret-marker-electron-marker` | never recorded | — | — | — |
 | `sidebar-only-editor-assistant-look` | never recorded | — | — | — |
-| `encrypted-memory-all-monitored-live` | partial (live) | 2026-06-17 | dev build | TextEdit product-loop privacy, runtime-disable, and Chrome domain-exclude proven; secure input, snoozed transition, and volatile `pid:N` still pending — see "Encrypted memory AllMonitored live gate" below |
+| `encrypted-memory-all-monitored-live` | partial (live) | 2026-10-06 | 0.1.7 / `b2ad7a9` | Physical typing/acceptance verified mode collection/exclusion; app/global erase and fresh-only post-app-erase record readback passed. Secure-input/snooze/volatile identity, unfinished-buffer, domain and live-context residuals remain; see release `step4/results.json` |
 | `grammar-fix-textedit-look` | scripted pass; physical residual | 2026-07-07 | dev build after `4c2f8d3` | assisted-session pass with a real model (underline, banner, in-place accept, staleness refusal); the human/physical pass remains — see the grammar entry above |
 | `mirror-window-firefox-zen-look` | never recorded | — | — | — |
 | `setup-needed-docs-arc-onboarding` | never recorded | — | — | — |
