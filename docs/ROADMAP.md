@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-10-07 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-10-07 · **Branch:** `main` · v0.1.7 (tag `v0.1.7`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -140,7 +140,7 @@
 
 </details>
 
-> **Release boundary:** the published `v0.1.6` artifact is tag `v0.1.6` (commit
+> **Release boundary:** the published `v0.1.7` artifact is tag `v0.1.7` (commit
 > `6c0bea5`); the previous `v0.1.5` artifact is tag `v0.1.5` (commit `14ae81e`).
 > Everything between those tags shipped in v0.1.6: the post-v0.1.5 delivery log
 > above, from the five macOS parity closures through the 2026-08-25/26 audit

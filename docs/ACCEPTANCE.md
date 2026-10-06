@@ -4,7 +4,7 @@ This document describes the current automated and live acceptance checks for
 Compme.
 
 > **Release boundary (2026-08-26):** this document tracks current `main`. The
-> latest published artifact, `v0.1.6` (the `v0.1.6` tag commit), includes the
+> latest published artifact, `v0.1.7` (the `v0.1.7` tag commit), includes the
 > local/manual-only A2 policy and the single **Show Models Folder** control, so
 > those checks describe the published binary as well as `main`.
 

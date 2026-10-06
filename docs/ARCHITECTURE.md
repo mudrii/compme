@@ -14,7 +14,7 @@ behind Compme's own portable contracts and without pricing gates; deliberate
 product differences include local-only inference, no proprietary telemetry,
 and additions such as candidate cycling.
 
-**Release boundary:** the published `v0.1.6` artifact points to the `v0.1.6`
+**Release boundary:** the published `v0.1.7` artifact points to the `v0.1.7`
 tag commit; this
 page documents current `main`. The
 runtime/download/clipboard/OCR/deep-link

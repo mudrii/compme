@@ -8,7 +8,7 @@ validation runs the same portable workspace and app-binary gates on those
 platforms.
 
 > **Release boundary (2026-08-26):** this page describes the pipeline on current
-> `main` for the next tag. The latest published artifact is `v0.1.6` at
+> `main` for the next tag. The latest published artifact is `v0.1.7` at
 > the `v0.1.6` tag commit; its arm64 app is Developer-ID signed,
 > hardened-runtime enabled,
 > notarized, and stapled, and its zip carries a build-provenance attestation.

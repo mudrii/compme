@@ -1,8 +1,8 @@
 cask "compme" do
-  version "0.1.6"
+  version "0.1.7"
   # version and sha256 are rewritten from the published artifact by
   # tools/release/update-cask.sh during each tag release (see docs/RELEASING.md).
-  sha256 "59d73f1d6eb275291874d23a12d78e80a3d5926a1c965894f104429da27e6e67"
+  sha256 "762afa19ea8c19cc45e62fde6dd41c1ded2939bc0e3f36eec8550aaa8d5d4fbb"
 
   url "https://github.com/mudrii/compme/releases/download/v#{version}/compme-#{version}-macos.zip"
   name "Compme"
