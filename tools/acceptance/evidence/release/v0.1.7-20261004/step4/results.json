@@ -286,5 +286,6 @@
       "word_accept_restored": "Shift+F5",
       "disposable_browser_tabs_closed": true
     }
-  }
+  },
+  "superseded_by": "../step5/results.json; prior next_probe and uninstalled_named_targets describe the historical checkpoint, not current inventory"
 }

@@ -1,0 +1,3 @@
+compme: status=Loading enabled=false snoozed=false
+compme: status=Disabled enabled=false snoozed=false
+compme: shutting down

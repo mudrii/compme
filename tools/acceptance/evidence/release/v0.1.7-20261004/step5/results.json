@@ -1,0 +1,63 @@
+{
+  "checked_at_utc": "2026-10-06T12:26:56.251738+00:00",
+  "source_commit": "8f2277e099f41ab989cf76d34543be9797d19ce4",
+  "binary_sha256": "2f9e37671eea81806368ac69eb553118082466bcfad9cf1a7eb17dac883d9b53",
+  "manual_groups_remaining": 21,
+  "ready_to_tag": false,
+  "probes": {
+    "off_no_path": {
+      "exit_code": 0,
+      "database_created": false,
+      "limit": "No Keychain baseline was captured before this first run; separate absent-path probe establishes the before/after key state."
+    },
+    "off_absent_path": {
+      "exit_code": 0,
+      "keychain_lookup_before_exit": 44,
+      "keychain_lookup_after_exit": 44,
+      "secret_value_requested": false,
+      "database_created": false,
+      "parent_directory_created": false,
+      "result": "pass for no store or key creation",
+      "limits": "Key-store prompt visibility was not captured. Does not close the entire memory gate."
+    },
+    "all_missing_path_startup": {
+      "exit_code": 0,
+      "runtime_message": "COMPME_MEMORY set but COMPME_MEMORY_PATH missing \u2014 memory disabled",
+      "result": "pass for startup disabling collection",
+      "limits": "In-app picker rollback and persisted Off value remain untested."
+    },
+    "input_monitoring_revoked": {
+      "granted": true,
+      "revoked": false,
+      "result": "conditional prerequisite absent",
+      "permissions_changed": false
+    }
+  },
+  "computer_use": {
+    "textedit_fixture_reset": "The acceptance test will ",
+    "shortcuts_reopen": "Word Shift+F5, Full backtick, Grammar Shift+F6 readback confirmed before startup probes",
+    "about": "v0.1.7, Apache-2.0, local inference/no proprietary telemetry text readback",
+    "foreground_sample": "app.zen-browser.zen after TextEdit targeted input",
+    "browser_attempt": "Stopped on user-change interruption; dedicated local fixture was not established; no browser pass claimed"
+  },
+  "cleanup": {
+    "prior_evidence_preserved": true,
+    "temporary_http_server_stopped": true,
+    "startup_probe_processes_exited": true,
+    "candidate_restored": true,
+    "memory_mode": "off",
+    "baseline_config_preserved": true,
+    "user_tabs_not_closed": true,
+    "restored_store_rows": 0,
+    "baseline_config_unchanged": true,
+    "runtime_status": "Ready"
+  },
+  "full_local_gate": {
+    "exit_code": 0,
+    "commands_run": 57,
+    "commands_skipped": 0,
+    "log_sha256": "301cd26393de3be52b080c2b0e97081b5bf7017f03cb37ee7991900295300cdd",
+    "log": "/tmp/compme-readiness-cleanup-20261006/full-local-gate.log",
+    "finished_at_utc": "2026-10-06T12:33:28.806559+00:00"
+  }
+}

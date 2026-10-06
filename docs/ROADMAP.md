@@ -316,6 +316,19 @@ runtime gates remain open. Preferences restored, Memory Off, store empty.
 **21 manual rows remain open; not ready to tag.** See
 [step-4 evidence and per-gate residuals](../tools/acceptance/evidence/release/v0.1.7-20261004/step4/README.md).
 
+### Step 5 — residual cleanup and startup checks — 2026-10-06 (partial)
+
+Bounded production probes verified Off creates neither an absent database nor
+a new Keychain memory item (metadata-only lookup absent before/after), and
+AllMonitored with a missing path disables collection at startup. In-app picker
+rollback, prompt visibility and the broader memory privacy legs remain open.
+Shortcuts reopen reflected the effective keymap. Input Monitoring is granted;
+the revoked-state test remains conditional. Foreground-dependent GUI and
+physical probes remain blocked on a stable target desktop. The disposable
+TextEdit document was reset, the temporary server stopped, and Memory Off
+restored. **21 groups remain open; no tag.** Reuse prior evidence and execute
+the consolidated sessions in [step-5 residual worklist](../tools/acceptance/evidence/release/v0.1.7-20261004/step5/README.md).
+
 ### Release recheck — 2026-10-04 (release candidate; not ready to tag)
 
 Fresh independent review and production probes found two additional privacy

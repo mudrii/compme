@@ -1,0 +1,4 @@
+compme: COMPME_MEMORY set but COMPME_MEMORY_PATH missing — memory disabled
+compme: status=Loading enabled=false snoozed=false
+compme: status=Disabled enabled=false snoozed=false
+compme: shutting down
