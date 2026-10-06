@@ -934,9 +934,11 @@ closed for a tag.
 | `multi-candidate-cycle-physical-look` | never recorded | — | — | — |
 | `input-monitoring-revoked-carbon-accept` | pending / conditional | — | — | see "Input Monitoring revoked spot-check" below |
 
-As of 2026-09-08, v0.1.6 was tagged with none of the 22 rows closed; whether
-patch releases may ship that way is an open owner decision recorded in
-`Qfd.md` §20 (G11).
+As of 2026-09-08, v0.1.6 was tagged with none of the 22 rows closed. On
+2026-10-07 the owner decided G11 (`Qfd.md` §20, §29): a patch release may be
+tagged with rows still open, provided every open row keeps its recorded
+disposition here. v0.1.7 is tagged under that waiver with one row closed and
+21 open; no open row is reported as passed.
 
 The five parity-closure gates added 2026-07-17 require this evidence:
 

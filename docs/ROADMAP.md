@@ -1,6 +1,6 @@
 # compme — Roadmap & Pending Work
 
-> **Last updated:** 2026-10-06 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
+> **Last updated:** 2026-10-07 · **Branch:** `main` · v0.1.6 (tag `v0.1.6`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
 > Current `main` carries post-release work that is not in v0.1.6: the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
@@ -177,6 +177,23 @@ tested**. Everything below is what the plan still calls for.
 ---
 
 ## Current release — v0.1.7 candidate
+
+### Owner release decision — 2026-10-07 (ready to tag)
+
+The owner decided Qfd G11: v0.1.7 may be tagged with the remaining manual
+rows open, as v0.1.6 was. One of the 22 runner-pinned rows is closed
+(`setup-model-picker-look`) and 21 remain open with their recorded
+dispositions in [ACCEPTANCE.md](ACCEPTANCE.md); the fresh A2 matrix, G7
+physical before/after and the remaining Tier-4 observations are deferred, not
+passed. Automated readiness at `c982667`: all five native CI lanes, Docs and
+CodeQL green; the candidate's 57/57 Full Local Gate (zero skips) and strict
+real-Mac model/quality gates stand, since later commits change only docs and
+evidence. Version, bundle-metadata and version-docs checks pass; the `release`
+environment holds all six signing/notarization secrets, the
+`protected-release-tags` ruleset is active, and the live governance check
+passes with its accepted caveats. Next: push the protected `v0.1.7` tag from
+the up-to-date `main` tip, approve the `release` environment, and confirm
+`post_verify` (see [RELEASING](RELEASING.md#cutting-a-release)). See Qfd §29.
 
 ### macOS release preparation — 2026-10-04
 
@@ -628,8 +645,10 @@ documentation repairs accumulated after v0.1.5; Linux remains experimental and
 is not promoted to a supported product by this patch.
 
 Ready-to-tag requires recorded closure of all 22 runner-pinned macOS
-manual/live gates (Qfd F3), a green Full Local Gate, and the pre-tag steps in
-the [RELEASING checklist](RELEASING.md). A release is complete only after the
+manual/live gates (Qfd F3), or an explicit owner waiver that leaves each open
+row's disposition recorded in the ledger (G11, decided 2026-10-07), plus a
+green Full Local Gate and the pre-tag steps in the
+[RELEASING checklist](RELEASING.md). A release is complete only after the
 runbook's tag, publication, cask finalization, and `post_verify` steps finish.
 The Windows Phase 1 forcing function was closure of the Linux C.2 wired-ghost
 diagnostic. That trigger fired on 2026-08-25, and the follow-on Linux audit
