@@ -6,7 +6,7 @@
 > [`ACCEPTANCE.md`](ACCEPTANCE.md). New evidence is promoted into that document's
 > authoritative Manual/Live Gate Ledger.
 >
-> **Release boundary (2026-08-26):** this checklist tracks current `main`.
+> **Release boundary (2026-10-07):** this checklist tracks current `main`.
 > Validate the latest published `v0.1.7` binary from tag `v0.1.7` and its
 > release assets. The
 > local/manual-only A2 policy and the single **Show Models Folder** invariant

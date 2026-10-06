@@ -1577,3 +1577,11 @@ environment holds all six signing/notarization secrets, `protected-release-tags`
 is active, and `check-github-governance.sh` passes with its accepted caveats.
 Remaining release steps are the tag push, `release` environment approval,
 cask finalization and `post_verify`.
+
+**Publication (2026-10-07):** release run 37516965255's first signing attempt
+failed at notarization with HTTP 403 (expired Apple developer agreement). After
+the owner renewed it, the rerun signed, notarized and stapled, published three
+assets, finalized the cask (`f169b7a`) and passed `post_verify`. The downloaded
+zip matched its checksum asset. The finalizer's anchored sync left
+prior-release prose on adjacent lines (RELEASING "`v0.1.7` at the `v0.1.6` tag
+commit", ROADMAP boundary commit `6c0bea5`); those were reconciled by hand.

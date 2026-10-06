@@ -24,12 +24,12 @@ promoted into the workspace.
 ### Current platform support
 
 For current workspace changes, see the
-[draft release notes](docs/RELEASE-NOTES-v0.1.7.md) and
-[release prerequisites](docs/ROADMAP.md#current-release--v017-candidate).
+[v0.1.7 release notes](docs/RELEASE-NOTES-v0.1.7.md) and
+[release record](docs/ROADMAP.md#current-release--v017-published-2026-10-07).
 
 | Platform | Product status | Current boundary |
 |---|---|---|
-| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.7` | The v0.1.6 audit-remediation patch: 69 verified findings closed and test-pinned; 22 runner-pinned manual/live acceptance gates are tracked in the [acceptance ledger](docs/ACCEPTANCE.md), where 19 are still recorded as "never recorded" — v0.1.6 was tagged with none of the 22 closed. On 2026-10-07 the owner decided that patch releases may ship with open rows recorded in the ledger (`Qfd.md` §20 G11, §29). |
+| macOS | **Latest published artifact:** signed, notarized, and stapled `v0.1.7` | The v0.1.7 patch: post-v0.1.6 privacy, Carbon main-thread, Accessibility safety-poll, memory-erase and Settings fixes ([release notes](docs/RELEASE-NOTES-v0.1.7.md)). Of the 22 runner-pinned manual/live acceptance gates in the [acceptance ledger](docs/ACCEPTANCE.md), one is closed and 21 remain open; v0.1.7 shipped under the owner's 2026-10-07 decision that patch releases may tag with open rows recorded (`Qfd.md` §20 G11, §29). |
 | Windows | **Foundation/scaffold only** — native CI compiles and tests the portable workspace | The product still constructs the inert `WindowsAdapter::new()`: subscriptions, insertion, overlay, and most ShellHost services remain fail-closed. An optional `WindowsAdapter::with_uia()` seam now reads focused-field capabilities, text, and selection through a dedicated UIA worker, but it is not product-wired or native-provider accepted. Owner-only DACL hardening, console shutdown handling, and URL opening are also real; there is no usable Windows product or package yet. |
 | Linux | **Wired experimental AT-SPI2/X11 adapter** — native CI compiles and tests the portable workspace, and runs the live AT-SPI adapter tests against a GTK app under Xvfb | Reading real fields works (focused-field walk, text/caret in Unicode scalars, selection, capabilities, caret and range geometry), as does writing them (caret insert, exact-range replace guarded by expected text and verified by readback, and constrained XTEST plain insertion) and *noticing* them (focus and caret subscriptions over AT-SPI signals; stop closes the active gate before bounded teardown). The ghost/correction overlay is real: a click-through override-redirect X11 window (ARGB visual where the server offers one, SHAPE-based transparency where it does not), verified live in the same Xvfb session. Session services include the Secret Service memory key, `zenity` confirmation, FileManager1 reveal with a containing-directory `xdg-open` fallback, a StatusNotifierItem/DBusMenu tray, and always-on X11 shortcuts; unavailable desktop services or reserved chords degrade without taking down the working adapter. Still fail-closed: Wayland overlay placement and global shortcuts, and the accessibility-permission pane (Linux has no TCC equivalent to open). The desktop-free host probes are real (distro/kernel version, `/proc/meminfo` memory, XDG autostart entry, `xdg-open`). The binary is wired to this adapter; a 2026-08-25 private Xvfb/GTK session observed two end-to-end suggestions with deterministic completion. An experimental AppImage assembler exists, but no Linux artifact has been published or accepted on a clean real desktop, so Linux remains experimental. |
 
@@ -38,12 +38,10 @@ sequence is tracked in [the cross-platform implementation plan](docs/superpowers
 
 **Release boundary:** `v0.1.7` points to `01049ba28a4e6a9c838c553a37fc6df242a0e493`. The feature and architecture
 descriptions below document current `main`; use the tag and its release assets
-when validating the published artifact. The v0.1.6 patch shipped the
-audit-remediation correctness fixes (field-race-safe AxSet writes, contained
-worker panics, bounded shutdown, single-origin self-cleaning model downloads)
-and the CI/release repairs recorded in
-[`docs/RELEASE-NOTES-v0.1.6.md`](docs/RELEASE-NOTES-v0.1.6.md); the previous
-`v0.1.5` artifact points to `14ae81e`.
+when validating the published artifact. The v0.1.7 patch shipped the
+post-v0.1.6 correctness and privacy repairs recorded in
+[`docs/RELEASE-NOTES-v0.1.7.md`](docs/RELEASE-NOTES-v0.1.7.md); the previous
+`v0.1.6` artifact points to `6c0bea5`, and `v0.1.5` to `14ae81e`.
 
 The macOS run loop is functional: it reads caret/text context through
 Accessibility, generates short local completions, classifies field UX (inline /

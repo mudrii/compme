@@ -1,11 +1,11 @@
-# Compme v0.1.7 — release candidate
+# Compme v0.1.7
 
-> Unpublished until the release workflow, cask finalization and post_verify
-> complete; v0.1.6 remains the published release until then. Tagged under the
-> owner's 2026-10-07 G11 decision: one of the 22 manual/live acceptance rows is
-> closed and 21 remain open with recorded dispositions in docs/ACCEPTANCE.md.
+> Published 2026-10-07: Developer-ID signed, notarized and stapled arm64 app,
+> installed through the Homebrew cask. Tagged under the owner's 2026-10-07 G11
+> decision: one of the 22 manual/live acceptance rows is closed and 21 remain
+> open with recorded dispositions in docs/ACCEPTANCE.md.
 
-This candidate includes the post-v0.1.6 correctness and privacy repairs.
+This release includes the post-v0.1.6 correctness and privacy repairs.
 
 - Card redaction covers Unicode decimal digits, adjacent valid card windows
   and overlapping matches. Encrypted typing-memory records are scrubbed before
@@ -33,4 +33,4 @@ This candidate includes the post-v0.1.6 correctness and privacy repairs.
   screen-context and accept-key settings to the isolated product launch.
 
 Windows remains a fail-closed scaffold. Linux remains experimental AT-SPI2/X11;
-neither platform gains a supported published package in this macOS candidate.
+neither platform gains a supported published package in this macOS release.

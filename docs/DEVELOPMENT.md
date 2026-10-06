@@ -30,7 +30,8 @@ signed, notarized, and stapled. Earlier release notes preserve each artifact's
 original signing status. Workspace behavior may be newer than the latest tag,
 so use tag-specific release assets and notes when validating a published
 version. Specifically, `v0.1.7` points to the `v0.1.7` tag commit.
-The audit-remediation correctness fixes and CI/release hardening accumulated
+The post-v0.1.6 correctness and privacy repairs shipped in v0.1.7; the
+audit-remediation correctness fixes and CI/release hardening accumulated
 after v0.1.5 shipped in v0.1.6; the local/manual-only A2 policy and single
 model-location control shipped in v0.1.5.
 

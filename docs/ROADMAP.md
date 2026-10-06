@@ -2,7 +2,7 @@
 
 > **Last updated:** 2026-10-07 · **Branch:** `main` · v0.1.7 (tag `v0.1.7`) remains the latest published artifact · **Tests:** ≈2287 workspace tests (macOS inventory enforced by native CI; 44 spike tests separate)
 >
-> Current `main` carries post-release work that is not in v0.1.6: the
+> v0.1.7 (`01049ba`, published 2026-10-07) shipped all post-v0.1.6 work, including the
 > 2026-09-08 full audit (`Qfd.md` §20) and its first remediation commits —
 > the off-mac correctness cluster (`b8d3626`: Linux no longer exits at startup
 > without an X11 accept tap, honest non-Linux shell stubs, atomic enable
@@ -141,8 +141,8 @@
 </details>
 
 > **Release boundary:** the published `v0.1.7` artifact is tag `v0.1.7` (commit
-> `6c0bea5`); the previous `v0.1.5` artifact is tag `v0.1.5` (commit `14ae81e`).
-> Everything between those tags shipped in v0.1.6: the post-v0.1.5 delivery log
+> `01049ba`); `v0.1.6` is tag `v0.1.6` (commit `6c0bea5`) and `v0.1.5` is tag
+> `v0.1.5` (commit `14ae81e`). Everything between v0.1.5 and v0.1.6 shipped in v0.1.6: the post-v0.1.5 delivery log
 > above, from the five macOS parity closures through the 2026-08-25/26 audit
 > remediation and release repairs. The earlier v0.1.4 → v0.1.5 boundary
 > (`18b8dc0` → `14ae81e`) is kept below for the record:
@@ -176,7 +176,20 @@ tested**. Everything below is what the plan still calls for.
 
 ---
 
-## Current release — v0.1.7 candidate
+## Current release — v0.1.7 (published 2026-10-07)
+
+### Published — 2026-10-07
+
+Tag `v0.1.7` (`01049ba`) shipped through
+[release run 37516965255](https://github.com/mudrii/compme/actions/runs/37516965255).
+The first attempt's notarization returned HTTP 403 (an expired Apple developer
+agreement); after the owner renewed it, the rerun signed, notarized, stapled,
+published, finalized the cask (`f169b7a`) and passed `post_verify`. The
+release has three assets and is neither a draft nor a prerelease; the
+downloaded zip matches its checksum asset and the cask sha256
+(`762afa19…`). Shipped under the G11 waiver below: 21 manual rows, the A2
+matrix, G7 physical before/after and remaining Tier-4 observations stay open
+for the next release.
 
 ### Owner release decision — 2026-10-07 (ready to tag)
 
