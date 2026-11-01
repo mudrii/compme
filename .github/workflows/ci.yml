@@ -71,7 +71,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Keyed to the runner image: a target/ configured on one macOS image
           # poisons the next (CMake re-configures internally with cached-only
@@ -276,7 +276,7 @@ jobs:
           components: rustfmt, clippy
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           # Keyed to the runner image — see the check job's cache step.
           key: macos-15
@@ -322,7 +322,7 @@ jobs:
         run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ steps.img.outputs.image }}
 
@@ -375,7 +375,7 @@ jobs:
         run: echo "image=${ImageOS:-${RUNNER_OS:-unknown}}-${ImageVersion:-unknown}" >> "$GITHUB_OUTPUT"
 
       - name: Cache cargo + target
-        uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
         with:
           key: ${{ steps.img.outputs.image }}
           # cargo-audit clones the RustSec advisory DB outside rust-cache's
